@@ -1,0 +1,32 @@
+El Prompt Técnico para Replit (Acción Inmediata)
+"Replit, el sistema entró en un bucle de memoria debido al tamaño del archivo dataflow-database.sql. El Especialista intenta leer miles de líneas de INSERT (datos) y agota el contexto. Necesito que implementes esta Solución de Optimización de Contexto:
+
+Nuevo Script: src/sql_optimizer.py:
+Creá un script que escanee cualquier archivo .sql en el proyecto y genere una versión purificada llamada schema_only.sql. Este script debe extraer únicamente los CREATE TABLE, ALTER TABLE, INDEX, y CONSTRAINTS, eliminando todas las líneas de INSERT INTO.
+
+Actualización de la Capa 3 (Realidad):
+Modificá el DynamicPromptBuilder para que, cuando detecte un archivo SQL de más de 500 líneas, no le pase el archivo original al Especialista. En su lugar, debe ejecutar automáticamente el sql_optimizer.py y pasarle solo el schema_only.sql.
+
+Instrucción al Especialista:
+Aclará en su prompt dinámico que para razonar sobre la base de datos solo debe usar el esquema purificado. Los datos masivos son para ejecución de scripts, no para razonamiento lógico."
+
+2. El Contexto Global (NEXO_CORE)
+Copiá y pegá estos bloques en los archivos correspondientes dentro de tu carpeta /NEXO_CORE/ en la raíz. Esto queda fijo para siempre:
+
+A. En ESTANDARES_DE_INGENIERIA.md (Añadir esta sección):
+GESTIÓN DE GRANDES VOLÚMENES DE DATOS (BIG DATA)
+
+Regla de Separación: El sistema nunca debe intentar procesar archivos de datos masivos (CSVs, SQL Dumps con INSERTS) dentro del contexto de chat.
+
+Prioridad de Estructura: Para tareas de programación, el Especialista trabajará exclusivamente con el esquema (DDL).
+
+Carga de Datos: La carga de registros masivos es una tarea de script (Python), no una tarea de razonamiento de IA. El Especialista debe escribir el script que procesa el archivo, no leer el archivo él mismo.
+
+B. En FLUJO_DE_AUDITORIA.md (Actualización para el Obrero/QA):
+TAREAS DEL OBRERO (QA):
+
+Filtro de Peso: Si detectás que el Especialista está citando o intentando procesar miles de líneas de datos planos, rechazá la tarea inmediatamente.
+
+Validación de SQL: Verificá que el código generado sea compatible con el schema_only.sql generado.
+
+Aviso de Optimización: Si un archivo SQL está bloqueando el sistema, el QA debe sugerir al Especialista que use el sql_optimizer.py antes de pedir la intervención del Director.

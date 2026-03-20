@@ -1,0 +1,16 @@
+Bueno la parte de la lectura de el extracto bancario de banco galicia quedo perfecto y salio muy bien. Eso queda confirmado como tarea realizada.
+Te comparto una lista que contiene categorias que necesitaria que me agregues automaticamente, tambien contiene ub listado de grupos financieros (grupos) que me gustaria que me agregues y cada categoria tenga asignado el grupo que corresponda.
+Tambien aparece el tipo de categoria que debe tener asignado cada uno.
+Todo esto debe quedar por defecto para toda empresa que se de de alta en la aplicacion, pero deben seguir teniendo la opcion tal cual esta hoy de agreger nuevas categorias.
+Lo que no encuentro en la aplicacion es la opcion de agregar grupos en la parte financiera.
+Por ultimo aclaro que todas estas categorias deberian ser tomadas en cuenta para el estado de resultados que trabajaremos pronto.
+Por otro lado tambie necesito que cuando manualmente se clasifique un movimiento (se le asigne una categoria) que el sistema te ofrezca clasificar todo el resto de los movimientos sin clasificar con el mismo nombre a la misma categoria. Esta ultima parte tiene sus detalles:
+El sistema ene ste casi debe consultarte - Queres clasificar todos los movimientos con el mismo nombre a la misma categoria y al mismo establecimiento? - Si la respuesta es SI del cliente, te preguntara luego para que rango de fechas dentro de el extracto seleccionado quiere realizar esto.
+Tambien deben poder manualmente descomprimir un movimiento, supongamos que hay un movimiento grande de 3 millones de pesos, el cliente deberia poder descomprimirlo y asignar distintos montos a distintos locales (ya que peude ser por ejemplo una acreditacion que corresponda al cobro de distintas entidades del mismo mes.) 
+Te paso tambien un ejemplo de estado financiero hecho por mi, para que tomes de referencia como debe la aplicacion agrupar los movimientos en categorias y las categorias en grupos y mostrarse el resultado final como un estado financiero de este tipo.
+El resto de los detalles de como funciona y como se arma un EE.RR lo podes sacar de la informacion que ya tenemos en en el analisis exhaustivo y el plan de accion que armamos ayer.
+Por otro lado en la parte de extractos por ejemplo si ahora agregamos detalles para poder leer otros bancos o mercadopago, se mezclarian todos los movimientos en la misma vista.
+Tendriamos que crear una vista por banco o entidad, si bien despues para los balances se tomarian todos los datos y movimientos juntos.
+Creo que lo mejor es que el cliente pueda seleccionar los bancos con los cuales trabaja y se le muestren las solapas en base a eso, asi no hay muchas solapas sin sentido.
+Por lo pronto necesitamos solapas para santander rio, galicia, frances y mercado pago que son las que usa mi empresa y con los que vamos a ir probando todo.
+Comentame antes de avanzar con ningun cambio, que entendes de todo lo que te estoy pasando, como lo harias y que te parece ademas? Tenes recomendaciones o posibles mejoras?
