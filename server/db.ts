@@ -13,22 +13,23 @@ if (!process.env.DATABASE_URL) {
 
 const databaseUrl = process.env.DATABASE_URL;
 
-const isLocal =
-  databaseUrl.includes("localhost") ||
-  databaseUrl.includes("127.0.0.1");
+// Neon serverless solo para hosts reales de Neon (Replit, etc.).
+// Railway, Render, RDS, Postgres local → driver TCP "pg".
+const useNeonServerless =
+  databaseUrl.includes("neon.tech") || databaseUrl.includes(".neon.");
 
 let db: ReturnType<typeof drizzlePg> | ReturnType<typeof drizzleNeon>;
 let pool: Pool | NeonPool;
 
-if (isLocal) {
-  console.log("[db] Connecting to local PostgreSQL via pg");
-  pool = new Pool({ connectionString: databaseUrl });
-  db = drizzlePg(pool as Pool, { schema });
-} else {
-  console.log("[db] Connecting to Replit Postgres (Neon)");
+if (useNeonServerless) {
+  console.log("[db] Connecting via Neon serverless");
   neonConfig.webSocketConstructor = ws;
   pool = new NeonPool({ connectionString: databaseUrl });
   db = drizzleNeon({ client: pool as NeonPool, schema });
+} else {
+  console.log("[db] Connecting to PostgreSQL via pg (TCP)");
+  pool = new Pool({ connectionString: databaseUrl });
+  db = drizzlePg(pool as Pool, { schema });
 }
 
 export { db, pool };

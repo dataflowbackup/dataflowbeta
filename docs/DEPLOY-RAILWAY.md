@@ -37,6 +37,8 @@
 4. **Settings** → **Build**: `npm run build` (Nixpacks suele detectarlo solo).
 5. **Start command**: `npm start`
 
+**Base de datos:** Railway Postgres es conexión TCP estándar. La app usa el driver **`pg`** para esa URL. Solo si `DATABASE_URL` apunta a **Neon** (host `neon.tech` / `.neon.`) se usa el cliente serverless de Neon.
+
 Después del primer deploy, ejecutá migraciones / schema si usás Drizzle (desde tu máquina con `DATABASE_URL` de Railway o un one-off en Railway):
 
 ```bash
