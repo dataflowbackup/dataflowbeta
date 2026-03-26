@@ -1,6 +1,6 @@
 import type { Handler } from "@netlify/functions";
 import serverless from "serverless-http";
-import { createApp } from "../../../server/createApp";
+import { createApp } from "../../server/createApp";
 
 let cachedHandler: Handler | null = null;
 
