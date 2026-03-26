@@ -1,7 +1,6 @@
 import { createRequire } from "node:module";
 import path from "node:path";
 import { Pool } from "pg";
-import { createClient, type Client as LibsqlClient } from "@libsql/client";
 import { drizzle as drizzlePg } from "drizzle-orm/node-postgres";
 import { drizzle as drizzleLibsql } from "drizzle-orm/libsql";
 import * as schema from "@shared/schema";
@@ -51,10 +50,17 @@ if (useLibsql) {
     `[db] Connecting via libsql (${databaseUrl.startsWith("file:") ? "sqlite file" : "turso"})`,
   );
   const authToken = process.env.TURSO_AUTH_TOKEN || undefined;
-  pool = createClient({ url: databaseUrl, authToken }) as unknown as Pool;
-  db = drizzleLibsql((pool as unknown) as LibsqlClient, { schema: schema as any }) as unknown as ReturnType<
-    typeof drizzlePg
-  >;
+  const isLocalSqliteFile = databaseUrl.startsWith("file:");
+
+  // Para Turso/libSQL remoto (libsql:// o https://) usamos siempre el cliente web/HTTP
+  // para evitar dependencias nativas (p.ej. @libsql/linux-x64-gnu) en runtimes serverless.
+  // Para SQLite local por archivo sí necesitamos el cliente Node.
+  const libsqlMod = isLocalSqliteFile
+    ? (require("@libsql/client") as typeof import("@libsql/client"))
+    : (require("@libsql/client/web") as typeof import("@libsql/client/web"));
+
+  pool = (libsqlMod as any).createClient({ url: databaseUrl, authToken }) as unknown as Pool;
+  db = drizzleLibsql(pool as any, { schema: schema as any }) as unknown as ReturnType<typeof drizzlePg>;
 } else if (useNeonServerless) {
   console.log("[db] Connecting via Neon serverless");
   const { Pool: NeonPool, neonConfig } =
