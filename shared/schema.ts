@@ -1,20 +1,36 @@
 import { sql, relations } from "drizzle-orm";
 import {
-  pgTable,
+  sqliteTable,
   text,
-  varchar,
   integer,
-  decimal,
-  boolean,
-  timestamp,
-  date,
-  jsonb,
+  real,
   index,
-  serial,
-  unique,
-} from "drizzle-orm/pg-core";
+  uniqueIndex,
+} from "drizzle-orm/sqlite-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
+
+const varchar = (name: string, _opts?: { length?: number }) => text(name) as any;
+const pgTable = sqliteTable;
+const decimal = (
+  name: string,
+  _opts?: { precision?: number; scale?: number },
+) => real(name) as any;
+const boolean = (name: string) => integer(name, { mode: "boolean" }) as any;
+const timestamp = (name: string) => {
+  const column = integer(name, { mode: "timestamp_ms" }) as any;
+  if (typeof column.defaultNow !== "function") {
+    column.defaultNow = () => column.default(sql`(unixepoch() * 1000)`);
+  }
+  return column;
+};
+const date = (name: string) => text(name) as any;
+const jsonb = (name: string) => text(name, { mode: "json" }) as any;
+const serial = (name: string) =>
+  integer(name).primaryKey({ autoIncrement: true }) as any;
+
+let uniqueCounter = 0;
+const unique = () => uniqueIndex(`uq_${++uniqueCounter}`);
 
 // ==========================================
 // SESSION TABLE (Required for Replit Auth)
@@ -33,7 +49,7 @@ export const sessions = pgTable(
 // USERS TABLE
 // ==========================================
 export const users = pgTable("users", {
-  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  id: varchar("id").primaryKey(),
   email: varchar("email").unique(),
   username: varchar("username", { length: 50 }).unique(),
   firstName: varchar("first_name"),

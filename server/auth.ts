@@ -3,6 +3,7 @@ import crypto from "crypto";
 import type { Express, RequestHandler } from "express";
 import session from "express-session";
 import connectPg from "connect-pg-simple";
+import createMemoryStore from "memorystore";
 import { z } from "zod";
 import { db } from "./db";
 import { users, userCredentials, userClients, clients, clientInvitations } from "@shared/schema";
@@ -42,13 +43,24 @@ const resetPasswordSchema = z.object({
 
 export function getSession() {
   const sessionTtl = 7 * 24 * 60 * 60 * 1000;
-  const pgStore = connectPg(session);
-  const sessionStore = new pgStore({
-    conString: process.env.DATABASE_URL,
-    createTableIfMissing: false,
-    ttl: sessionTtl,
-    tableName: "sessions",
-  });
+  const dbUrl = process.env.DATABASE_URL || "";
+  const usePgStore =
+    dbUrl.startsWith("postgres://") ||
+    dbUrl.startsWith("postgresql://") ||
+    dbUrl.includes("neon.tech") ||
+    dbUrl.includes(".neon.");
+
+  const sessionStore = usePgStore
+    ? new (connectPg(session))({
+        conString: dbUrl,
+        createTableIfMissing: false,
+        ttl: sessionTtl,
+        tableName: "sessions",
+      })
+    : new (createMemoryStore(session))({
+        checkPeriod: sessionTtl,
+      });
+
   return session({
     secret: process.env.SESSION_SECRET!,
     store: sessionStore,

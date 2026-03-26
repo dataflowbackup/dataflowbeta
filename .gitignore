@@ -12,6 +12,7 @@ vite.config.ts.*
 
 # Subidas locales
 uploads/
+data/*.db
 
 # Logs y IDE
 *.log
