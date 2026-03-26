@@ -1,5 +1,6 @@
 import { createRequire } from "node:module";
 import path from "node:path";
+import { createClient as createLibsqlWebClient } from "@libsql/client/web";
 import { Pool } from "pg";
 import { drizzle as drizzlePg } from "drizzle-orm/node-postgres";
 // No importar `drizzle-orm/libsql` (index): su driver hace `import "@libsql/client"` al cargar el módulo
@@ -54,14 +55,17 @@ if (useLibsql) {
   const authToken = process.env.TURSO_AUTH_TOKEN || undefined;
   const isLocalSqliteFile = databaseUrl.startsWith("file:");
 
-  // Para Turso/libSQL remoto (libsql:// o https://) usamos siempre el cliente web/HTTP
-  // para evitar dependencias nativas (p.ej. @libsql/linux-x64-gnu) en runtimes serverless.
-  // Para SQLite local por archivo sí necesitamos el cliente Node.
-  const libsqlMod = isLocalSqliteFile
-    ? (require("@libsql/client") as typeof import("@libsql/client"))
-    : (require("@libsql/client/web") as typeof import("@libsql/client/web"));
+  // Turso remoto: import estático de `@libsql/client/web` para que el bundler de Netlify
+  // incluya el módulo (require dinámico a `@libsql/client/web` falla en Lambda: módulo no encontrado).
+  // SQLite local `file:`: cliente Node (nativo en tu máquina; no aplica en Netlify).
+  const libsqlClient = isLocalSqliteFile
+    ? (require("@libsql/client") as typeof import("@libsql/client")).createClient({
+        url: databaseUrl,
+        authToken,
+      })
+    : createLibsqlWebClient({ url: databaseUrl, authToken });
 
-  pool = (libsqlMod as any).createClient({ url: databaseUrl, authToken }) as unknown as Pool;
+  pool = libsqlClient as unknown as Pool;
   db = constructLibsqlDb(pool as any, { schema: schema as any }) as unknown as ReturnType<typeof drizzlePg>;
 } else if (useNeonServerless) {
   console.log("[db] Connecting via Neon serverless");
