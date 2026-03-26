@@ -1273,7 +1273,22 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.get("/api/recipes", isAuthenticated, async (req, res) => {
     try {
       const clientId = await getClientId(req);
-      const data = await storage.getRecipes(clientId);
+      const [recipes, categories] = await Promise.all([
+        storage.getRecipes(clientId),
+        storage.getRecipeCategories(clientId),
+      ]);
+
+      const categoryById = new Map(categories.map((c) => [c.id, c]));
+      const ingredientLists = await Promise.all(
+        recipes.map((recipe) => storage.getRecipeIngredients(recipe.id)),
+      );
+
+      const data = recipes.map((recipe, index) => ({
+        ...recipe,
+        category: recipe.categoryId ? (categoryById.get(recipe.categoryId) || null) : null,
+        ingredientCount: ingredientLists[index]?.length || 0,
+      }));
+
       res.json(data);
     } catch (e: any) {
       res.status(500).json({ message: e.message });
@@ -2023,6 +2038,161 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         : undefined;
       const data = await storage.getBalanceSpreadsheet(clientId, year, localId);
       res.json(data);
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
+  app.get("/api/balance-report/export", isAuthenticated, async (req, res) => {
+    try {
+      const clientId = await getClientId(req);
+      const year = parseInt(req.query.year as string) || new Date().getFullYear();
+      const month = Math.min(12, Math.max(1, parseInt(req.query.month as string) || new Date().getMonth() + 1));
+      const localId = req.query.localId && req.query.localId !== "all"
+        ? parseInt(req.query.localId as string)
+        : undefined;
+      const format = String(req.query.format || "pdf").toLowerCase();
+
+      const spreadsheet = await storage.getBalanceSpreadsheet(clientId, year, localId);
+      const fullMonths = [
+        "Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio",
+        "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre",
+      ];
+      const monthlyVentas = spreadsheet.summary.income[month] ?? 0;
+      const monthlyGastos = spreadsheet.summary.expenses[month] ?? 0;
+      const monthlyUtilidad = monthlyVentas - monthlyGastos;
+      const prevMonth = month === 1 ? 12 : month - 1;
+      const prevVentas = spreadsheet.summary.income[prevMonth] ?? 0;
+      const evolucionVentas = prevVentas > 0 ? ((monthlyVentas - prevVentas) / prevVentas) * 100 : null;
+      const utilidadPercent = monthlyVentas > 0 ? (monthlyUtilidad / monthlyVentas) * 100 : 0;
+
+      const expenseGroups = spreadsheet.groups.filter((g) => g.type === "expense");
+      const groupedExpenseLines = expenseGroups.map((group) => {
+        const categories = group.categories.map((cat) => {
+          const amount = cat.monthlyTotals[month] ?? 0;
+          const percent = monthlyVentas > 0 ? (amount / monthlyVentas) * 100 : 0;
+          return { name: cat.name, amount, percent };
+        });
+
+        const amountFromCategories = categories.reduce((sum, cat) => sum + cat.amount, 0);
+        const amountFromGroup = group.monthlyTotals[month] ?? 0;
+        const groupAmount = group.categories.length > 0 ? amountFromCategories : amountFromGroup;
+        const groupPercent = monthlyVentas > 0 ? (groupAmount / monthlyVentas) * 100 : 0;
+
+        return {
+          groupName: group.name,
+          groupAmount,
+          groupPercent,
+          categories,
+        };
+      });
+
+      if (format === "pdf") {
+        const { default: PDFDocument } = await import("pdfkit");
+        const doc = new PDFDocument({ size: "A4", margin: 40 });
+
+        res.setHeader("Content-Type", "application/pdf");
+        res.setHeader("Content-Disposition", `attachment; filename=balance_mensual_${year}_${String(month).padStart(2, "0")}.pdf`);
+        doc.pipe(res);
+
+        const currencyFmt = new Intl.NumberFormat("es-AR", {
+          style: "currency",
+          currency: "ARS",
+          minimumFractionDigits: 2,
+          maximumFractionDigits: 2,
+        });
+
+        const rightX = 520;
+        const writeRow = (label: string, value: string, options?: { bold?: boolean; color?: string }) => {
+          if (options?.bold) doc.font("Helvetica-Bold");
+          else doc.font("Helvetica");
+          if (options?.color) doc.fillColor(options.color);
+          else doc.fillColor("black");
+          doc.text(label, 40, doc.y, { continued: true });
+          doc.text(value, rightX, doc.y, { align: "right" });
+          doc.moveDown(0.2);
+        };
+
+        doc.font("Helvetica-Bold").fontSize(13).text(`EMPRESA`, 40, 42);
+        doc.font("Helvetica-Bold").fontSize(13).text(`${fullMonths[month - 1]} ${year}`, rightX - 120, 42, { width: 120, align: "right" });
+        doc.moveDown(1.5);
+
+        writeRow("Evolucion de Ventas", evolucionVentas === null ? "N/A" : `${evolucionVentas.toFixed(2)}%`);
+        writeRow("Ventas", currencyFmt.format(monthlyVentas), { bold: true, color: "#0f766e" });
+        doc.moveDown(0.4);
+
+        doc.font("Helvetica-Bold").fillColor("black").text("GASTOS");
+        doc.moveDown(0.3);
+        for (const group of groupedExpenseLines) {
+          writeRow(group.groupName, currencyFmt.format(group.groupAmount), { bold: true });
+          for (const cat of group.categories) {
+            writeRow(`  ${cat.name}`, currencyFmt.format(cat.amount));
+          }
+        }
+        writeRow("GASTOS TOTALES", currencyFmt.format(monthlyGastos), { bold: true, color: "#b91c1c" });
+        writeRow("Utilidad", currencyFmt.format(monthlyUtilidad), {
+          bold: true,
+          color: monthlyUtilidad >= 0 ? "#15803d" : "#b91c1c",
+        });
+        doc.moveDown(0.4);
+
+        doc.font("Helvetica-Bold").fillColor("black").text("GASTOS / UT EN %");
+        doc.moveDown(0.3);
+        for (const group of groupedExpenseLines) {
+          writeRow(group.groupName, `${group.groupPercent.toFixed(2)}%`, { bold: true });
+          for (const cat of group.categories) {
+            writeRow(`  ${cat.name}`, `${cat.percent.toFixed(2)}%`);
+          }
+        }
+        doc.font("Helvetica-Bold").fillColor("black").text("TOTAL");
+        writeRow("Utilidad", `${utilidadPercent.toFixed(2)}%`, {
+          bold: true,
+          color: utilidadPercent >= 0 ? "#15803d" : "#b91c1c",
+        });
+
+        doc.end();
+        return;
+      }
+
+      if (format === "xlsx") {
+        const rows: Array<Record<string, string | number>> = [];
+        rows.push({ Concepto: "EMPRESA", Valor: `${fullMonths[month - 1]} ${year}` });
+        rows.push({ Concepto: "Evolucion de Ventas", Valor: evolucionVentas === null ? "N/A" : `${evolucionVentas.toFixed(2)}%` });
+        rows.push({ Concepto: "Ventas", Valor: Number(monthlyVentas.toFixed(2)) });
+        rows.push({ Concepto: "", Valor: "" });
+        rows.push({ Concepto: "GASTOS", Valor: "" });
+        for (const group of groupedExpenseLines) {
+          rows.push({ Concepto: group.groupName, Valor: Number(group.groupAmount.toFixed(2)) });
+          for (const cat of group.categories) {
+            rows.push({ Concepto: `  ${cat.name}`, Valor: Number(cat.amount.toFixed(2)) });
+          }
+        }
+        rows.push({ Concepto: "GASTOS TOTALES", Valor: Number(monthlyGastos.toFixed(2)) });
+        rows.push({ Concepto: "Utilidad", Valor: Number(monthlyUtilidad.toFixed(2)) });
+        rows.push({ Concepto: "", Valor: "" });
+        rows.push({ Concepto: "GASTOS / UT EN %", Valor: "" });
+        for (const group of groupedExpenseLines) {
+          rows.push({ Concepto: group.groupName, Valor: `${group.groupPercent.toFixed(2)}%` });
+          for (const cat of group.categories) {
+            rows.push({ Concepto: `  ${cat.name}`, Valor: `${cat.percent.toFixed(2)}%` });
+          }
+        }
+        rows.push({ Concepto: "TOTAL", Valor: "" });
+        rows.push({ Concepto: "Utilidad", Valor: `${utilidadPercent.toFixed(2)}%` });
+
+        const worksheet = XLSX.utils.json_to_sheet(rows);
+        worksheet["!cols"] = [{ wch: 46 }, { wch: 20 }];
+        const workbook = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(workbook, worksheet, "Balance Mensual");
+        const buffer = XLSX.write(workbook, { type: "buffer", bookType: "xlsx" });
+
+        res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+        res.setHeader("Content-Disposition", `attachment; filename=balance_mensual_${year}_${String(month).padStart(2, "0")}.xlsx`);
+        res.send(buffer);
+        return;
+      }
+
+      return res.status(400).json({ message: "Formato no soportado. Usa format=pdf o format=xlsx" });
     } catch (e: any) {
       res.status(500).json({ message: e.message });
     }

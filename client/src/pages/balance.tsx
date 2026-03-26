@@ -19,6 +19,8 @@ import {
   TrendingDown,
   DollarSign,
   Download,
+  ChevronRight,
+  ChevronDown,
   BarChart3,
   ArrowUpRight,
   ArrowDownRight,
@@ -73,6 +75,7 @@ export default function BalancePage() {
   const [selectedMonth, setSelectedMonth] = useState(currentMonth.toString());
   const [selectedLocalId, setSelectedLocalId] = useState<string>("all");
   const [viewMode, setViewMode] = useState<string>("monthly");
+  const [expandedExpenseGroupIds, setExpandedExpenseGroupIds] = useState<number[]>([]);
 
   const { data: locals = [] } = useQuery<Local[]>({
     queryKey: ["/api/locals"],
@@ -108,30 +111,14 @@ export default function BalancePage() {
     return spreadsheet.groups.filter(g => g.type === "expense");
   }, [spreadsheet]);
 
-  const expenseCategories = useMemo(() => {
-    if (!spreadsheet) return [];
-    const cats: Array<{ groupName: string; name: string; amount: number; percent: number }> = [];
-
-    for (const group of expenseGroups) {
-      for (const cat of group.categories) {
-        const amount = cat.monthlyTotals[month] ?? 0;
-        const percent = monthlyVentas > 0 ? (amount / monthlyVentas) * 100 : 0;
-        cats.push({ groupName: group.name, name: cat.name, amount, percent });
-      }
-
-      // Si el grupo no tiene categorías con datos, usamos el total del grupo
-      if (group.categories.length === 0) {
-        const amount = group.monthlyTotals[month] ?? 0;
-        const percent = monthlyVentas > 0 ? (amount / monthlyVentas) * 100 : 0;
-        cats.push({ groupName: group.name, name: group.name, amount, percent });
-      }
-    }
-
-    return cats.sort((a, b) => b.amount - a.amount);
-  }, [spreadsheet, month, monthlyVentas, expenseGroups]);
-
   const totalGastosPercent = monthlyVentas > 0 ? (monthlyGastos / monthlyVentas) * 100 : 0;
   const utilidadPercent = monthlyVentas > 0 ? (monthlyUtilidad / monthlyVentas) * 100 : 0;
+
+  const handleExport = () => {
+    const localParam = selectedLocalId === "all" ? "all" : selectedLocalId;
+    const url = `/api/balance-report/export?year=${selectedYear}&month=${selectedMonth}&localId=${localParam}&format=pdf`;
+    window.open(url, "_blank");
+  };
 
   const renderMonthlyView = () => {
     if (isLoading) {
@@ -154,198 +141,157 @@ export default function BalancePage() {
       );
     }
 
+    const groupedExpenseLines = expenseGroups.map((group) => {
+      const categories = group.categories.map((cat) => {
+        const amount = cat.monthlyTotals[month] ?? 0;
+        const percent = monthlyVentas > 0 ? (amount / monthlyVentas) * 100 : 0;
+        return { name: cat.name, amount, percent };
+      });
+
+      const amountFromCategories = categories.reduce((sum, cat) => sum + cat.amount, 0);
+      const amountFromGroup = group.monthlyTotals[month] ?? 0;
+      const groupAmount = group.categories.length > 0 ? amountFromCategories : amountFromGroup;
+      const groupPercent = monthlyVentas > 0 ? (groupAmount / monthlyVentas) * 100 : 0;
+
+      return {
+        groupId: group.id,
+        groupName: group.name,
+        groupAmount,
+        groupPercent,
+        categories,
+      };
+    });
+
     return (
-      <div className="space-y-6">
-        <Card className="border-2">
-          <CardContent className="pt-6">
-            <div className="text-center space-y-2">
-              <h2 className="text-xl font-bold" data-testid="text-title">
-                {fullMonths[month - 1]} {selectedYear}
-              </h2>
-              <div className="flex items-center justify-center gap-3">
-                <span className="text-sm text-muted-foreground">Evolucion de Ventas</span>
-                {prevVentas > 0 ? (
-                  <Badge
-                    variant={evolucionVentas >= 0 ? "default" : "destructive"}
-                    className="font-mono"
-                  >
-                    {evolucionVentas >= 0 ? (
-                      <ArrowUpRight className="h-3 w-3 mr-1" />
-                    ) : (
-                      <ArrowDownRight className="h-3 w-3 mr-1" />
-                    )}
-                    {evolucionVentas >= 0 ? "+" : ""}{evolucionVentas.toFixed(1)}%
-                  </Badge>
-                ) : (
-                  <Badge variant="secondary" className="font-mono">
-                    <Minus className="h-3 w-3 mr-1" />
-                    N/A
-                  </Badge>
-                )}
-              </div>
-              <div className="pt-4">
-                <p className="text-sm font-medium text-muted-foreground mb-1">VENTAS</p>
-                <p className="text-3xl font-bold font-mono text-green-600 dark:text-green-400" data-testid="text-ventas">
-                  {formatCurrency(monthlyVentas)}
-                </p>
-              </div>
+      <Card>
+        <CardContent className="pt-6">
+          <div className="space-y-5">
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-[1fr_auto]">
+              <span className="font-semibold uppercase tracking-wide">Empresa</span>
+              <span className="font-mono text-right font-semibold">{fullMonths[month - 1]} {selectedYear}</span>
             </div>
-          </CardContent>
-        </Card>
 
-        <Card>
-          <CardHeader className="pb-3">
-            <CardTitle className="flex items-center gap-2">
-              <TrendingDown className="h-5 w-5 text-red-600" />
-              GASTOS
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="space-y-0">
-              {expenseGroups.map(group => {
-                const groupCats = expenseCategories.filter(c => c.groupName === group.name && c.amount > 0);
-                const groupTotal = groupCats.reduce((sum, c) => sum + c.amount, 0);
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-[1fr_auto] text-sm">
+              <span className="font-medium">Evolucion de Ventas</span>
+              <span className="font-mono text-right">
+                {prevVentas > 0 ? `${evolucionVentas >= 0 ? "+" : ""}${evolucionVentas.toFixed(2)}%` : "N/A"}
+              </span>
+            </div>
 
-                if (groupTotal === 0) return null;
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-[1fr_auto] border-b pb-3">
+              <span className="font-bold uppercase">Ventas</span>
+              <span className="font-mono text-right font-bold text-green-600" data-testid="text-ventas">
+                {formatCurrency(monthlyVentas)}
+              </span>
+            </div>
 
-                return (
-                  <div key={group.id} className="border-b last:border-b-0 py-2.5">
-                    <div className="flex items-center justify-between mb-1">
-                      <span className="text-sm font-semibold">{group.name}</span>
-                      <span className="font-mono text-sm font-semibold text-red-600">
-                        {formatCurrency(groupTotal)}
-                      </span>
-                    </div>
-                    {groupCats.map((cat, idx) => (
-                      <div
-                        key={idx}
-                        className="flex items-center justify-between py-1 pl-3"
-                        data-testid={`row-gasto-${group.id}-${idx}`}
-                      >
-                        <span className="text-xs">{cat.name}</span>
-                        <span className={`font-mono text-xs ${cat.amount > 0 ? "" : "text-muted-foreground"}`}>
-                          {cat.amount > 0 ? formatCurrency(cat.amount) : "$0,00"}
-                        </span>
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-[1fr_auto]">
+              <span className="font-bold uppercase">Gastos</span>
+              <span />
+            </div>
+
+            <div className="space-y-2">
+              {groupedExpenseLines.map((group, idx) => (
+                <div key={`${group.groupName}-${idx}`} className="space-y-1">
+                  <div className="grid grid-cols-1 gap-2 sm:grid-cols-[1fr_auto] text-sm font-semibold">
+                    <button
+                      type="button"
+                      className="inline-flex items-center gap-1 text-left"
+                      onClick={() =>
+                        setExpandedExpenseGroupIds((prev) =>
+                          prev.includes(group.groupId)
+                            ? prev.filter((id) => id !== group.groupId)
+                            : [...prev, group.groupId],
+                        )
+                      }
+                    >
+                      {expandedExpenseGroupIds.includes(group.groupId) ? (
+                        <ChevronDown className="h-4 w-4 text-muted-foreground" />
+                      ) : (
+                        <ChevronRight className="h-4 w-4 text-muted-foreground" />
+                      )}
+                      <span>{group.groupName}</span>
+                    </button>
+                    <span className="font-mono text-right">{formatCurrency(group.groupAmount)}</span>
+                  </div>
+                  {expandedExpenseGroupIds.includes(group.groupId) &&
+                    group.categories.map((cat, catIdx) => (
+                      <div key={`${group.groupName}-${cat.name}-${catIdx}`} className="grid grid-cols-1 gap-2 sm:grid-cols-[1fr_auto] text-sm">
+                        <span className="pl-6 text-muted-foreground">{cat.name}</span>
+                        <span className="font-mono text-right text-muted-foreground">{formatCurrency(cat.amount)}</span>
                       </div>
                     ))}
-                  </div>
-                );
-              })}
-
-              {expenseCategories.length === 0 && (
-                <p className="text-muted-foreground text-center py-4 text-sm">
-                  No hay gastos registrados en este periodo
-                </p>
-              )}
-
-              <div className="flex items-center justify-between py-3 border-t-2 mt-2 font-bold">
-                <span>GASTOS TOTALES</span>
-                <span className="font-mono text-red-600 dark:text-red-400" data-testid="text-gastos-totales">
-                  {formatCurrency(monthlyGastos)}
-                </span>
-              </div>
+                </div>
+              ))}
             </div>
-          </CardContent>
-        </Card>
 
-        <Card className={monthlyUtilidad >= 0
-          ? "border-green-500/50 bg-green-50/30 dark:bg-green-950/10"
-          : "border-red-500/50 bg-red-50/30 dark:bg-red-950/10"
-        }>
-          <CardContent className="pt-6">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <DollarSign className={`h-5 w-5 ${monthlyUtilidad >= 0 ? "text-green-600" : "text-red-600"}`} />
-                <span className="text-lg font-bold">UTILIDAD</span>
-              </div>
-              <span className={`text-2xl font-bold font-mono ${monthlyUtilidad >= 0 ? "text-green-600 dark:text-green-400" : "text-red-600 dark:text-red-400"}`} data-testid="text-utilidad">
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-[1fr_auto] border-t pt-3">
+              <span className="font-bold uppercase">Gastos Totales</span>
+              <span className="font-mono text-right font-bold text-red-600" data-testid="text-gastos-totales">
+                {formatCurrency(monthlyGastos)}
+              </span>
+            </div>
+
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-[1fr_auto] border-t pt-3">
+              <span className="font-bold">Utilidad</span>
+              <span className={`font-mono text-right font-bold ${monthlyUtilidad >= 0 ? "text-green-600" : "text-red-600"}`} data-testid="text-utilidad">
                 {formatCurrency(monthlyUtilidad)}
               </span>
             </div>
-          </CardContent>
-        </Card>
 
-        <Card>
-          <CardHeader className="pb-3">
-            <CardTitle className="flex items-center gap-2">
-              <BarChart3 className="h-5 w-5" />
-              GASTOS / UTILIDAD EN %
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="space-y-0">
-              {expenseGroups.map(group => {
-                const groupCats = expenseCategories.filter(c => c.groupName === group.name && c.amount > 0);
-                const groupTotal = groupCats.reduce((sum, c) => sum + c.amount, 0);
-                const groupPercent = monthlyVentas > 0 ? (groupTotal / monthlyVentas) * 100 : 0;
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-[1fr_auto] border-t pt-4">
+              <span className="font-bold uppercase">Gastos / UT en %</span>
+              <span />
+            </div>
 
-                if (groupTotal === 0) return null;
-
-                return (
-                  <div key={group.id} className="py-2.5 border-b last:border-b-0">
-                    <div className="flex items-center justify-between mb-1">
-                      <span className="text-sm font-semibold">{group.name}</span>
-                      <div className="flex items-center gap-3">
-                        <div className="w-24 h-2 rounded-full bg-muted overflow-hidden">
-                          <div
-                            className="h-full rounded-full bg-red-500"
-                            style={{ width: `${Math.min(groupPercent, 100)}%` }}
-                          />
-                        </div>
-                        <span className="font-mono text-sm font-bold w-16 text-right">
-                          {groupPercent.toFixed(2)}%
-                        </span>
-                      </div>
-                    </div>
-                    {groupCats.map((cat, idx) => (
-                      <div
-                        key={idx}
-                        className="flex items-center justify-between py-1 pl-3"
-                        data-testid={`row-percent-${group.id}-${idx}`}
-                      >
-                        <span className="text-xs">{cat.name}</span>
-                        <span className="font-mono text-xs w-16 text-right text-muted-foreground">
-                          {cat.percent.toFixed(2)}%
-                        </span>
+            <div className="space-y-2">
+              {groupedExpenseLines.map((group, idx) => (
+                <div key={`pct-${group.groupName}-${idx}`} className="space-y-1">
+                  <div className="grid grid-cols-1 gap-2 sm:grid-cols-[1fr_auto] text-sm font-semibold">
+                    <button
+                      type="button"
+                      className="inline-flex items-center gap-1 text-left"
+                      onClick={() =>
+                        setExpandedExpenseGroupIds((prev) =>
+                          prev.includes(group.groupId)
+                            ? prev.filter((id) => id !== group.groupId)
+                            : [...prev, group.groupId],
+                        )
+                      }
+                    >
+                      {expandedExpenseGroupIds.includes(group.groupId) ? (
+                        <ChevronDown className="h-4 w-4 text-muted-foreground" />
+                      ) : (
+                        <ChevronRight className="h-4 w-4 text-muted-foreground" />
+                      )}
+                      <span>{group.groupName}</span>
+                    </button>
+                    <span className="font-mono text-right">{group.groupPercent.toFixed(2)}%</span>
+                  </div>
+                  {expandedExpenseGroupIds.includes(group.groupId) &&
+                    group.categories.map((cat, catIdx) => (
+                      <div key={`pct-${group.groupName}-${cat.name}-${catIdx}`} className="grid grid-cols-1 gap-2 sm:grid-cols-[1fr_auto] text-sm">
+                        <span className="pl-6 text-muted-foreground">{cat.name}</span>
+                        <span className="font-mono text-right text-muted-foreground">{cat.percent.toFixed(2)}%</span>
                       </div>
                     ))}
-                  </div>
-                );
-              })}
-
-              <div className="flex items-center justify-between py-3 border-t-2 mt-2">
-                <span className="font-bold">TOTAL GASTOS</span>
-                <div className="flex items-center gap-3">
-                  <div className="w-24 h-2 rounded-full bg-muted overflow-hidden">
-                    <div
-                      className="h-full rounded-full bg-red-500"
-                      style={{ width: `${Math.min(totalGastosPercent, 100)}%` }}
-                    />
-                  </div>
-                  <span className="font-mono text-sm font-bold w-16 text-right text-red-600 dark:text-red-400" data-testid="text-gastos-percent">
-                    {totalGastosPercent.toFixed(2)}%
-                  </span>
                 </div>
-              </div>
-
-              <div className="flex items-center justify-between py-3 border-t">
-                <span className="font-bold">UTILIDAD</span>
-                <div className="flex items-center gap-3">
-                  <div className="w-24 h-2 rounded-full bg-muted overflow-hidden">
-                    <div
-                      className={`h-full rounded-full ${utilidadPercent >= 0 ? "bg-green-500" : "bg-red-500"}`}
-                      style={{ width: `${Math.min(Math.abs(utilidadPercent), 100)}%` }}
-                    />
-                  </div>
-                  <span className={`font-mono text-sm font-bold w-16 text-right ${utilidadPercent >= 0 ? "text-green-600 dark:text-green-400" : "text-red-600 dark:text-red-400"}`} data-testid="text-utilidad-percent">
-                    {utilidadPercent.toFixed(2)}%
-                  </span>
-                </div>
-              </div>
+              ))}
             </div>
-          </CardContent>
-        </Card>
-      </div>
+
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-[1fr_auto] border-t pt-3">
+              <span className="font-bold uppercase">Total</span>
+              <span />
+            </div>
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-[1fr_auto] text-sm">
+              <span className="font-bold">Utilidad</span>
+              <span className={`font-mono text-right font-bold ${utilidadPercent >= 0 ? "text-green-600" : "text-red-600"}`} data-testid="text-utilidad-percent">
+                {utilidadPercent.toFixed(2)}%
+              </span>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
     );
   };
 
@@ -491,9 +437,9 @@ export default function BalancePage() {
         title="Balances Financieros"
         description="Estado de resultados mensual y anual"
         actions={
-          <Button variant="outline" data-testid="button-export">
+          <Button variant="outline" data-testid="button-export" onClick={handleExport}>
             <Download className="h-4 w-4 mr-2" />
-            Exportar
+            Exportar PDF
           </Button>
         }
       />

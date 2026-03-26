@@ -363,7 +363,7 @@ export default function PaymentsPage() {
       />
 
       <Dialog open={isDialogOpen} onOpenChange={setIsDialogOpen}>
-        <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
+        <DialogContent className="w-[95vw] max-w-4xl h-[88vh] overflow-hidden">
           <DialogHeader>
             <DialogTitle>Nuevo Pago</DialogTitle>
             <DialogDescription>
@@ -371,8 +371,9 @@ export default function PaymentsPage() {
             </DialogDescription>
           </DialogHeader>
           <Form {...form}>
-            <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
-              <div className="grid gap-4 sm:grid-cols-2">
+            <form onSubmit={form.handleSubmit(onSubmit)} className="flex h-full min-h-0 flex-col">
+              <div className="flex-1 min-h-0 space-y-4 overflow-y-auto pr-1">
+                <div className="grid gap-4 sm:grid-cols-2">
                 <FormField
                   control={form.control}
                   name="supplierId"
@@ -421,104 +422,104 @@ export default function PaymentsPage() {
                     </FormItem>
                   )}
                 />
-              </div>
+                </div>
 
-              {watchSupplierId > 0 && pendingInvoices.length > 0 && (
-                <Card>
-                  <CardContent className="pt-4">
-                    <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
-                      <h4 className="font-medium text-sm flex items-center gap-2">
-                        <FileText className="h-4 w-4" />
-                        Facturas Pendientes
-                      </h4>
-                      {selectedInvoices.size > 0 && (
-                        <Badge variant="default" data-testid="badge-selected-total">
-                          {selectedInvoices.size} seleccionadas: {formatCurrency(totalSelected)}
-                        </Badge>
-                      )}
-                    </div>
-                    <div className="rounded-md border overflow-hidden">
-                      <Table>
-                        <TableHeader>
-                          <TableRow>
-                            <TableHead className="w-10"></TableHead>
-                            <TableHead>Factura</TableHead>
-                            <TableHead>Fecha</TableHead>
-                            <TableHead>Vence</TableHead>
-                            <TableHead className="text-right">Total</TableHead>
-                            <TableHead className="text-right">Saldo</TableHead>
-                            <TableHead className="text-right w-32">A Pagar</TableHead>
-                          </TableRow>
-                        </TableHeader>
-                        <TableBody>
-                          {pendingInvoices.map((inv) => {
-                            const balance = parseFloat(String(inv.balance) || "0");
-                            const isSelected = selectedInvoices.has(inv.id);
-                            const allocatedAmount = selectedInvoices.get(inv.id) || 0;
-                            const isOverdue = inv.dueDate && new Date(inv.dueDate) < new Date();
-                            return (
-                              <TableRow key={inv.id} className={isSelected ? "bg-primary/5" : ""}>
-                                <TableCell>
-                                  <Checkbox
-                                    checked={isSelected}
-                                    onCheckedChange={() => toggleInvoice(inv.id, balance)}
-                                    data-testid={`checkbox-invoice-${inv.id}`}
-                                  />
-                                </TableCell>
-                                <TableCell>
-                                  <span className="font-mono text-sm">{inv.invoiceNumber}</span>
-                                </TableCell>
-                                <TableCell className="text-sm">
-                                  {formatDate(inv.invoiceDate)}
-                                </TableCell>
-                                <TableCell className="text-sm">
-                                  {inv.dueDate ? (
-                                    <span className={isOverdue ? "text-destructive font-medium" : ""}>
-                                      {formatDate(inv.dueDate)}
-                                    </span>
-                                  ) : "-"}
-                                </TableCell>
-                                <TableCell className="text-right font-mono text-sm">
-                                  {formatCurrency(inv.total)}
-                                </TableCell>
-                                <TableCell className="text-right font-mono text-sm text-destructive">
-                                  {formatCurrency(balance)}
-                                </TableCell>
-                                <TableCell className="text-right">
-                                  {isSelected ? (
-                                    <Input
-                                      type="number"
-                                      step="0.01"
-                                      min="0"
-                                      max={balance}
-                                      value={allocatedAmount}
-                                      onChange={(e) => updateInvoiceAmount(inv.id, parseFloat(e.target.value) || 0, balance)}
-                                      className="w-28 text-right font-mono h-8 ml-auto"
-                                      data-testid={`input-invoice-amount-${inv.id}`}
+                {watchSupplierId > 0 && pendingInvoices.length > 0 && (
+                  <Card>
+                    <CardContent className="pt-4">
+                      <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
+                        <h4 className="font-medium text-sm flex items-center gap-2">
+                          <FileText className="h-4 w-4" />
+                          Facturas Pendientes
+                        </h4>
+                        {selectedInvoices.size > 0 && (
+                          <Badge variant="default" data-testid="badge-selected-total">
+                            {selectedInvoices.size} seleccionadas: {formatCurrency(totalSelected)}
+                          </Badge>
+                        )}
+                      </div>
+                      <div className="rounded-md border overflow-auto max-h-56">
+                        <Table>
+                          <TableHeader>
+                            <TableRow>
+                              <TableHead className="w-10"></TableHead>
+                              <TableHead>Factura</TableHead>
+                              <TableHead>Fecha</TableHead>
+                              <TableHead>Vence</TableHead>
+                              <TableHead className="text-right">Total</TableHead>
+                              <TableHead className="text-right">Saldo</TableHead>
+                              <TableHead className="text-right w-32">A Pagar</TableHead>
+                            </TableRow>
+                          </TableHeader>
+                          <TableBody>
+                            {pendingInvoices.map((inv) => {
+                              const balance = parseFloat(String(inv.balance) || "0");
+                              const isSelected = selectedInvoices.has(inv.id);
+                              const allocatedAmount = selectedInvoices.get(inv.id) || 0;
+                              const isOverdue = inv.dueDate && new Date(inv.dueDate) < new Date();
+                              return (
+                                <TableRow key={inv.id} className={isSelected ? "bg-primary/5" : ""}>
+                                  <TableCell>
+                                    <Checkbox
+                                      checked={isSelected}
+                                      onCheckedChange={() => toggleInvoice(inv.id, balance)}
+                                      data-testid={`checkbox-invoice-${inv.id}`}
                                     />
-                                  ) : (
-                                    <span className="text-muted-foreground text-sm">-</span>
-                                  )}
-                                </TableCell>
-                              </TableRow>
-                            );
-                          })}
-                        </TableBody>
-                      </Table>
-                    </div>
-                  </CardContent>
-                </Card>
-              )}
+                                  </TableCell>
+                                  <TableCell>
+                                    <span className="font-mono text-sm">{inv.invoiceNumber}</span>
+                                  </TableCell>
+                                  <TableCell className="text-sm">
+                                    {formatDate(inv.invoiceDate)}
+                                  </TableCell>
+                                  <TableCell className="text-sm">
+                                    {inv.dueDate ? (
+                                      <span className={isOverdue ? "text-destructive font-medium" : ""}>
+                                        {formatDate(inv.dueDate)}
+                                      </span>
+                                    ) : "-"}
+                                  </TableCell>
+                                  <TableCell className="text-right font-mono text-sm">
+                                    {formatCurrency(inv.total)}
+                                  </TableCell>
+                                  <TableCell className="text-right font-mono text-sm text-destructive">
+                                    {formatCurrency(balance)}
+                                  </TableCell>
+                                  <TableCell className="text-right">
+                                    {isSelected ? (
+                                      <Input
+                                        type="number"
+                                        step="0.01"
+                                        min="0"
+                                        max={balance}
+                                        value={allocatedAmount}
+                                        onChange={(e) => updateInvoiceAmount(inv.id, parseFloat(e.target.value) || 0, balance)}
+                                        className="w-28 text-right font-mono h-8 ml-auto"
+                                        data-testid={`input-invoice-amount-${inv.id}`}
+                                      />
+                                    ) : (
+                                      <span className="text-muted-foreground text-sm">-</span>
+                                    )}
+                                  </TableCell>
+                                </TableRow>
+                              );
+                            })}
+                          </TableBody>
+                        </Table>
+                      </div>
+                    </CardContent>
+                  </Card>
+                )}
 
-              {watchSupplierId > 0 && pendingInvoices.length === 0 && (
-                <Card>
-                  <CardContent className="py-6 text-center text-muted-foreground text-sm">
-                    Este proveedor no tiene facturas pendientes de pago
-                  </CardContent>
-                </Card>
-              )}
+                {watchSupplierId > 0 && pendingInvoices.length === 0 && (
+                  <Card>
+                    <CardContent className="py-6 text-center text-muted-foreground text-sm">
+                      Este proveedor no tiene facturas pendientes de pago
+                    </CardContent>
+                  </Card>
+                )}
 
-              <div className="grid gap-4 sm:grid-cols-2">
+                <div className="grid gap-4 sm:grid-cols-2">
                 <FormField
                   control={form.control}
                   name="paymentNumber"
@@ -596,48 +597,49 @@ export default function PaymentsPage() {
                     </FormItem>
                   )}
                 />
+                </div>
+                <FormField
+                  control={form.control}
+                  name="amount"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>
+                        Monto Total *
+                        {selectedInvoices.size > 0 && (
+                          <span className="text-muted-foreground font-normal ml-2">
+                            (calculado de facturas seleccionadas)
+                          </span>
+                        )}
+                      </FormLabel>
+                      <FormControl>
+                        <Input
+                          type="number"
+                          step="0.01"
+                          min="0"
+                          {...field}
+                          className="font-mono"
+                          data-testid="input-amount"
+                        />
+                      </FormControl>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+                <FormField
+                  control={form.control}
+                  name="notes"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>Notas</FormLabel>
+                      <FormControl>
+                        <Textarea {...field} placeholder="Notas adicionales..." rows={2} data-testid="input-notes" />
+                      </FormControl>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
               </div>
-              <FormField
-                control={form.control}
-                name="amount"
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>
-                      Monto Total *
-                      {selectedInvoices.size > 0 && (
-                        <span className="text-muted-foreground font-normal ml-2">
-                          (calculado de facturas seleccionadas)
-                        </span>
-                      )}
-                    </FormLabel>
-                    <FormControl>
-                      <Input
-                        type="number"
-                        step="0.01"
-                        min="0"
-                        {...field}
-                        className="font-mono"
-                        data-testid="input-amount"
-                      />
-                    </FormControl>
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
-              <FormField
-                control={form.control}
-                name="notes"
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>Notas</FormLabel>
-                    <FormControl>
-                      <Textarea {...field} placeholder="Notas adicionales..." rows={2} data-testid="input-notes" />
-                    </FormControl>
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
-              <div className="flex justify-end gap-2 pt-4">
+              <div className="flex justify-end gap-2 border-t bg-background pt-3 mt-3">
                 <Button type="button" variant="outline" onClick={closeDialog} data-testid="button-cancel">
                   Cancelar
                 </Button>

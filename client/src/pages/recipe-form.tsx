@@ -26,20 +26,51 @@ import {
 import { Textarea } from "@/components/ui/textarea";
 import { Separator } from "@/components/ui/separator";
 import { Badge } from "@/components/ui/badge";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { formatCurrency, formatPercentage, formatNumber } from "@/lib/formatters";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Plus, Trash2, TrendingUp, DollarSign, Percent, Package, ChefHat, Upload, Image, Check } from "lucide-react";
+import { Plus, Trash2, TrendingUp, DollarSign, Percent, Package, ChefHat, Upload, Check, ChevronsUpDown } from "lucide-react";
 import type { RecipeCategory, Supply, UnitOfMeasure, Recipe } from "@shared/schema";
 
 interface SupplyWithUnit extends Supply {
   unitOfMeasure?: UnitOfMeasure | null;
+  lastPurchaseUnitCost?: string | number | null;
+  lastPurchaseValue?: string | number | null;
+  lastPurchaseQuantity?: string | number | null;
 }
 
 interface RecipeWithCategory extends Recipe {
   category?: RecipeCategory | null;
 }
+
+const getSubRecipeUnitLabel = (recipe: RecipeWithCategory, units: UnitOfMeasure[]) => {
+  if (!recipe.yieldUnit) return "u";
+  const normalizedYieldUnit = recipe.yieldUnit.toLowerCase();
+  const matchedUnit = units.find(
+    (unit) => unit.abbreviation?.toLowerCase() === normalizedYieldUnit || unit.name.toLowerCase() === normalizedYieldUnit,
+  );
+  return matchedUnit?.abbreviation || matchedUnit?.name || recipe.yieldUnit;
+};
+
+const getSubRecipeUnitCost = (recipe?: RecipeWithCategory | null) => {
+  if (!recipe) return 0;
+  const totalCost = parseFloat(String(recipe.totalCost) || "0");
+  const usefulYield = parseFloat(String(recipe.usefulYield) || "0");
+  return usefulYield > 0 ? totalCost / usefulYield : totalCost;
+};
+
+const getSupplyUnitCost = (supply?: SupplyWithUnit | null) => {
+  if (!supply) return 0;
+  const lastPurchaseUnitCost = parseFloat(String(supply.lastPurchaseUnitCost) || "0");
+  if (lastPurchaseUnitCost > 0) return lastPurchaseUnitCost;
+  const lastPurchaseValue = parseFloat(String(supply.lastPurchaseValue ?? supply.lastCost) || "0");
+  const lastPurchaseQty = parseFloat(String(supply.lastPurchaseQuantity ?? supply.lastQuantity) || "0");
+  if (lastPurchaseValue > 0 && lastPurchaseQty > 0) return lastPurchaseValue / lastPurchaseQty;
+  return parseFloat(String(supply.unitCost) || "0");
+};
 
 const ingredientSchema = z.object({
   type: z.enum(["supply", "subrecipe"]).default("supply"),
@@ -76,6 +107,7 @@ export default function RecipeFormPage() {
   const [photoFile, setPhotoFile] = useState<File | null>(null);
   const [wasteMethod, setWasteMethod] = useState<"individual" | "total">("individual");
   const [confirmedIngredients, setConfirmedIngredients] = useState<Set<number>>(new Set());
+  const [openIngredientPickerIndex, setOpenIngredientPickerIndex] = useState<number | null>(null);
 
   const { data: existingRecipe } = useQuery<Recipe & { ingredients?: Array<{
     id: number;
@@ -114,6 +146,27 @@ export default function RecipeFormPage() {
     select: (data: RecipeWithCategory[]) => data.filter((r: RecipeWithCategory) => r.recipeType === "sub" && r.active),
   });
 
+  const ingredientOptions = useMemo(() => {
+    const supplyOptions = supplies
+      .filter((s) => s.active)
+      .map((s) => ({
+        value: `supply:${s.id}`,
+        label: s.name,
+        type: "supply" as const,
+        unitLabel: s.unitOfMeasure ? `${formatCurrency(getSupplyUnitCost(s))}/${s.unitOfMeasure.abbreviation}` : null,
+      }));
+
+    const subRecipeOptions = (isSubRecipe ? [] : subRecipes)
+      .map((sr) => ({
+        value: `subrecipe:${sr.id}`,
+        label: sr.name,
+        type: "subrecipe" as const,
+        unitLabel: `${formatCurrency(getSubRecipeUnitCost(sr))}/${getSubRecipeUnitLabel(sr, units)}`,
+      }));
+
+    return { supplyOptions, subRecipeOptions };
+  }, [supplies, subRecipes, isSubRecipe, units]);
+
   const form = useForm<FormData>({
     resolver: zodResolver(formSchema),
     defaultValues: {
@@ -127,6 +180,11 @@ export default function RecipeFormPage() {
       yieldUnit: "",
       ingredients: [{ type: "supply", supplyId: 0, subRecipeId: undefined, quantityTotal: 1, quantityUseful: 0, wastePercentage: 0 }],
     },
+  });
+
+  const { fields: ingredientFields, append: appendIngredient, remove: removeIngredient, replace: replaceIngredients } = useFieldArray({
+    control: form.control,
+    name: "ingredients",
   });
 
   useEffect(() => {
@@ -153,6 +211,7 @@ export default function RecipeFormPage() {
         yieldUnit: existingRecipe.yieldUnit || "",
         ingredients: loadedIngredients,
       });
+      replaceIngredients(loadedIngredients);
 
       if (loadedIngredients.length > 0) {
         const confirmed = new Set<number>();
@@ -169,12 +228,7 @@ export default function RecipeFormPage() {
         setPhotoPreview(existingRecipe.photoUrl);
       }
     }
-  }, [existingRecipe]);
-
-  const { fields: ingredientFields, append: appendIngredient, remove: removeIngredient } = useFieldArray({
-    control: form.control,
-    name: "ingredients",
-  });
+  }, [existingRecipe, form, replaceIngredients]);
 
   const watchIngredients = useWatch({
     control: form.control,
@@ -196,17 +250,17 @@ export default function RecipeFormPage() {
   const getIngredientUnitCost = (ing: FormData["ingredients"][number]) => {
     if (ing.type === "subrecipe" && ing.subRecipeId) {
       const sr = subRecipes.find((r) => r.id === Number(ing.subRecipeId));
-      if (sr) return parseFloat(String(sr.totalCost) || "0");
+      if (sr) return getSubRecipeUnitCost(sr);
     }
     if (ing.supplyId) {
       const supply = supplies.find((s) => s.id === Number(ing.supplyId));
-      if (supply) return parseFloat(String(supply.unitCost) || "0");
+      if (supply) return getSupplyUnitCost(supply);
     }
     return 0;
   };
 
   const getIngredientCost = (index: number) => {
-    const ing = watchIngredients[index];
+    const ing = watchIngredients?.[index] ?? form.getValues(`ingredients.${index}`);
     if (!ing) return 0;
     const unitCost = getIngredientUnitCost(ing);
     const qty = Number(ing.quantityTotal) || 0;
@@ -216,7 +270,7 @@ export default function RecipeFormPage() {
   const calculations = useMemo(() => {
     // Costo total = suma de (costo unitario x cantidad) de cada ingrediente valido
     let totalCost = 0;
-    watchIngredients.forEach((ing, idx) => {
+    (watchIngredients || []).forEach((ing, idx) => {
       const hasValid =
         (ing.type === "subrecipe" && ing.subRecipeId && Number(ing.subRecipeId) > 0) ||
         (ing.type === "supply" && ing.supplyId && Number(ing.supplyId) > 0);
@@ -385,7 +439,7 @@ export default function RecipeFormPage() {
   };
 
   const handleIngredientWasteCalc = (index: number) => {
-    const ing = watchIngredients[index];
+    const ing = watchIngredients?.[index] ?? form.getValues(`ingredients.${index}`);
     if (ing && ing.quantityTotal > 0 && ing.quantityUseful > 0) {
       const waste = ((ing.quantityTotal - ing.quantityUseful) / ing.quantityTotal) * 100;
       form.setValue(`ingredients.${index}.wastePercentage`, Math.round(waste * 100) / 100);
@@ -585,32 +639,20 @@ export default function RecipeFormPage() {
                       data-testid="button-add-ingredient"
                     >
                       <Package className="h-4 w-4 mr-1" />
-                      Insumo
+                      Ingrediente
                     </Button>
-                    {!isSubRecipe && subRecipes.length > 0 && (
-                      <Button
-                        type="button"
-                        variant="outline"
-                        size="sm"
-                        onClick={() => appendIngredient({ type: "subrecipe", supplyId: undefined, subRecipeId: 0, quantityTotal: 1, quantityUseful: 0, wastePercentage: 0 })}
-                        data-testid="button-add-subrecipe"
-                      >
-                        <ChefHat className="h-4 w-4 mr-1" />
-                        Sub-Receta
-                      </Button>
-                    )}
                   </div>
                 </CardHeader>
                 <CardContent className="space-y-4">
                   {ingredientFields.map((field, index) => {
-                    const ing = watchIngredients[index];
+                    const ing = watchIngredients?.[index] ?? form.getValues(`ingredients.${index}`);
                     const isSubRecipeIng = ing?.type === "subrecipe";
                     const supplyId = Number(ing?.supplyId) || 0;
                     const supply = supplies.find(s => s.id === supplyId);
                     const subRecipe = isSubRecipeIng ? subRecipes.find(r => r.id === Number(ing?.subRecipeId)) : null;
                     const unitCostDisplay = isSubRecipeIng
-                      ? (subRecipe ? parseFloat(String(subRecipe.totalCost) || "0") : 0)
-                      : parseFloat(String(supply?.unitCost) || "0");
+                      ? getSubRecipeUnitCost(subRecipe)
+                      : getSupplyUnitCost(supply);
                     
                     const isConfirmed = confirmedIngredients.has(index);
                     const hasValidItem = isSubRecipeIng
@@ -678,77 +720,116 @@ export default function RecipeFormPage() {
                           </div>
                         </div>
                         <div className="grid gap-3 sm:grid-cols-2">
-                          {isSubRecipeIng ? (
-                            <FormField
-                              control={form.control}
-                              name={`ingredients.${index}.subRecipeId`}
-                              render={({ field: ingField }) => (
-                                <FormItem>
-                                  <FormLabel>Sub-Receta *</FormLabel>
-                                  <Select
-                                    onValueChange={ingField.onChange}
-                                    value={ingField.value?.toString() || ""}
+                          <FormField
+                            control={form.control}
+                            name={`ingredients.${index}.supplyId`}
+                            render={({ field: hiddenSupplyField }) => (
+                              <input
+                                type="hidden"
+                                value={hiddenSupplyField.value ?? ""}
+                                onChange={hiddenSupplyField.onChange}
+                              />
+                            )}
+                          />
+                          <FormField
+                            control={form.control}
+                            name={`ingredients.${index}.subRecipeId`}
+                            render={({ field: hiddenSubRecipeField }) => (
+                              <input
+                                type="hidden"
+                                value={hiddenSubRecipeField.value ?? ""}
+                                onChange={hiddenSubRecipeField.onChange}
+                              />
+                            )}
+                          />
+                          <FormItem>
+                            <FormLabel>Ingrediente *</FormLabel>
+                            <Popover open={openIngredientPickerIndex === index} onOpenChange={(open) => setOpenIngredientPickerIndex(open ? index : null)}>
+                              <PopoverTrigger asChild>
+                                <FormControl>
+                                  <Button
+                                    variant="outline"
+                                    role="combobox"
+                                    className="w-full justify-between"
+                                    data-testid={`select-ingredient-${index}`}
                                   >
-                                    <FormControl>
-                                      <SelectTrigger data-testid={`select-subrecipe-${index}`}>
-                                        <SelectValue placeholder="Seleccionar sub-receta" />
-                                      </SelectTrigger>
-                                    </FormControl>
-                                    <SelectContent>
-                                      {subRecipes.map((sr) => (
-                                        <SelectItem key={sr.id} value={sr.id.toString()}>
-                                          <div className="flex items-center gap-2">
-                                            <ChefHat className="h-3 w-3" />
-                                            {sr.name}
+                                    <span className="truncate">
+                                      {(() => {
+                                        if (isSubRecipeIng && ing?.subRecipeId) {
+                                          const selected = ingredientOptions.subRecipeOptions.find((option) => option.value === `subrecipe:${ing.subRecipeId}`);
+                                          return selected?.label || "Seleccionar insumo o sub-receta";
+                                        }
+                                        if (ing?.supplyId) {
+                                          const selected = ingredientOptions.supplyOptions.find((option) => option.value === `supply:${ing.supplyId}`);
+                                          return selected?.label || "Seleccionar insumo o sub-receta";
+                                        }
+                                        return "Seleccionar insumo o sub-receta";
+                                      })()}
+                                    </span>
+                                    <ChevronsUpDown className="h-4 w-4 shrink-0 opacity-50" />
+                                  </Button>
+                                </FormControl>
+                              </PopoverTrigger>
+                              <PopoverContent className="w-[480px] p-0" align="start">
+                                <Command>
+                                  <CommandInput placeholder="Buscar insumo o sub-receta..." />
+                                  <CommandList>
+                                    <CommandEmpty>Sin resultados</CommandEmpty>
+                                    <CommandGroup heading="Insumos">
+                                      {ingredientOptions.supplyOptions.map((option) => (
+                                        <CommandItem
+                                          key={option.value}
+                                          value={`${option.label} insumo ${option.unitLabel || ""}`}
+                                          onSelect={() => {
+                                            const selectedId = Number(option.value.split(":")[1]);
+                                            form.setValue(`ingredients.${index}.type`, "supply");
+                                            form.setValue(`ingredients.${index}.supplyId`, selectedId);
+                                            form.setValue(`ingredients.${index}.subRecipeId`, undefined);
+                                            setOpenIngredientPickerIndex(null);
+                                          }}
+                                        >
+                                          <Package className="h-3 w-3" />
+                                          <span>{option.label}</span>
+                                          <Badge variant="outline" className="ml-1 text-[10px]">INSUMO</Badge>
+                                          {option.unitLabel && (
                                             <Badge variant="outline" className="ml-1 font-mono text-xs">
-                                              {formatCurrency(sr.totalCost)}/u
+                                              {option.unitLabel}
                                             </Badge>
-                                          </div>
-                                        </SelectItem>
+                                          )}
+                                        </CommandItem>
                                       ))}
-                                    </SelectContent>
-                                  </Select>
-                                  <FormMessage />
-                                </FormItem>
-                              )}
-                            />
-                          ) : (
-                            <FormField
-                              control={form.control}
-                              name={`ingredients.${index}.supplyId`}
-                              render={({ field: ingField }) => (
-                                <FormItem>
-                                  <FormLabel>Insumo *</FormLabel>
-                                  <Select
-                                    onValueChange={ingField.onChange}
-                                    value={ingField.value?.toString() || ""}
-                                  >
-                                    <FormControl>
-                                      <SelectTrigger data-testid={`select-supply-${index}`}>
-                                        <SelectValue placeholder="Seleccionar insumo" />
-                                      </SelectTrigger>
-                                    </FormControl>
-                                    <SelectContent>
-                                      {supplies.filter(s => s.active).map((supply) => (
-                                        <SelectItem key={supply.id} value={supply.id.toString()}>
-                                          <div className="flex items-center gap-2">
-                                            <Package className="h-3 w-3" />
-                                            {supply.name}
-                                            {supply.unitOfMeasure && (
+                                    </CommandGroup>
+                                    {!isSubRecipe && (
+                                      <CommandGroup heading="Sub-recetas">
+                                        {ingredientOptions.subRecipeOptions.map((option) => (
+                                          <CommandItem
+                                            key={option.value}
+                                            value={`${option.label} sub-receta ${option.unitLabel || ""}`}
+                                            onSelect={() => {
+                                              const selectedId = Number(option.value.split(":")[1]);
+                                              form.setValue(`ingredients.${index}.type`, "subrecipe");
+                                              form.setValue(`ingredients.${index}.subRecipeId`, selectedId);
+                                              form.setValue(`ingredients.${index}.supplyId`, undefined);
+                                              setOpenIngredientPickerIndex(null);
+                                            }}
+                                          >
+                                            <ChefHat className="h-3 w-3" />
+                                            <span>{option.label}</span>
+                                            <Badge variant="secondary" className="ml-1 text-[10px]">SUB-RECETA</Badge>
+                                            {option.unitLabel && (
                                               <Badge variant="outline" className="ml-1 font-mono text-xs">
-                                                {formatCurrency(supply.unitCost)}/{supply.unitOfMeasure.abbreviation}
+                                                {option.unitLabel}
                                               </Badge>
                                             )}
-                                          </div>
-                                        </SelectItem>
-                                      ))}
-                                    </SelectContent>
-                                  </Select>
-                                  <FormMessage />
-                                </FormItem>
-                              )}
-                            />
-                          )}
+                                          </CommandItem>
+                                        ))}
+                                      </CommandGroup>
+                                    )}
+                                  </CommandList>
+                                </Command>
+                              </PopoverContent>
+                            </Popover>
+                          </FormItem>
                           <FormField
                             control={form.control}
                             name={`ingredients.${index}.quantityTotal`}

@@ -469,6 +469,8 @@ export default function InvoiceFormPage() {
       queryClient.invalidateQueries({ queryKey: ["/api/invoices"] });
       queryClient.invalidateQueries({ queryKey: ["/api/invoices/stats"] });
       queryClient.invalidateQueries({ queryKey: ["/api/supplies"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/recipes"], exact: false });
+      queryClient.invalidateQueries({ queryKey: ["/api/recipes/stats"] });
       toast({ title: "Factura creada correctamente" });
       navigate("/facturas");
     },

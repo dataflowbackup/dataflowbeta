@@ -46,6 +46,10 @@ interface SupplyWithRelations extends Supply {
   rubro?: Rubro | null;
   subRubro?: SubRubro | null;
   unitOfMeasure?: UnitOfMeasure | null;
+  lastPurchaseValue?: string | number | null;
+  lastPurchaseQuantity?: string | number | null;
+  lastPurchaseUnitCost?: string | number | null;
+  lastPurchaseDate?: Date | string | null;
 }
 
 const formSchema = z.object({
@@ -353,7 +357,7 @@ export default function SuppliesPage() {
       key: "lastCost",
       header: "Costo Ult. Compra",
       cell: (row) => {
-        const lastCost = parseFloat(String(row.lastCost) || "0");
+        const lastCost = parseFloat(String(row.lastPurchaseValue ?? row.lastCost) || "0");
         return lastCost > 0 ? (
           <span className="font-mono text-sm">{formatCurrency(lastCost)}</span>
         ) : (
@@ -365,7 +369,7 @@ export default function SuppliesPage() {
       key: "lastQuantity",
       header: "Cant. Ult. Compra",
       cell: (row) => {
-        const lastQty = parseFloat(String(row.lastQuantity) || "0");
+        const lastQty = parseFloat(String(row.lastPurchaseQuantity ?? row.lastQuantity) || "0");
         return lastQty > 0 ? (
           <span className="font-mono text-sm">
             {lastQty} {row.unitOfMeasure?.abbreviation || "u"}
@@ -379,9 +383,10 @@ export default function SuppliesPage() {
       key: "unitCost",
       header: "Costo x UM",
       cell: (row) => {
-        const lastCost = parseFloat(String(row.lastCost) || "0");
-        const lastQty = parseFloat(String(row.lastQuantity) || "0");
-        const costPerUnit = lastQty > 0 ? lastCost / lastQty : parseFloat(String(row.unitCost) || "0");
+        const lastUnitCost = parseFloat(String(row.lastPurchaseUnitCost) || "0");
+        const lastCost = parseFloat(String(row.lastPurchaseValue ?? row.lastCost) || "0");
+        const lastQty = parseFloat(String(row.lastPurchaseQuantity ?? row.lastQuantity) || "0");
+        const costPerUnit = lastUnitCost > 0 ? lastUnitCost : (lastQty > 0 ? lastCost / lastQty : parseFloat(String(row.unitCost) || "0"));
         return costPerUnit > 0 ? (
           <div className="text-sm">
             <span className="font-mono font-medium">{formatCurrency(costPerUnit)}</span>

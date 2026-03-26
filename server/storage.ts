@@ -1,5 +1,5 @@
 import { db } from "./db";
-import { eq, and, desc, gte, lte, sql, isNull, isNotNull } from "drizzle-orm";
+import { eq, and, desc, gte, lte, sql, isNull, isNotNull, inArray } from "drizzle-orm";
 import {
   users,
   clients,
@@ -349,6 +349,184 @@ export interface IStorage {
 }
 
 export class DatabaseStorage implements IStorage {
+  private async recalculateAllRecipeCostsForClient(
+    clientId: number,
+    tx: typeof db,
+  ): Promise<void> {
+    const toFinite = (value: number, fallback = 0) => (Number.isFinite(value) ? value : fallback);
+    const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
+
+    // Memoize to avoid recalculating the same recipe multiple times (nested sub-recipes).
+    const memo = new Map<number, { totalCost: number; usefulYield: number }>();
+    const visiting = new Set<number>();
+
+    const computeUnitCostForRecipe = (recipeTotalCost: number, usefulYield: number) => {
+      return usefulYield > 0 ? recipeTotalCost / usefulYield : recipeTotalCost;
+    };
+
+    // Same source-of-truth used by Supplies table: latest invoice item by date/id.
+    const latestPurchaseRows = await tx
+      .select({
+        supplyId: invoiceItems.supplyId,
+        quantity: invoiceItems.quantity,
+        subtotal: invoiceItems.subtotal,
+        unitPrice: invoiceItems.unitPrice,
+        invoiceDate: invoices.invoiceDate,
+        itemId: invoiceItems.id,
+      })
+      .from(invoiceItems)
+      .innerJoin(invoices, eq(invoiceItems.invoiceId, invoices.id))
+      .where(and(eq(invoices.clientId, clientId), isNotNull(invoiceItems.supplyId)))
+      .orderBy(desc(invoices.invoiceDate), desc(invoiceItems.id));
+
+    const latestPurchaseUnitCostBySupplyId = new Map<number, number>();
+    for (const row of latestPurchaseRows) {
+      const supplyId = row.supplyId;
+      if (!supplyId || latestPurchaseUnitCostBySupplyId.has(supplyId)) continue;
+
+      const qty = parseFloat(String(row.quantity ?? 0)) || 0;
+      const subtotal = parseFloat(String(row.subtotal ?? 0)) || 0;
+      const unitPrice = parseFloat(String(row.unitPrice ?? 0)) || 0;
+      const normalizedUnitCost = unitPrice > 0 ? unitPrice : (qty > 0 ? subtotal / qty : 0);
+      latestPurchaseUnitCostBySupplyId.set(supplyId, normalizedUnitCost);
+    }
+
+    const computeAndPersist = async (recipeId: number): Promise<{ totalCost: number; usefulYield: number }> => {
+      const memoEntry = memo.get(recipeId);
+      if (memoEntry) return memoEntry;
+
+      if (visiting.has(recipeId)) {
+        // Prevent hard-fail on cyclic references; keep endpoint responsive.
+        const zero = { totalCost: 0, usefulYield: 0 };
+        memo.set(recipeId, zero);
+        return zero;
+      }
+      visiting.add(recipeId);
+
+      const [recipe] = await tx.select().from(recipes).where(and(eq(recipes.id, recipeId), eq(recipes.clientId, clientId)));
+      if (!recipe) {
+        // If the recipe disappeared, return zeros to avoid crashing.
+        const zero = { totalCost: 0, usefulYield: 0 };
+        memo.set(recipeId, zero);
+        visiting.delete(recipeId);
+        return zero;
+      }
+
+      const ingredientRows = await tx
+        .select()
+        .from(recipeIngredients)
+        .where(eq(recipeIngredients.recipeId, recipeId));
+
+      const supplyIds = Array.from(
+        new Set(
+          ingredientRows
+            .map((i) => i.supplyId)
+            .filter((id): id is number => id !== null && id !== undefined),
+        ),
+      );
+
+      const suppliesById = new Map<number, (typeof supplies) & { lastCost?: any; unitCost?: any }>();
+      if (supplyIds.length > 0) {
+        const supplyRows = await tx.select().from(supplies).where(and(eq(supplies.clientId, clientId), inArray(supplies.id, supplyIds)));
+        for (const s of supplyRows) suppliesById.set(s.id, s);
+      }
+
+      let totalCost = 0;
+      const ingredientUpdates: Array<{ ingredientId: number; currentCost: string; totalCost: string }> = [];
+
+      for (const ing of ingredientRows) {
+        const quantityTotal = parseFloat(String(ing.quantityTotal ?? 0)) || 0;
+
+        let unitCost = 0;
+        if (ing.supplyId) {
+          const s = suppliesById.get(ing.supplyId);
+          if (s) {
+            const latestPurchaseUnitCost = latestPurchaseUnitCostBySupplyId.get(ing.supplyId) || 0;
+            const lastCost = parseFloat(String(s.lastCost ?? 0)) || 0;
+            const cppUnitCost = parseFloat(String(s.unitCost ?? 0)) || 0;
+            unitCost = latestPurchaseUnitCost > 0 ? latestPurchaseUnitCost : (lastCost > 0 ? lastCost : cppUnitCost);
+          }
+        } else if (ing.subRecipeId) {
+          const sub = await computeAndPersist(ing.subRecipeId);
+          unitCost = computeUnitCostForRecipe(sub.totalCost, sub.usefulYield);
+        }
+
+        const lineTotal = unitCost * quantityTotal;
+        totalCost += lineTotal;
+
+        ingredientUpdates.push({
+          ingredientId: ing.id,
+          currentCost: unitCost.toFixed(4),
+          totalCost: lineTotal.toFixed(4),
+        });
+      }
+
+      // Persist ingredient current costs.
+      for (const update of ingredientUpdates) {
+        await tx
+          .update(recipeIngredients)
+          .set({
+            currentCost: update.currentCost,
+            totalCost: update.totalCost,
+          })
+          .where(eq(recipeIngredients.id, update.ingredientId));
+      }
+
+      // Persist recipe totals.
+      const newTotalCost = clamp(toFinite(parseFloat(totalCost.toFixed(4))), -99999999.9999, 99999999.9999);
+      const usefulYield = parseFloat(String(recipe.usefulYield ?? 0)) || 0;
+
+      if (recipe.recipeType === "plato") {
+        const salePriceWithTax = parseFloat(String(recipe.salePriceWithTax ?? 0)) || 0;
+        const salePrice = salePriceWithTax > 0 ? salePriceWithTax / 1.21 : (parseFloat(String(recipe.salePrice ?? 0)) || 0);
+
+        const cmvPercentageRaw = salePrice > 0 ? (newTotalCost / salePrice) * 100 : 0;
+        const marginRaw = salePrice - newTotalCost;
+        const marginPercentageRaw = salePrice > 0 ? (marginRaw / salePrice) * 100 : 0;
+        const markupRaw = newTotalCost > 0 ? (marginRaw / newTotalCost) * 100 : 0;
+
+        const cmvPercentage = clamp(toFinite(cmvPercentageRaw), -999.99, 999.99);
+        const margin = clamp(toFinite(marginRaw), -9999999999.99, 9999999999.99);
+        const marginPercentage = clamp(toFinite(marginPercentageRaw), -999.99, 999.99);
+        const markup = clamp(toFinite(markupRaw), -999.99, 999.99);
+
+        await tx
+          .update(recipes)
+          .set({
+            totalCost: newTotalCost.toFixed(4),
+            cmvPercentage: cmvPercentage.toFixed(2),
+            margin: margin.toFixed(2),
+            marginPercentage: marginPercentage.toFixed(2),
+            markup: markup.toFixed(2),
+            updatedAt: new Date(),
+          })
+          .where(and(eq(recipes.id, recipeId), eq(recipes.clientId, clientId)));
+      } else {
+        await tx
+          .update(recipes)
+          .set({
+            totalCost: newTotalCost.toFixed(4),
+            updatedAt: new Date(),
+          })
+          .where(and(eq(recipes.id, recipeId), eq(recipes.clientId, clientId)));
+      }
+
+      const result = { totalCost: newTotalCost, usefulYield };
+      memo.set(recipeId, result);
+      visiting.delete(recipeId);
+      return result;
+    };
+
+    const allRecipeIds = await tx
+      .select({ id: recipes.id })
+      .from(recipes)
+      .where(eq(recipes.clientId, clientId));
+
+    for (const r of allRecipeIds) {
+      await computeAndPersist(r.id);
+    }
+  }
+
   async upsertUser(userData: UpsertUser): Promise<User> {
     // First check if user exists by id or email
     const existingById = userData.id ? await db.select().from(users).where(eq(users.id, userData.id)).then(r => r[0]) : null;
@@ -603,11 +781,47 @@ export class DatabaseStorage implements IStorage {
       .leftJoin(unitsOfMeasure, eq(supplies.unitOfMeasureId, unitsOfMeasure.id))
       .where(eq(supplies.clientId, clientId))
       .orderBy(supplies.name);
+    const latestPurchaseRows = await db
+      .select({
+        supplyId: invoiceItems.supplyId,
+        invoiceDate: invoices.invoiceDate,
+        quantity: invoiceItems.quantity,
+        unitPrice: invoiceItems.unitPrice,
+        subtotal: invoiceItems.subtotal,
+      })
+      .from(invoiceItems)
+      .innerJoin(invoices, eq(invoiceItems.invoiceId, invoices.id))
+      .where(and(eq(invoices.clientId, clientId), isNotNull(invoiceItems.supplyId)))
+      .orderBy(desc(invoices.invoiceDate), desc(invoiceItems.id));
+
+    const latestPurchaseBySupplyId = new Map<number, {
+      invoiceDate: string | null;
+      quantity: string;
+      unitPrice: string;
+      subtotal: string;
+    }>();
+
+    for (const row of latestPurchaseRows) {
+      const supplyId = row.supplyId;
+      if (!supplyId || latestPurchaseBySupplyId.has(supplyId)) continue;
+
+      latestPurchaseBySupplyId.set(supplyId, {
+        invoiceDate: row.invoiceDate,
+        quantity: String(row.quantity ?? "0"),
+        unitPrice: String(row.unitPrice ?? "0"),
+        subtotal: String(row.subtotal ?? "0"),
+      });
+    }
+
     return rows.map(r => ({
       ...r.supply,
       rubro: r.rubro || null,
       subRubro: r.subRubro || null,
       unitOfMeasure: r.unitOfMeasure || null,
+      lastPurchaseValue: latestPurchaseBySupplyId.get(r.supply.id)?.subtotal ?? null,
+      lastPurchaseQuantity: latestPurchaseBySupplyId.get(r.supply.id)?.quantity ?? null,
+      lastPurchaseUnitCost: latestPurchaseBySupplyId.get(r.supply.id)?.unitPrice ?? null,
+      lastPurchaseDate: latestPurchaseBySupplyId.get(r.supply.id)?.invoiceDate ?? null,
     }));
   }
 
@@ -741,8 +955,8 @@ export class DatabaseStorage implements IStorage {
         updatedAt: new Date(),
       };
       
-      if (invoice.date) {
-        const parsedDate = new Date(invoice.date);
+      if (invoice.invoiceDate) {
+        const parsedDate = new Date(invoice.invoiceDate);
         if (!isNaN(parsedDate.getTime())) {
           const existingPurchaseDate = currentSupply.lastPurchaseDate ? new Date(currentSupply.lastPurchaseDate) : null;
           if (!existingPurchaseDate || parsedDate >= existingPurchaseDate) {
@@ -781,6 +995,12 @@ export class DatabaseStorage implements IStorage {
     for (const tax of taxItems) {
       await db.insert(invoiceTaxes).values({ ...tax, invoiceId: newInvoice.id });
     }
+
+    // Keep recipe totals in sync with updated supply costs.
+    await db.transaction(async (tx) => {
+      // Recompute for all recipes in this client (platos and sub-recetas).
+      await this.recalculateAllRecipeCostsForClient(invoice.clientId, tx);
+    });
     
     return newInvoice;
   }
@@ -895,6 +1115,11 @@ export class DatabaseStorage implements IStorage {
       .where(and(eq(invoices.id, invoiceId), eq(invoices.clientId, clientId)))
       .returning();
     
+    // Keep recipe totals in sync with reverted supply costs.
+    await db.transaction(async (tx) => {
+      await this.recalculateAllRecipeCostsForClient(clientId, tx);
+    });
+
     return updated;
   }
 
@@ -1266,12 +1491,36 @@ export class DatabaseStorage implements IStorage {
     const startDate = `${year}-01-01`;
     const endDate = `${year}-12-31`;
     
-    const allGroups = await db.select().from(categoryGroups)
-      .where(eq(categoryGroups.clientId, clientId))
-      .orderBy(categoryGroups.order, categoryGroups.name);
+    const allFinancialGroups = await db
+      .select()
+      .from(financialGroups)
+      .where(and(eq(financialGroups.clientId, clientId), eq(financialGroups.active, true)))
+      .orderBy(financialGroups.displayOrder, financialGroups.name);
     
-    const allCategories = await db.select().from(transactionCategories)
-      .where(eq(transactionCategories.clientId, clientId));
+    const allCategories = await db
+      .select()
+      .from(transactionCategories)
+      .where(and(eq(transactionCategories.clientId, clientId), eq(transactionCategories.active, true)));
+
+    // Compatibilidad: algunos clientes pueden tener categorías viejas con groupId
+    // (tabla category_groups). Mapeamos por nombre+tipo para no perder datos.
+    const legacyGroups = await db
+      .select()
+      .from(categoryGroups)
+      .where(eq(categoryGroups.clientId, clientId));
+
+    const financialByNormalizedKey = new Map<string, typeof allFinancialGroups[number]>();
+    for (const fg of allFinancialGroups) {
+      const key = `${String(fg.type || "").toLowerCase()}::${String(fg.name || "").trim().toLowerCase()}`;
+      financialByNormalizedKey.set(key, fg);
+    }
+
+    const legacyToFinancialId = new Map<number, number>();
+    for (const lg of legacyGroups) {
+      const key = `${String(lg.type || "").toLowerCase()}::${String(lg.name || "").trim().toLowerCase()}`;
+      const match = financialByNormalizedKey.get(key);
+      if (match) legacyToFinancialId.set(lg.id, match.id);
+    }
     
     let transactionsQuery = db.select().from(transactions)
       .where(and(
@@ -1318,8 +1567,12 @@ export class DatabaseStorage implements IStorage {
       }
     }
     
-    const groups = allGroups.map(group => {
-      const groupCategories = allCategories.filter(c => c.groupId === group.id);
+    const groups = allFinancialGroups.map(group => {
+      const groupCategories = allCategories.filter((c) => {
+        if (c.financialGroupId === group.id) return true;
+        const mappedFinancialId = c.groupId ? legacyToFinancialId.get(c.groupId) : undefined;
+        return mappedFinancialId === group.id;
+      });
       const groupMonthlyTotals: Record<number, number> = {};
       
       for (let m = 1; m <= 12; m++) {
