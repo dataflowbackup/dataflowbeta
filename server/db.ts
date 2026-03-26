@@ -2,7 +2,9 @@ import { createRequire } from "node:module";
 import path from "node:path";
 import { Pool } from "pg";
 import { drizzle as drizzlePg } from "drizzle-orm/node-postgres";
-import { drizzle as drizzleLibsql } from "drizzle-orm/libsql";
+// No importar `drizzle-orm/libsql` (index): su driver hace `import "@libsql/client"` al cargar el módulo
+// y en Netlify/Lambda eso revienta con @libsql/linux-x64-gnu. `driver-core` solo construye la sesión con el client que vos pasás.
+import { construct as constructLibsqlDb } from "drizzle-orm/libsql/driver-core";
 import * as schema from "@shared/schema";
 
 /**
@@ -60,7 +62,7 @@ if (useLibsql) {
     : (require("@libsql/client/web") as typeof import("@libsql/client/web"));
 
   pool = (libsqlMod as any).createClient({ url: databaseUrl, authToken }) as unknown as Pool;
-  db = drizzleLibsql(pool as any, { schema: schema as any }) as unknown as ReturnType<typeof drizzlePg>;
+  db = constructLibsqlDb(pool as any, { schema: schema as any }) as unknown as ReturnType<typeof drizzlePg>;
 } else if (useNeonServerless) {
   console.log("[db] Connecting via Neon serverless");
   const { Pool: NeonPool, neonConfig } =
