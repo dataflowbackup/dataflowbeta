@@ -242,30 +242,50 @@ export default function SuppliersPage() {
         method: "GET",
         credentials: "include",
       });
-      if (!res.ok) {
-        const error = await res.json();
-        throw new Error(error.message || "Error al exportar");
-      }
-
       const contentType = res.headers.get("content-type") || "";
-      const isXlsx =
-        contentType.includes(
-          "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        ) || contentType.includes("application/vnd.ms-excel");
-      if (!isXlsx) {
-        // Evita bajar HTML/JSON como .xlsx (termina “corrupto” y luego falla el import).
-        const text = await res.text();
-        throw new Error(
-          `La exportación devolvió un contenido inesperado (${contentType || "sin content-type"}). ` +
-            `Detalle: ${text.slice(0, 200)}`,
-        );
+      if (!res.ok) {
+        const error = await res.json().catch(() => ({}));
+        throw new Error((error as { message?: string }).message || "Error al exportar");
       }
 
-      const blob = await res.blob();
+      let blob: Blob;
+      let downloadName = "proveedores.xlsx";
+
+      if (contentType.includes("application/json")) {
+        const payload = (await res.json()) as {
+          fileName?: string;
+          mimeType?: string;
+          data?: string;
+        };
+        if (!payload?.data) {
+          throw new Error("Respuesta de exportación inválida (sin datos)");
+        }
+        const binary = Uint8Array.from(atob(payload.data), (c) => c.charCodeAt(0));
+        blob = new Blob([binary], {
+          type:
+            payload.mimeType ||
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        });
+        if (payload.fileName) downloadName = payload.fileName;
+      } else {
+        const isXlsx =
+          contentType.includes(
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+          ) || contentType.includes("application/vnd.ms-excel");
+        if (!isXlsx) {
+          const text = await res.text();
+          throw new Error(
+            `La exportación devolvió un contenido inesperado (${contentType || "sin content-type"}). ` +
+              `Detalle: ${text.slice(0, 200)}`,
+          );
+        }
+        blob = await res.blob();
+      }
+
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = "proveedores.xlsx";
+      a.download = downloadName;
       document.body.appendChild(a);
       a.click();
       window.URL.revokeObjectURL(url);

@@ -330,10 +330,14 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       XLSX.utils.book_append_sheet(workbook, worksheet, "Proveedores");
       
       const buffer = XLSX.write(workbook, { type: "buffer", bookType: "xlsx" });
-      
-      res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
-      res.setHeader("Content-Disposition", "attachment; filename=proveedores.xlsx");
-      res.send(buffer);
+
+      // JSON+base64: evita corrupción binaria en Netlify/serverless (ZIP interno del .xlsx).
+      res.setHeader("Content-Type", "application/json; charset=utf-8");
+      res.json({
+        fileName: "proveedores.xlsx",
+        mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        data: Buffer.from(buffer as Uint8Array).toString("base64"),
+      });
     } catch (e: any) {
       res.status(500).json({ message: e.message });
     }

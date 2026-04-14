@@ -12,7 +12,8 @@
     "db:push:local": "drizzle-kit push --config=drizzle.config.local.ts",
     "db:push:turso": "drizzle-kit push --config=drizzle.config.turso.ts",
     "seed:bootstrap": "tsx server/seedBootstrap.ts",
-    "doctor:local": "tsx script/check-local-dev.ts"
+    "doctor:local": "tsx script/check-local-dev.ts",
+    "verify:supplier-xlsx": "tsx script/verify-supplier-xlsx-payload.ts"
   },
   "dependencies": {
     "@hookform/resolvers": "^3.10.0",
