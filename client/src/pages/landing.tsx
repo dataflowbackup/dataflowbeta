@@ -1,4 +1,5 @@
 import { BarChart3, Shield, Zap, TrendingUp, FileText, Calculator, Building2 } from "lucide-react";
+import { Link, useLocation } from "wouter";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 
@@ -36,6 +37,11 @@ const features = [
 ];
 
 export default function Landing() {
+  const [path] = useLocation();
+  const authQuery =
+    path.startsWith("/join") ? `?redirect=${encodeURIComponent(path)}` : "";
+  const authHref = `/auth${authQuery}`;
+
   return (
     <div className="min-h-screen bg-background">
       <header className="border-b bg-card/50 backdrop-blur-sm sticky top-0 z-50">
@@ -46,9 +52,9 @@ export default function Landing() {
             </div>
             <span className="text-xl font-bold">Data Flow</span>
           </div>
-          <a href="/auth">
+          <Link href={authHref}>
             <Button data-testid="button-login">Iniciar Sesion</Button>
-          </a>
+          </Link>
         </div>
       </header>
 
@@ -66,11 +72,11 @@ export default function Landing() {
                 reportes financieros. Todo en un solo lugar, con la precision que tu negocio necesita.
               </p>
               <div className="flex flex-col sm:flex-row gap-4 justify-center">
-                <a href="/auth">
+                <Link href={authHref}>
                   <Button size="lg" className="w-full sm:w-auto px-8" data-testid="button-cta-login">
                     Comenzar Ahora
                   </Button>
-                </a>
+                </Link>
               </div>
             </div>
           </div>
@@ -128,11 +134,11 @@ export default function Landing() {
             <p className="text-primary-foreground/80 mb-8 max-w-xl mx-auto">
               Accede a todas las herramientas que necesitas para gestionar las finanzas de tu negocio gastronomico.
             </p>
-            <a href="/auth">
+            <Link href={authHref}>
               <Button size="lg" variant="secondary" className="px-8" data-testid="button-cta-bottom">
                 Ingresar a la Plataforma
               </Button>
-            </a>
+            </Link>
           </div>
         </section>
       </main>

@@ -11,6 +11,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { CheckCircle2, AlertCircle, UsersRound, UserPlus, LogIn } from "lucide-react";
+import type { User } from "@shared/schema";
 
 export default function JoinPage() {
   const params = useParams<{ code?: string }>();
@@ -26,14 +27,8 @@ export default function JoinPage() {
   const [firstName, setFirstName] = useState("");
   const [lastName, setLastName] = useState("");
 
-  // Check if user is logged in
-  const { data: user, isLoading: userLoading } = useQuery({
-    queryKey: ["/api/auth/me"],
-    queryFn: async () => {
-      const res = await fetch("/api/auth/me");
-      if (!res.ok) return null;
-      return res.json();
-    },
+  const { data: user, isLoading: userLoading } = useQuery<User | null>({
+    queryKey: ["/api/auth/user"],
     retry: false,
   });
 
@@ -43,7 +38,9 @@ export default function JoinPage() {
     queryKey: ["/api/invitations/check", inviteCode],
     queryFn: async () => {
       if (!inviteCode) return null;
-      const res = await fetch(`/api/invitations/check/${inviteCode}`);
+      const res = await fetch(`/api/invitations/check/${inviteCode}`, {
+        credentials: "include",
+      });
       if (!res.ok) {
         const data = await res.json();
         throw new Error(data.message || "Invitacion no valida");
@@ -65,7 +62,7 @@ export default function JoinPage() {
       return res.json();
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/auth/me"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/auth/user"] });
       toast({
         title: "Te uniste exitosamente",
         description: "Ahora tienes acceso a los datos de la empresa",
@@ -102,7 +99,7 @@ export default function JoinPage() {
       return res.json();
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/auth/me"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/auth/user"] });
       toast({
         title: "Registro exitoso",
         description: "Ya estas en la empresa. Redirigiendo...",

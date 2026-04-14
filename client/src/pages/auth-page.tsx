@@ -1,5 +1,12 @@
 import { useState } from "react";
 import { useLocation } from "wouter";
+
+function getSafeRedirectPath(): string {
+  if (typeof window === "undefined") return "/";
+  const raw = new URLSearchParams(window.location.search).get("redirect");
+  if (!raw || !raw.startsWith("/") || raw.startsWith("//")) return "/";
+  return raw;
+}
 import { useMutation } from "@tanstack/react-query";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -61,7 +68,7 @@ export default function AuthPage() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/auth/user"] });
       toast({ title: "Bienvenido", description: "Sesión iniciada correctamente" });
-      navigate("/");
+      navigate(getSafeRedirectPath());
     },
     onError: (error: any) => {
       toast({
@@ -86,7 +93,7 @@ export default function AuthPage() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/auth/user"] });
       toast({ title: "Cuenta creada", description: "Bienvenido a Data Flow" });
-      navigate("/");
+      navigate(getSafeRedirectPath());
     },
     onError: (error: any) => {
       toast({

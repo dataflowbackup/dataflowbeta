@@ -131,6 +131,7 @@ function AppContent() {
     return (
       <Switch>
         <Route path="/auth" component={AuthPage} />
+        <Route path="/join/:code?" component={JoinPage} />
         <Route component={Landing} />
       </Switch>
     );

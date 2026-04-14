@@ -3013,8 +3013,14 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
   app.post("/api/invitations/use/:code", isAuthenticated, async (req, res) => {
     try {
-      const user = req.user as any;
-      const result = await storage.useInvitation(req.params.code, user.id);
+      const session = req.session as any;
+      const oidcUser = req.user as any;
+      const userId: string | undefined =
+        session?.userId || oidcUser?.claims?.sub || oidcUser?.id;
+      if (!userId) {
+        return res.status(401).json({ message: "No autenticado" });
+      }
+      const result = await storage.useInvitation(req.params.code, userId);
       if (!result) {
         return res.status(400).json({ message: "Invitación inválida o expirada" });
       }
