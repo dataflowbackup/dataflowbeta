@@ -33,7 +33,7 @@ import { apiRequest, queryClient } from "@/lib/queryClient";
 import { formatCurrency, formatPercentage, formatNumber } from "@/lib/formatters";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Plus, Trash2, TrendingUp, DollarSign, Percent, Package, ChefHat, Upload, Check, ChevronsUpDown } from "lucide-react";
-import type { RecipeCategory, Supply, UnitOfMeasure, Recipe } from "@shared/schema";
+import type { RecipeCategory, RecipeSubcategory, Supply, UnitOfMeasure, Recipe } from "@shared/schema";
 
 interface SupplyWithUnit extends Supply {
   unitOfMeasure?: UnitOfMeasure | null;
@@ -44,6 +44,7 @@ interface SupplyWithUnit extends Supply {
 
 interface RecipeWithCategory extends Recipe {
   category?: RecipeCategory | null;
+  subcategory?: (RecipeSubcategory & { recipeCategory?: RecipeCategory | null }) | null;
 }
 
 const getSubRecipeUnitLabel = (recipe: RecipeWithCategory, units: UnitOfMeasure[]) => {
@@ -83,7 +84,7 @@ const ingredientSchema = z.object({
 
 const formSchema = z.object({
   name: z.string().min(1, "El nombre es requerido"),
-  categoryId: z.coerce.number().optional(),
+  subcategoryId: z.coerce.number().optional(),
   description: z.string().optional(),
   preparationSteps: z.string().optional(),
   salePriceWithTax: z.coerce.number().min(0).default(0),
@@ -128,10 +129,36 @@ export default function RecipeFormPage() {
     queryKey: ["/api/recipe-categories"],
   });
 
+  const { data: recipeSubcategories = [] } = useQuery<
+    (RecipeSubcategory & { recipeCategory?: RecipeCategory | null })[]
+  >({
+    queryKey: ["/api/recipe-subcategories"],
+  });
+
   const produccionCategoryId = useMemo(() => {
     const prod = categories.find(c => c.name.toLowerCase() === "produccion" || c.name.toLowerCase() === "producción");
     return prod?.id;
   }, [categories]);
+
+  const produccionSubcategoryId = useMemo(() => {
+    if (!produccionCategoryId) return undefined;
+    const subs = recipeSubcategories.filter(
+      (s) => s.recipeCategoryId === produccionCategoryId && s.active !== false,
+    );
+    subs.sort((a, b) => a.name.localeCompare(b.name));
+    return subs[0]?.id;
+  }, [recipeSubcategories, produccionCategoryId]);
+
+  const subcategorySelectOptions = useMemo(() => {
+    return [...recipeSubcategories]
+      .filter((s) => s.active !== false)
+      .sort((a, b) => {
+        const an = a.recipeCategory?.name || "";
+        const bn = b.recipeCategory?.name || "";
+        if (an !== bn) return an.localeCompare(bn);
+        return a.name.localeCompare(b.name);
+      });
+  }, [recipeSubcategories]);
 
   const { data: supplies = [] } = useQuery<SupplyWithUnit[]>({
     queryKey: ["/api/supplies"],
@@ -171,7 +198,7 @@ export default function RecipeFormPage() {
     resolver: zodResolver(formSchema),
     defaultValues: {
       name: "",
-      categoryId: undefined,
+      subcategoryId: undefined,
       description: "",
       preparationSteps: "",
       salePriceWithTax: 0,
@@ -202,7 +229,7 @@ export default function RecipeFormPage() {
 
       form.reset({
         name: existingRecipe.name,
-        categoryId: existingRecipe.categoryId || undefined,
+        subcategoryId: existingRecipe.subcategoryId || undefined,
         description: existingRecipe.description || "",
         preparationSteps: existingRecipe.preparationSteps || "",
         salePriceWithTax: parseFloat(String(existingRecipe.salePriceWithTax) || "0"),
@@ -373,11 +400,20 @@ export default function RecipeFormPage() {
         ? (wasteMethod === "total" ? subRecipeWasteCalc.wasteByTotal : subRecipeWasteCalc.avgWaste)
         : 0;
 
-      const effectiveCategoryId = isSubRecipe ? (produccionCategoryId || data.categoryId) : data.categoryId;
+      const selectedSub = !isSubRecipe
+        ? recipeSubcategories.find((s) => s.id === data.subcategoryId)
+        : undefined;
+      const effectiveCategoryId = isSubRecipe
+        ? produccionCategoryId || undefined
+        : selectedSub?.recipeCategoryId ?? undefined;
+      const effectiveSubcategoryId = isSubRecipe
+        ? produccionSubcategoryId ?? null
+        : data.subcategoryId ?? null;
 
       const payload = {
         name: data.name,
         categoryId: effectiveCategoryId,
+        subcategoryId: effectiveSubcategoryId,
         description: data.description,
         preparationSteps: data.preparationSteps,
         salePrice: isSubRecipe ? 0 : salePrice,
@@ -427,6 +463,10 @@ export default function RecipeFormPage() {
   });
 
   const onSubmit = (data: FormData) => {
+    if (!isSubRecipe && (!data.subcategoryId || Number(data.subcategoryId) <= 0)) {
+      toast({ title: "Seleccione una subcategoria de receta", variant: "destructive" });
+      return;
+    }
     const validIngredients = data.ingredients.filter(ing => {
       if (ing.type === "subrecipe") return ing.subRecipeId && Number(ing.subRecipeId) > 0;
       return ing.supplyId && Number(ing.supplyId) > 0;
@@ -479,26 +519,39 @@ export default function RecipeFormPage() {
                     />
                     <FormField
                       control={form.control}
-                      name="categoryId"
+                      name="subcategoryId"
                       render={({ field }) => (
                         <FormItem>
-                          <FormLabel>Categoria {isSubRecipe && <Badge variant="secondary" className="ml-1">Produccion</Badge>}</FormLabel>
+                          <FormLabel>
+                            Subcategoria{" "}
+                            {isSubRecipe && <Badge variant="secondary" className="ml-1">Produccion</Badge>}
+                          </FormLabel>
                           {isSubRecipe ? (
-                            <Input value="Produccion" disabled className="bg-muted" data-testid="select-category" />
+                            <Input
+                              value={
+                                produccionSubcategoryId
+                                  ? (recipeSubcategories.find((s) => s.id === produccionSubcategoryId)?.name ||
+                                      "Produccion (sin subcategoria)")
+                                  : "Produccion (definir subcategoria en Costos)"
+                              }
+                              disabled
+                              className="bg-muted"
+                              data-testid="select-subcategory"
+                            />
                           ) : (
                             <Select
                               onValueChange={field.onChange}
                               value={field.value?.toString() || ""}
                             >
                               <FormControl>
-                                <SelectTrigger data-testid="select-category">
-                                  <SelectValue placeholder="Seleccionar categoria" />
+                                <SelectTrigger data-testid="select-subcategory">
+                                  <SelectValue placeholder="Seleccionar subcategoria" />
                                 </SelectTrigger>
                               </FormControl>
                               <SelectContent>
-                                {categories.filter(c => c.active).map((cat) => (
-                                  <SelectItem key={cat.id} value={cat.id.toString()}>
-                                    {cat.name}
+                                {subcategorySelectOptions.map((sub) => (
+                                  <SelectItem key={sub.id} value={sub.id.toString()}>
+                                    {(sub.recipeCategory?.name || "?") + " — " + sub.name}
                                   </SelectItem>
                                 ))}
                               </SelectContent>

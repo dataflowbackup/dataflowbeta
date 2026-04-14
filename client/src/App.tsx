@@ -24,6 +24,7 @@ import InvoiceFormPage from "@/pages/invoice-form";
 import AccountsPage from "@/pages/accounts";
 import PaymentsPage from "@/pages/payments";
 import RecipeCategoriesPage from "@/pages/recipe-categories";
+import RecipeSubCategoriesPage from "@/pages/recipe-sub-categories";
 import RecipesPage from "@/pages/recipes";
 import RecipeFormPage from "@/pages/recipe-form";
 import SubRecipesPage from "@/pages/sub-recipes";
@@ -61,6 +62,7 @@ function AppRouter() {
       <Route path="/cuentas-corrientes" component={AccountsPage} />
       <Route path="/pagos" component={PaymentsPage} />
       <Route path="/categorias-recetas" component={RecipeCategoriesPage} />
+      <Route path="/subcategorias-recetas" component={RecipeSubCategoriesPage} />
       <Route path="/recetas" component={RecipesPage} />
       <Route path="/sub-recetas" component={SubRecipesPage} />
       <Route path="/recetas/nueva" component={RecipeFormPage} />

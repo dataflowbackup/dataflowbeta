@@ -11,10 +11,11 @@ import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { formatCurrency, formatPercentage, formatDate } from "@/lib/formatters";
 import { ChefHat, Plus, Eye, Trash2, TrendingUp, TrendingDown, Percent, Layers, Download } from "lucide-react";
-import type { Recipe, RecipeCategory } from "@shared/schema";
+import type { Recipe, RecipeCategory, RecipeSubcategory } from "@shared/schema";
 
 interface RecipeWithRelations extends Recipe {
   category?: RecipeCategory | null;
+  subcategory?: (RecipeSubcategory & { recipeCategory?: RecipeCategory | null }) | null;
   ingredientCount?: number;
 }
 
@@ -107,6 +108,16 @@ export default function RecipesPage() {
       cell: (row) =>
         row.category ? (
           <Badge variant="secondary">{row.category.name}</Badge>
+        ) : (
+          <span className="text-muted-foreground">-</span>
+        ),
+    },
+    {
+      key: "subcategory",
+      header: "Subcategoria",
+      cell: (row) =>
+        row.subcategory ? (
+          <Badge variant="outline">{row.subcategory.name}</Badge>
         ) : (
           <span className="text-muted-foreground">-</span>
         ),

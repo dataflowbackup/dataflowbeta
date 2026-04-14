@@ -17,6 +17,7 @@ import {
   payments,
   paymentAllocations,
   recipeCategories,
+  recipeSubcategories,
   recipes,
   recipeIngredients,
   costHistory,
@@ -77,6 +78,8 @@ import {
   type InsertPaymentAllocation,
   type InsertRecipeCategory,
   type RecipeCategory,
+  type InsertRecipeSubcategory,
+  type RecipeSubcategory,
   type InsertRecipe,
   type Recipe,
   type InsertRecipeIngredient,
@@ -197,6 +200,17 @@ export interface IStorage {
   createRecipeCategory(category: InsertRecipeCategory): Promise<RecipeCategory>;
   updateRecipeCategory(clientId: number, id: number, category: Partial<InsertRecipeCategory>): Promise<RecipeCategory | undefined>;
   deleteRecipeCategory(clientId: number, id: number): Promise<boolean>;
+
+  getRecipeSubcategories(
+    clientId: number,
+  ): Promise<(RecipeSubcategory & { recipeCategory?: RecipeCategory | null })[]>;
+  createRecipeSubcategory(sub: InsertRecipeSubcategory): Promise<RecipeSubcategory>;
+  updateRecipeSubcategory(
+    clientId: number,
+    id: number,
+    sub: Partial<InsertRecipeSubcategory>,
+  ): Promise<RecipeSubcategory | undefined>;
+  deleteRecipeSubcategory(clientId: number, id: number): Promise<boolean>;
   
   getRecipes(clientId: number): Promise<Recipe[]>;
   getRecipe(clientId: number, id: number): Promise<Recipe | undefined>;
@@ -1215,6 +1229,78 @@ export class DatabaseStorage implements IStorage {
   async deleteRecipeCategory(clientId: number, id: number): Promise<boolean> {
     const result = await db.delete(recipeCategories)
       .where(and(eq(recipeCategories.id, id), eq(recipeCategories.clientId, clientId)));
+    return (result.rowCount ?? 0) > 0;
+  }
+
+  async getRecipeSubcategories(
+    clientId: number,
+  ): Promise<(RecipeSubcategory & { recipeCategory?: RecipeCategory | null })[]> {
+    const results = await db
+      .select({
+        sub: recipeSubcategories,
+        recipeCategory: recipeCategories,
+      })
+      .from(recipeSubcategories)
+      .leftJoin(recipeCategories, eq(recipeSubcategories.recipeCategoryId, recipeCategories.id))
+      .where(eq(recipeSubcategories.clientId, clientId))
+      .orderBy(recipeSubcategories.name);
+
+    return results.map((r) => ({
+      ...r.sub,
+      recipeCategory: r.recipeCategory,
+    }));
+  }
+
+  async createRecipeSubcategory(sub: InsertRecipeSubcategory): Promise<RecipeSubcategory> {
+    const [cat] = await db
+      .select()
+      .from(recipeCategories)
+      .where(
+        and(eq(recipeCategories.id, sub.recipeCategoryId), eq(recipeCategories.clientId, sub.clientId)),
+      )
+      .limit(1);
+    if (!cat) {
+      throw new Error("La categoria de receta no existe o no pertenece a este cliente");
+    }
+    const [row] = await db.insert(recipeSubcategories).values(sub).returning();
+    return row;
+  }
+
+  async updateRecipeSubcategory(
+    clientId: number,
+    id: number,
+    sub: Partial<InsertRecipeSubcategory>,
+  ): Promise<RecipeSubcategory | undefined> {
+    if (sub.recipeCategoryId != null) {
+      const [cat] = await db
+        .select()
+        .from(recipeCategories)
+        .where(
+          and(eq(recipeCategories.id, sub.recipeCategoryId), eq(recipeCategories.clientId, clientId)),
+        )
+        .limit(1);
+      if (!cat) {
+        throw new Error("La categoria de receta no existe o no pertenece a este cliente");
+      }
+    }
+    const [updated] = await db
+      .update(recipeSubcategories)
+      .set(sub)
+      .where(and(eq(recipeSubcategories.id, id), eq(recipeSubcategories.clientId, clientId)))
+      .returning();
+    return updated;
+  }
+
+  async deleteRecipeSubcategory(clientId: number, id: number): Promise<boolean> {
+    const used = await db
+      .select({ id: recipes.id })
+      .from(recipes)
+      .where(and(eq(recipes.clientId, clientId), eq(recipes.subcategoryId, id)))
+      .limit(1);
+    if (used.length > 0) return false;
+    const result = await db
+      .delete(recipeSubcategories)
+      .where(and(eq(recipeSubcategories.id, id), eq(recipeSubcategories.clientId, clientId)));
     return (result.rowCount ?? 0) > 0;
   }
 

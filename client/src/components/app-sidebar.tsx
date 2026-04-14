@@ -89,6 +89,7 @@ const menuSections: MenuSection[] = [
     defaultOpen: false,
     items: [
       { title: "Categorias", url: "/categorias-recetas", icon: Tags },
+      { title: "Subcategorias", url: "/subcategorias-recetas", icon: FolderTree },
       { title: "Recetas", url: "/recetas", icon: ChefHat },
       { title: "Sub-Recetas", url: "/sub-recetas", icon: Layers },
       { title: "Historial Costos", url: "/historial-costos", icon: Calculator },

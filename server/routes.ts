@@ -1310,24 +1310,85 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
   });
 
+  app.get("/api/recipe-subcategories", isAuthenticated, async (req, res) => {
+    try {
+      const clientId = await getClientId(req);
+      const data = await storage.getRecipeSubcategories(clientId);
+      res.json(data);
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
+  app.post("/api/recipe-subcategories", isAuthenticated, async (req, res) => {
+    try {
+      const clientId = await getClientId(req);
+      const data = await storage.createRecipeSubcategory({ ...req.body, clientId });
+      res.json(data);
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
+  app.patch("/api/recipe-subcategories/:id", isAuthenticated, async (req, res) => {
+    try {
+      const clientId = await getClientId(req);
+      const data = await storage.updateRecipeSubcategory(
+        clientId,
+        parseInt(req.params.id),
+        req.body,
+      );
+      if (!data) return res.status(404).json({ message: "Subcategoria no encontrada" });
+      res.json(data);
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
+  app.delete("/api/recipe-subcategories/:id", isAuthenticated, async (req, res) => {
+    try {
+      const clientId = await getClientId(req);
+      const deleted = await storage.deleteRecipeSubcategory(clientId, parseInt(req.params.id));
+      if (!deleted) {
+        return res.status(400).json({
+          message:
+            "No se puede eliminar: hay recetas que usan esta subcategoria, o no existe.",
+        });
+      }
+      res.json({ success: true });
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
   app.get("/api/recipes", isAuthenticated, async (req, res) => {
     try {
       const clientId = await getClientId(req);
-      const [recipes, categories] = await Promise.all([
+      const [recipes, categories, subcategories] = await Promise.all([
         storage.getRecipes(clientId),
         storage.getRecipeCategories(clientId),
+        storage.getRecipeSubcategories(clientId),
       ]);
 
       const categoryById = new Map(categories.map((c) => [c.id, c]));
+      const subById = new Map(subcategories.map((s) => [s.id, s]));
       const ingredientLists = await Promise.all(
         recipes.map((recipe) => storage.getRecipeIngredients(recipe.id)),
       );
 
-      const data = recipes.map((recipe, index) => ({
-        ...recipe,
-        category: recipe.categoryId ? (categoryById.get(recipe.categoryId) || null) : null,
-        ingredientCount: ingredientLists[index]?.length || 0,
-      }));
+      const data = recipes.map((recipe, index) => {
+        const sub = recipe.subcategoryId ? subById.get(recipe.subcategoryId) : undefined;
+        const categoryFromSub = sub?.recipeCategory ?? null;
+        const category =
+          categoryFromSub ||
+          (recipe.categoryId ? categoryById.get(recipe.categoryId) || null : null);
+        return {
+          ...recipe,
+          category,
+          subcategory: sub ?? null,
+          ingredientCount: ingredientLists[index]?.length || 0,
+        };
+      });
 
       res.json(data);
     } catch (e: any) {
@@ -1340,8 +1401,10 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const clientId = await getClientId(req);
       const recipes = await storage.getRecipes(clientId);
       const categories = await storage.getRecipeCategories(clientId);
+      const subcategories = await storage.getRecipeSubcategories(clientId);
       const catMap = new Map(categories.map(c => [c.id, c.name]));
-      
+      const subMap = new Map(subcategories.map((s) => [s.id, s]));
+
       const platos = recipes.filter(r => r.recipeType !== 'sub');
       const activePlatos = platos.filter(r => r.active);
       const avgCmv = activePlatos.length > 0
@@ -1360,8 +1423,14 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         "Markup Promedio %": `${avgMarkup.toFixed(2)}%`,
       }]);
       
-      const detailData = platos.map(r => ({
-        "Categoria": r.categoryId ? (catMap.get(r.categoryId) || "") : "",
+      const detailData = platos.map((r) => {
+        const sub = r.subcategoryId ? subMap.get(r.subcategoryId) : undefined;
+        const categoriaNombre =
+          sub?.recipeCategory?.name ||
+          (r.categoryId ? catMap.get(r.categoryId) || "" : "");
+        return {
+        "Categoria": categoriaNombre,
+        "Subcategoria": sub?.name || "",
         "Nombre": r.name,
         "Ingredientes": (r as any).ingredientCount || 0,
         "Costo MP $ (sin IVA)": parseFloat(String(r.totalCost) || "0").toFixed(2),
@@ -1375,7 +1444,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         "Dif CMV %": r.cmvIdeal ? `${(parseFloat(String(r.cmvPercentage) || "0") - parseFloat(String(r.cmvIdeal) || "0")).toFixed(2)}%` : "",
         "Estado": r.active ? "Activo" : "Inactivo",
         "Fecha Creacion": r.createdAt ? new Date(r.createdAt).toLocaleDateString("es-AR") : "",
-      }));
+      };
+      });
       const detailSheet = XLSX.utils.json_to_sheet(detailData);
       
       const workbook = XLSX.utils.book_new();

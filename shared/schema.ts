@@ -454,12 +454,36 @@ export type InsertRecipeCategory = z.infer<typeof insertRecipeCategorySchema>;
 export type RecipeCategory = typeof recipeCategories.$inferSelect;
 
 // ==========================================
+// RECIPE SUBCATEGORIES (hijo de recipe_categories)
+// ==========================================
+export const recipeSubcategories = pgTable("recipe_subcategories", {
+  id: serial("id").primaryKey(),
+  clientId: integer("client_id").notNull().references(() => clients.id, { onDelete: "cascade" }),
+  recipeCategoryId: integer("recipe_category_id")
+    .notNull()
+    .references(() => recipeCategories.id, { onDelete: "cascade" }),
+  name: varchar("name", { length: 255 }).notNull(),
+  description: text("description"),
+  displayOrder: integer("display_order").default(0),
+  active: boolean("active").default(true),
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
+export const insertRecipeSubcategorySchema = createInsertSchema(recipeSubcategories).omit({
+  id: true,
+  createdAt: true,
+});
+export type InsertRecipeSubcategory = z.infer<typeof insertRecipeSubcategorySchema>;
+export type RecipeSubcategory = typeof recipeSubcategories.$inferSelect;
+
+// ==========================================
 // RECIPES (Recetas/Platos)
 // ==========================================
 export const recipes = pgTable("recipes", {
   id: serial("id").primaryKey(),
   clientId: integer("client_id").notNull().references(() => clients.id, { onDelete: "cascade" }),
   categoryId: integer("category_id").references(() => recipeCategories.id),
+  subcategoryId: integer("subcategory_id").references(() => recipeSubcategories.id),
   recipeType: varchar("recipe_type", { length: 20 }).default("plato"),
   name: varchar("name", { length: 255 }).notNull(),
   normalizedName: varchar("normalized_name", { length: 255 }),
@@ -1086,9 +1110,28 @@ export const invoiceItemsRelations = relations(invoiceItems, ({ one }) => ({
   rubro: one(rubros, { fields: [invoiceItems.rubroId], references: [rubros.id] }),
 }));
 
+export const recipeCategoriesRelations = relations(recipeCategories, ({ one, many }) => ({
+  client: one(clients, { fields: [recipeCategories.clientId], references: [clients.id] }),
+  subcategories: many(recipeSubcategories),
+  recipes: many(recipes),
+}));
+
+export const recipeSubcategoriesRelations = relations(recipeSubcategories, ({ one, many }) => ({
+  client: one(clients, { fields: [recipeSubcategories.clientId], references: [clients.id] }),
+  recipeCategory: one(recipeCategories, {
+    fields: [recipeSubcategories.recipeCategoryId],
+    references: [recipeCategories.id],
+  }),
+  recipes: many(recipes),
+}));
+
 export const recipesRelations = relations(recipes, ({ one, many }) => ({
   client: one(clients, { fields: [recipes.clientId], references: [clients.id] }),
   category: one(recipeCategories, { fields: [recipes.categoryId], references: [recipeCategories.id] }),
+  subcategory: one(recipeSubcategories, {
+    fields: [recipes.subcategoryId],
+    references: [recipeSubcategories.id],
+  }),
   ingredients: many(recipeIngredients),
   sales: many(sales),
 }));
