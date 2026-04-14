@@ -246,6 +246,21 @@ export default function SuppliersPage() {
         const error = await res.json();
         throw new Error(error.message || "Error al exportar");
       }
+
+      const contentType = res.headers.get("content-type") || "";
+      const isXlsx =
+        contentType.includes(
+          "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        ) || contentType.includes("application/vnd.ms-excel");
+      if (!isXlsx) {
+        // Evita bajar HTML/JSON como .xlsx (termina “corrupto” y luego falla el import).
+        const text = await res.text();
+        throw new Error(
+          `La exportación devolvió un contenido inesperado (${contentType || "sin content-type"}). ` +
+            `Detalle: ${text.slice(0, 200)}`,
+        );
+      }
+
       const blob = await res.blob();
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement("a");

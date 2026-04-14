@@ -347,7 +347,17 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         return res.status(400).json({ message: "No se proporciono archivo" });
       }
       
-      const workbook = XLSX.read(req.file.buffer, { type: "buffer" });
+      let workbook: XLSX.WorkBook;
+      try {
+        workbook = XLSX.read(req.file.buffer, { type: "buffer" });
+      } catch (err: any) {
+        return res.status(400).json({
+          message:
+            "El archivo no es un Excel (.xlsx) válido o está corrupto. " +
+            "Si lo exportaste desde Data Flow y Excel no lo abre, re-exportá desde la versión más nueva. " +
+            `Detalle: ${err?.message || String(err)}`,
+        });
+      }
       const sheetName = workbook.SheetNames[0];
       const sheet = workbook.Sheets[sheetName];
       const rawData = XLSX.utils.sheet_to_json(sheet) as any[];
