@@ -787,10 +787,14 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       XLSX.utils.book_append_sheet(workbook, worksheet, "Insumos");
       
       const buffer = XLSX.write(workbook, { type: "buffer", bookType: "xlsx" });
-      
-      res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
-      res.setHeader("Content-Disposition", "attachment; filename=insumos.xlsx");
-      res.send(buffer);
+
+      // JSON+base64: evita corrupción binaria en Netlify/serverless (ZIP interno del .xlsx).
+      res.setHeader("Content-Type", "application/json; charset=utf-8");
+      res.json({
+        fileName: "insumos.xlsx",
+        mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        data: Buffer.from(buffer as Uint8Array).toString("base64"),
+      });
     } catch (e: any) {
       res.status(500).json({ message: e.message });
     }
@@ -810,7 +814,16 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const rubroByName = new Map(rubros.map(r => [r.name.toLowerCase(), r.id]));
       const unitByName = new Map(units.map(u => [(u.abbreviation || u.name).toLowerCase(), u.id]));
       
-      const workbook = XLSX.read(req.file.buffer, { type: "buffer" });
+      let workbook: XLSX.WorkBook;
+      try {
+        workbook = XLSX.read(req.file.buffer, { type: "buffer" });
+      } catch (err: any) {
+        return res.status(400).json({
+          message:
+            "El archivo no es un Excel (.xlsx) válido o está corrupto. " +
+            `Detalle: ${err?.message || String(err)}`,
+        });
+      }
       const sheetName = workbook.SheetNames[0];
       const sheet = workbook.Sheets[sheetName];
       const rawData = XLSX.utils.sheet_to_json(sheet) as any[];
