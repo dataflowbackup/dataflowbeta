@@ -1,5 +1,6 @@
 import { createRequire } from "node:module";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { createClient as createLibsqlWebClient } from "@libsql/client/web";
 import { Pool } from "pg";
 import { drizzle as drizzlePg } from "drizzle-orm/node-postgres";
@@ -9,19 +10,27 @@ import { construct as constructLibsqlDb } from "drizzle-orm/libsql/driver-core";
 import * as schema from "@shared/schema";
 
 /**
- * Esbuild con format=cjs deja `import.meta` vacío; no usar `import.meta.url` aquí.
- * `process.argv[1]` apunta al .cjs (Railway) o al entry .ts con tsx (dev).
+ * `createRequire` debe anclarse al módulo actual para resolver `@libsql/client` (nativo)
+ * al correr con `tsx` en Windows; `process.argv[1]` a veces apunta al launcher de tsx y rompe.
+ * En el bundle CJS (`dist/index.cjs`) se usa el fallback por argv.
  */
-function getCreateRequireFilename(): string {
+function createProjectRequire(): ReturnType<typeof createRequire> {
+  try {
+    if (typeof import.meta !== "undefined" && import.meta.url) {
+      return createRequire(fileURLToPath(import.meta.url));
+    }
+  } catch {
+    /* seguir */
+  }
   if (typeof process !== "undefined" && process.argv[1]) {
-    return path.resolve(process.argv[1]);
+    return createRequire(path.resolve(process.argv[1]));
   }
   throw new Error(
-    "[db] No se pudo resolver la ruta para createRequire (process.argv[1] vacío).",
+    "[db] No se pudo inicializar createRequire (import.meta.url / process.argv[1]).",
   );
 }
 
-const require = createRequire(getCreateRequireFilename());
+const require = createProjectRequire();
 
 if (!process.env.DATABASE_URL) {
   throw new Error(
@@ -32,15 +41,21 @@ if (!process.env.DATABASE_URL) {
 const databaseUrl = process.env.DATABASE_URL;
 const dbProvider = (process.env.DB_PROVIDER || "").toLowerCase();
 
+const isPostgresUrl =
+  databaseUrl.startsWith("postgres://") ||
+  databaseUrl.startsWith("postgresql://");
+
 // Neon serverless solo para hosts reales de Neon (Replit, etc.).
 // Railway, Render, RDS, Postgres local → driver TCP "pg".
 const useNeonServerless =
   databaseUrl.includes("neon.tech") || databaseUrl.includes(".neon.");
+// Si la URL es Postgres, siempre driver `pg` (evita que un DB_PROVIDER=sqlite viejo rompa local).
 const useLibsql =
-  dbProvider === "sqlite" ||
-  dbProvider === "turso" ||
-  databaseUrl.startsWith("file:") ||
-  databaseUrl.startsWith("libsql:");
+  !isPostgresUrl &&
+  (dbProvider === "sqlite" ||
+    dbProvider === "turso" ||
+    databaseUrl.startsWith("file:") ||
+    databaseUrl.startsWith("libsql:"));
 
 type NeonPoolClass = import("@neondatabase/serverless").Pool;
 type DrizzleNeonFn = typeof import("drizzle-orm/neon-serverless").drizzle;

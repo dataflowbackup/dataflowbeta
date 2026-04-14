@@ -6,6 +6,7 @@ import connectPg from "connect-pg-simple";
 import createMemoryStore from "memorystore";
 import { z } from "zod";
 import { db } from "./db";
+import { LibsqlSessionStore } from "./libsqlSessionStore";
 import { users, userCredentials, userClients, clients, clientInvitations } from "@shared/schema";
 import { eq, or } from "drizzle-orm";
 
@@ -41,6 +42,22 @@ const resetPasswordSchema = z.object({
   password: z.string().min(6, "La contraseña debe tener al menos 6 caracteres"),
 });
 
+function getSessionSecret(): string {
+  const configured = process.env.SESSION_SECRET;
+  if (configured && configured.length > 0) return configured;
+  if (process.env.NODE_ENV !== "production") {
+    return "dataflow-local-dev-session-secret-not-for-production";
+  }
+  throw new Error("SESSION_SECRET must be set in production");
+}
+
+/** Cookies `Secure` solo en prod con https, salvo que fuerces lo contrario en local mal configurado. */
+function sessionCookieSecure(): boolean {
+  if (process.env.SESSION_COOKIE_SECURE === "true") return true;
+  if (process.env.SESSION_COOKIE_SECURE === "false") return false;
+  return process.env.NODE_ENV === "production";
+}
+
 export function getSession() {
   const sessionTtl = 7 * 24 * 60 * 60 * 1000;
   const dbUrl = process.env.DATABASE_URL || "";
@@ -50,6 +67,11 @@ export function getSession() {
     dbUrl.includes("neon.tech") ||
     dbUrl.includes(".neon.");
 
+  const useLibsqlStore =
+    dbUrl.startsWith("libsql:") ||
+    dbUrl.startsWith("libsql+") ||
+    dbUrl.startsWith("file:");
+
   const sessionStore = usePgStore
     ? new (connectPg(session))({
         conString: dbUrl,
@@ -57,18 +79,21 @@ export function getSession() {
         ttl: sessionTtl,
         tableName: "sessions",
       })
-    : new (createMemoryStore(session))({
-        checkPeriod: sessionTtl,
-      });
+    : useLibsqlStore
+      ? new LibsqlSessionStore({ ttlMs: sessionTtl })
+      : new (createMemoryStore(session))({
+          checkPeriod: sessionTtl,
+        });
 
   return session({
-    secret: process.env.SESSION_SECRET!,
+    secret: getSessionSecret(),
     store: sessionStore,
     resave: false,
     saveUninitialized: false,
     cookie: {
       httpOnly: true,
-      secure: process.env.NODE_ENV === "production",
+      secure: sessionCookieSecure(),
+      sameSite: "lax",
       maxAge: sessionTtl,
     },
   });

@@ -1,4 +1,4 @@
-import "dotenv/config";
+import "./env";
 import crypto from "node:crypto";
 import bcrypt from "bcrypt";
 import { and, eq } from "drizzle-orm";

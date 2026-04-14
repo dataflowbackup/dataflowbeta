@@ -8,11 +8,16 @@ vite.config.ts.*
 # Secretos y entorno (nunca subir a GitHub)
 .env
 .env.*
+env.local
 !.env.example
 
 # Subidas locales
 uploads/
 data/*.db
+
+# Copias de seguridad locales (no subir)
+backups/*.db
+backups/*.sqlite
 
 # Logs y IDE
 *.log
@@ -23,3 +28,6 @@ data/*.db
 
 # OS
 Thumbs.db
+
+# Cache local (import SQL sanitizado, etc.)
+.cache/
