@@ -11,7 +11,7 @@ import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { ChevronLeft, ChevronRight, Search, Plus, Filter } from "lucide-react";
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 
 export interface Column<T> {
   key: string;
@@ -98,6 +98,14 @@ export function DataTable<T extends { id: number | string }>({
     
     return result;
   }, [data, search, searchKeys, filters, activeFilters]);
+
+  // Si `data` o filtros reducen los resultados y la pagina actual queda fuera de rango, la tabla quedaba vacia.
+  useEffect(() => {
+    const total = filteredData.length;
+    const tp = Math.ceil(total / pageSize) || 1;
+    const maxPage = Math.max(0, tp - 1);
+    if (page > maxPage) setPage(maxPage);
+  }, [filteredData.length, pageSize, page]);
 
   const paginatedData = useMemo(() => {
     const start = page * pageSize;

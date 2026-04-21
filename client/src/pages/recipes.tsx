@@ -16,10 +16,23 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { formatCurrency, formatPercentage, formatDate } from "@/lib/formatters";
-import { ChefHat, Plus, Eye, Trash2, TrendingUp, TrendingDown, Percent, Layers, Download, Search } from "lucide-react";
+import {
+  ChefHat,
+  Plus,
+  Eye,
+  Trash2,
+  TrendingUp,
+  TrendingDown,
+  Percent,
+  Layers,
+  Download,
+  Search,
+  Info,
+} from "lucide-react";
 import type { Recipe, RecipeCategory, RecipeSubcategory } from "@shared/schema";
 
 interface RecipeWithRelations extends Recipe {
@@ -56,6 +69,9 @@ export default function RecipesPage() {
 
   const { data: recipes = [], isLoading } = useQuery<RecipeWithRelations[]>({
     queryKey: ["/api/recipes"],
+    // Evita quedar con una lista vacia cacheada para siempre (staleTime global = Infinity).
+    staleTime: 60_000,
+    refetchOnMount: "always",
   });
 
   const { data: stats } = useQuery<{
@@ -124,6 +140,13 @@ export default function RecipesPage() {
     () => computePlatoKpis(platosStructuralFiltered),
     [platosStructuralFiltered],
   );
+
+  const clearRecipeFilters = () => {
+    setFilterCategoryId("__all__");
+    setFilterSubcategoryId("__all__");
+    setFilterActive("__all__");
+    setSearchName("");
+  };
 
   const patchActiveMutation = useMutation({
     mutationFn: async ({ id, active }: { id: number; active: boolean }) => {
@@ -510,6 +533,37 @@ export default function RecipesPage() {
           </div>
         </div>
       </div>
+
+      {!isLoading && platos.length > 0 && platosStructuralFiltered.length === 0 && (
+        <Alert>
+          <Info className="h-4 w-4" />
+          <AlertTitle>Filtros sin coincidencias</AlertTitle>
+          <AlertDescription className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+            <span>
+              Hay {platos.length} recetas en total, pero ninguna cumple categoria, subcategoria o estado elegidos.
+            </span>
+            <Button type="button" variant="outline" size="sm" onClick={clearRecipeFilters}>
+              Limpiar filtros
+            </Button>
+          </AlertDescription>
+        </Alert>
+      )}
+
+      {!isLoading &&
+        platosStructuralFiltered.length > 0 &&
+        platosForTable.length === 0 &&
+        searchName.trim() !== "" && (
+          <Alert>
+            <Info className="h-4 w-4" />
+            <AlertTitle>Sin resultados para la busqueda</AlertTitle>
+            <AlertDescription className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+              <span>Pruebe otro texto o borre el campo de busqueda.</span>
+              <Button type="button" variant="outline" size="sm" onClick={() => setSearchName("")}>
+                Borrar busqueda
+              </Button>
+            </AlertDescription>
+          </Alert>
+        )}
 
       <DataTable
         columns={columns}

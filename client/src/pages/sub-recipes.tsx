@@ -48,6 +48,8 @@ export default function SubRecipesPage() {
 
   const { data: recipes = [], isLoading } = useQuery<RecipeWithRelations[]>({
     queryKey: ["/api/recipes"],
+    staleTime: 60_000,
+    refetchOnMount: "always",
   });
 
   const { data: units = [] } = useQuery<UnitOfMeasure[]>({
