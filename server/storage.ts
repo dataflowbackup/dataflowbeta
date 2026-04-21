@@ -1730,9 +1730,12 @@ export class DatabaseStorage implements IStorage {
   }
 
   async deleteTransactionBatch(clientId: number, importBatchId: string): Promise<number> {
-    const result = await db.delete(transactions)
-      .where(and(eq(transactions.clientId, clientId), eq(transactions.importBatchId, importBatchId)));
-    return result.rowCount ?? 0;
+    // SQLite/Turso suele no poblar rowCount en DELETE; usar .returning() para contar bien.
+    const deleted = await db
+      .delete(transactions)
+      .where(and(eq(transactions.clientId, clientId), eq(transactions.importBatchId, importBatchId)))
+      .returning({ id: transactions.id });
+    return deleted.length;
   }
 
   async getImportBatches(clientId: number): Promise<Array<{ importBatchId: string; bankSource: string | null; count: number; minDate: string | null; maxDate: string | null; importedAt: Date | null }>> {

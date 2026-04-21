@@ -1994,7 +1994,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       if (confirmCode !== "ELIMINAR") {
         return res.status(400).json({ message: "Codigo de confirmacion incorrecto" });
       }
-      const deleted = await storage.deleteTransactionBatch(clientId, req.params.batchId);
+      const batchId = decodeURIComponent(String(req.params.batchId ?? "").trim());
+      const deleted = await storage.deleteTransactionBatch(clientId, batchId);
       if (deleted === 0) return res.status(404).json({ message: "Extracto no encontrado" });
       res.json({ success: true, deleted });
     } catch (e: any) {

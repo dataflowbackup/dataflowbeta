@@ -143,7 +143,11 @@ export default function BankStatementsPage() {
 
   const deleteBatchMutation = useMutation({
     mutationFn: async ({ batchId, confirmCode }: { batchId: string; confirmCode: string }) => {
-      return apiRequest("DELETE", `/api/transactions/batch/${batchId}`, { confirmCode });
+      return apiRequest(
+        "DELETE",
+        `/api/transactions/batch/${encodeURIComponent(batchId)}`,
+        { confirmCode },
+      );
     },
     onSuccess: (data: any) => {
       queryClient.invalidateQueries({ queryKey: ["/api/transactions"] });
