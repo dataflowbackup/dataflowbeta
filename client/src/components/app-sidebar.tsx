@@ -67,7 +67,6 @@ const menuSections: MenuSection[] = [
     defaultOpen: true,
     items: [
       { title: "Proveedores", url: "/proveedores", icon: Users },
-      { title: "Insumos", url: "/insumos", icon: Package },
       { title: "Rubros", url: "/rubros", icon: Tags },
       { title: "Sub-Rubros", url: "/sub-rubros", icon: Layers },
       { title: "Locales", url: "/locales", icon: Building2 },
@@ -90,7 +89,8 @@ const menuSections: MenuSection[] = [
     items: [
       { title: "Categorias", url: "/categorias-recetas", icon: Tags },
       { title: "Subcategorias", url: "/subcategorias-recetas", icon: FolderTree },
-      { title: "Recetas", url: "/recetas", icon: ChefHat },
+      { title: "Insumos", url: "/insumos", icon: Package },
+      { title: "Carta", url: "/recetas", icon: ChefHat },
       { title: "Sub-Recetas", url: "/sub-recetas", icon: Layers },
       { title: "Historial Costos", url: "/historial-costos", icon: Calculator },
     ],

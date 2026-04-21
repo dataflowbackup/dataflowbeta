@@ -266,7 +266,7 @@ export default function SubRecipesPage() {
             <Link href="/recetas">
               <Button variant="outline" data-testid="button-back-recipes">
                 <ArrowLeft className="h-4 w-4 mr-2" />
-                Volver a Recetas
+                Volver a Carta
               </Button>
             </Link>
             <Button onClick={() => navigate("/recetas/nueva?type=sub")} data-testid="button-new-sub-recipe">

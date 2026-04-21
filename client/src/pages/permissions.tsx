@@ -63,7 +63,7 @@ const MODULE_LABELS: Record<string, string> = {
   supplies: "Insumos",
   invoices: "Facturas",
   payments: "Pagos",
-  recipes: "Recetas",
+  recipes: "Carta",
   bank: "Extractos Bancarios",
   transactions: "Transacciones",
   balances: "Balances P&G",

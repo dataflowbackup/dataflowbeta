@@ -26,8 +26,8 @@ const quickActions = [
     color: "bg-blue-500/10 text-blue-500",
   },
   {
-    title: "Nueva Receta",
-    description: "Crear una receta con costos",
+    title: "Nuevo plato en carta",
+    description: "Crear un plato con costos",
     icon: ChefHat,
     href: "/recetas?new=true",
     color: "bg-green-500/10 text-green-500",
@@ -53,7 +53,6 @@ const modules = [
     title: "Catalogos",
     items: [
       { name: "Proveedores", href: "/proveedores", icon: Users },
-      { name: "Insumos", href: "/insumos", icon: Package },
       { name: "Locales", href: "/locales", icon: Building2 },
     ],
   },
@@ -68,7 +67,8 @@ const modules = [
   {
     title: "Costos",
     items: [
-      { name: "Recetas", href: "/recetas", icon: ChefHat },
+      { name: "Insumos", href: "/insumos", icon: Package },
+      { name: "Carta", href: "/recetas", icon: ChefHat },
       { name: "Historial de Costos", href: "/historial-costos", icon: Calculator },
     ],
   },
