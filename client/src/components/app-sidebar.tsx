@@ -65,6 +65,9 @@ interface MenuSection {
   defaultOpen?: boolean;
 }
 
+/** En false, la sección "Operaciones" no aparece en el menú lateral hasta activar ese módulo. */
+const SHOW_OPERACIONES_SIDEBAR = false;
+
 const menuSections: MenuSection[] = [
   {
     title: "Catalogos",
@@ -257,13 +260,18 @@ export function AppSidebar() {
           </SidebarGroupContent>
         </SidebarGroup>
 
-        {menuSections.map((section) => (
-          <CollapsibleMenuSection
-            key={section.title}
-            section={section}
-            isActive={isActive}
-          />
-        ))}
+        {menuSections
+          .filter(
+            (section) =>
+              SHOW_OPERACIONES_SIDEBAR || section.title !== "Operaciones",
+          )
+          .map((section) => (
+            <CollapsibleMenuSection
+              key={section.title}
+              section={section}
+              isActive={isActive}
+            />
+          ))}
       </SidebarContent>
 
       <SidebarSeparator />
