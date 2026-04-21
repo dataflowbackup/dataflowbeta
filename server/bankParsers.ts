@@ -301,6 +301,12 @@ class GenericParser implements BankParser {
 
 const BBVA_MOVEMENT_SHEETS = ["Movimientos Históricos", "Movimientos del Día"];
 
+/** Layout fijo extractos BBVA: A Fecha, C Concepto, G Créditos, H Débitos (índices 0-based). */
+const BBVA_COL_FECHA = 0;
+const BBVA_COL_CONCEPTO = 2;
+const BBVA_COL_CREDITO = 6;
+const BBVA_COL_DEBITO = 7;
+
 class BbvaParser implements BankParser {
   bankId = "bbva";
   bankName = "Banco BBVA";
@@ -324,28 +330,14 @@ class BbvaParser implements BankParser {
       };
     }
 
-    const headers = (rawData[headerRowIdx] as any[]).map(normalizeHeaderCell);
-    let dateIdx = headers.findIndex(
-      (h) => h === "fecha" || (h.includes("fecha") && !h.includes("valor"))
-    );
-    if (dateIdx === -1) dateIdx = 0;
-
-    const descIdx = headers.findIndex((h) => h.includes("concepto"));
-    let creditIdx = headers.findIndex((h) => h.includes("credito"));
-    let debitIdx = headers.findIndex((h) => h.includes("debito"));
-    const officeIdx = headers.findIndex((h) => h.includes("oficina"));
-    const detailIdx = headers.findIndex(
-      (h) =>
-        h.includes("detalle") ||
-        (h.includes("saldo") && h.includes("parcial")) ||
-        h === "saldo parcial"
-    );
-
-    if (creditIdx === -1 && debitIdx === -1) {
+    const headerRow = rawData[headerRowIdx] as any[];
+    if (!this.headerRowMatchesBbvaLayout(headerRow)) {
       return {
         transactions,
         skipped: rawData.length - headerRowIdx - 1,
-        skippedReasons: ["No hay columnas Crédito ni Débito."],
+        skippedReasons: [
+          "La fila de encabezados no coincide con el layout BBVA esperado (columnas A,C,G,H).",
+        ],
         total: Math.max(0, rawData.length - headerRowIdx - 1),
       };
     }
@@ -359,11 +351,11 @@ class BbvaParser implements BankParser {
         continue;
       }
 
-      const dateValue = parseExcelDate(row[dateIdx]);
-      let description = descIdx !== -1 ? String(row[descIdx] || "").trim() : "";
+      const dateValue = parseExcelDate(row[BBVA_COL_FECHA]);
+      const description = String(row[BBVA_COL_CONCEPTO] ?? "").trim();
 
-      const debitRaw = debitIdx !== -1 ? parseBbvaAmount(row[debitIdx]) : 0;
-      const creditRaw = creditIdx !== -1 ? parseBbvaAmount(row[creditIdx]) : 0;
+      const debitRaw = parseBbvaAmount(row[BBVA_COL_DEBITO]);
+      const creditRaw = parseBbvaAmount(row[BBVA_COL_CREDITO]);
 
       const debitAbs = debitRaw !== 0 ? Math.abs(debitRaw) : 0;
       const creditAbs = creditRaw > 0 ? creditRaw : 0;
@@ -379,9 +371,6 @@ class BbvaParser implements BankParser {
         continue;
       }
 
-      const detail =
-        detailIdx !== -1 ? String(row[detailIdx] || "").trim() : "";
-
       let amount = 0;
       let type: "income" | "expense" = "expense";
 
@@ -396,18 +385,9 @@ class BbvaParser implements BankParser {
         continue;
       }
 
-      const office =
-        officeIdx !== -1 ? String(row[officeIdx] || "").trim() : "";
-      const parts = [description || "Movimiento BBVA"];
-      if (office) parts.push(office);
-      if (detail && detail !== office && !/saldo disponible/i.test(detail)) {
-        parts.push(detail);
-      }
-      description = parts.filter(Boolean).join(" — ");
-
       transactions.push({
         date: dateValue,
-        description,
+        description: description || "Movimiento BBVA",
         amount,
         type,
         rawData: { rowIndex: i, sheetRow: i + 1 },
@@ -417,19 +397,32 @@ class BbvaParser implements BankParser {
     return { transactions, skipped, skippedReasons, total };
   }
 
+  /** Confirma que la fila cabecera tiene texto esperado en A y crédito/débito en G/H. */
+  private headerRowMatchesBbvaLayout(headerRow: any[]): boolean {
+    const a = normalizeHeaderCell(headerRow[BBVA_COL_FECHA]);
+    const g = normalizeHeaderCell(headerRow[BBVA_COL_CREDITO]);
+    const h = normalizeHeaderCell(headerRow[BBVA_COL_DEBITO]);
+    const fechaOk =
+      a === "fecha" || (a.includes("fecha") && !a.includes("valor"));
+    const creditoOk = g.includes("credito");
+    const debitoOk = h.includes("debito");
+    return fechaOk && creditoOk && debitoOk;
+  }
+
   private findHeaderRow(rawData: any[][]): number {
     const maxScan = Math.min(rawData.length, 50);
     for (let r = 0; r < maxScan; r++) {
       const row = rawData[r];
       if (!row || row.length === 0) continue;
       const headers = row.map(normalizeHeaderCell);
-      const hasConcepto = headers.some((h) => h.includes("concepto"));
-      const hasDebito = headers.some((h) => h.includes("debito"));
-      const hasCredito = headers.some((h) => h.includes("credito"));
-      const hasFecha = headers.some(
-        (h) => h === "fecha" || (h.includes("fecha") && !h.includes("valor"))
-      );
-      if (hasFecha && hasConcepto && (hasDebito || hasCredito)) {
+      const hasConcepto = headers[BBVA_COL_CONCEPTO]?.includes("concepto");
+      const hasDebito = headers[BBVA_COL_DEBITO]?.includes("debito");
+      const hasCredito = headers[BBVA_COL_CREDITO]?.includes("credito");
+      const hasFecha =
+        headers[BBVA_COL_FECHA] === "fecha" ||
+        (headers[BBVA_COL_FECHA]?.includes("fecha") &&
+          !headers[BBVA_COL_FECHA]?.includes("valor"));
+      if (hasFecha && hasConcepto && hasCredito && hasDebito) {
         return r;
       }
     }
