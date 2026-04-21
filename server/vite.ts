@@ -33,6 +33,18 @@ export async function setupVite(server: Server, app: Express) {
 
   app.use("*", async (req, res, next) => {
     const url = req.originalUrl;
+    const pathOnly = url.split("?")[0] || "";
+
+    // Sin esto, cualquier /api que no matchee una ruta Express cae aca y devuelve index.html (200),
+    // y el cliente falla con "Unexpected token '<' ... is not valid JSON".
+    if (pathOnly.startsWith("/api")) {
+      if (req.method === "OPTIONS") {
+        return res.status(204).end();
+      }
+      return res.status(404).json({
+        message: `Ruta API no encontrada: ${req.method} ${url}`,
+      });
+    }
 
     try {
       const clientTemplate = path.resolve(

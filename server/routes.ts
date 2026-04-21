@@ -3126,5 +3126,14 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
   });
 
+  app.use("/api", (req, res) => {
+    if (req.method === "OPTIONS") {
+      return res.status(204).end();
+    }
+    res.status(404).json({
+      message: `Ruta API no encontrada: ${req.method} ${req.originalUrl}`,
+    });
+  });
+
   return httpServer;
 }
