@@ -299,7 +299,8 @@ class GenericParser implements BankParser {
   }
 }
 
-const BBVA_MOVEMENT_SHEETS = ["Movimientos Históricos", "Movimientos del Día"];
+/** Solo históricos: la solapa "del día" repite movimientos ya incluidos aquí. */
+const BBVA_MOVEMENT_SHEETS = ["Movimientos Históricos"];
 
 /** Layout fijo extractos BBVA: A Fecha, C Concepto, G Créditos, H Débitos (índices 0-based). */
 const BBVA_COL_FECHA = 0;
@@ -430,19 +431,6 @@ class BbvaParser implements BankParser {
   }
 }
 
-function dedupeBbvaTransactions(txs: ParsedTransaction[]): ParsedTransaction[] {
-  const seen = new Set<string>();
-  const out: ParsedTransaction[] = [];
-  for (const tx of txs) {
-    const cents = Math.round(tx.amount * 100);
-    const key = `${tx.date}|${tx.type}|${cents}|${tx.description}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    out.push(tx);
-  }
-  return out;
-}
-
 export function parseBbvaWorkbook(workbook: XLSX.WorkBook): ParseResult {
   const parser = new BbvaParser();
   const namesInBook = workbook.SheetNames;
@@ -479,16 +467,11 @@ export function parseBbvaWorkbook(workbook: XLSX.WorkBook): ParseResult {
     totalRows += part.total;
   }
 
-  const before = merged.length;
-  const transactions = dedupeBbvaTransactions(merged);
-  const dupes = before - transactions.length;
-  if (dupes > 0) {
-    skipped += dupes;
-    skippedReasons.push(`Entre hojas: ${dupes} movimiento(s) duplicado(s) omitido(s)`);
-  }
-
+  // No deduplicar por (fecha+monto+concepto): en un mismo extracto pueden existir varias
+  // líneas legítimas idénticas (mismo concepto importe y día). El dedupe entre hojas ya no aplica
+  // al usar solo "Movimientos Históricos".
   return {
-    transactions,
+    transactions: merged,
     skipped,
     skippedReasons: skippedReasons.slice(0, 25),
     total: totalRows,
