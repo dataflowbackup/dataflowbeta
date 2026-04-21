@@ -38,6 +38,8 @@ interface DataTableProps<T> {
   isLoading?: boolean;
   searchPlaceholder?: string;
   searchKeys?: (keyof T)[];
+  /** Si es false, no se muestra la barra de busqueda (el padre filtra `data`). */
+  showSearch?: boolean;
   filters?: FilterConfig<T>[];
   onAdd?: () => void;
   addLabel?: string;
@@ -51,6 +53,7 @@ export function DataTable<T extends { id: number | string }>({
   isLoading = false,
   searchPlaceholder = "Buscar...",
   searchKeys = [],
+  showSearch = true,
   filters = [],
   onAdd,
   addLabel = "Agregar",
@@ -107,7 +110,7 @@ export function DataTable<T extends { id: number | string }>({
     return (
       <div className="space-y-4">
         <div className="flex items-center justify-between gap-4">
-          <Skeleton className="h-10 w-72" />
+          {showSearch && <Skeleton className="h-10 w-72" />}
           <Skeleton className="h-10 w-32" />
         </div>
         <div className="rounded-lg border">
@@ -142,19 +145,21 @@ export function DataTable<T extends { id: number | string }>({
     <div className="space-y-4">
       <div className="flex flex-col gap-4">
         <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
-          <div className="relative w-full sm:w-72">
-            <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-            <Input
-              placeholder={searchPlaceholder}
-              value={search}
-              onChange={(e) => {
-                setSearch(e.target.value);
-                setPage(0);
-              }}
-              className="pl-9"
-              data-testid="input-search"
-            />
-          </div>
+          {showSearch && (
+            <div className="relative w-full sm:w-72">
+              <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+              <Input
+                placeholder={searchPlaceholder}
+                value={search}
+                onChange={(e) => {
+                  setSearch(e.target.value);
+                  setPage(0);
+                }}
+                className="pl-9"
+                data-testid="input-search"
+              />
+            </div>
+          )}
           {onAdd && (
             <Button onClick={onAdd} data-testid="button-add">
               <Plus className="h-4 w-4 mr-2" />

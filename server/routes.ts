@@ -1547,23 +1547,14 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.patch("/api/recipes/:id", isAuthenticated, async (req, res) => {
     try {
       const clientId = await getClientId(req);
+      const id = parseInt(req.params.id);
       const { ingredients, ...recipe } = req.body;
-      const data = await storage.updateRecipe(clientId, parseInt(req.params.id), recipe, ingredients);
+      if (Array.isArray(ingredients) && ingredients.some((ing: any) => Number(ing?.subRecipeId) === id)) {
+        return res.status(400).json({ message: "Una sub-receta no puede incluirse a si misma como ingrediente" });
+      }
+      const data = await storage.updateRecipe(clientId, id, recipe, ingredients);
       if (!data) return res.status(404).json({ message: "Recipe not found or access denied" });
       res.json(data);
-    } catch (e: any) {
-      res.status(500).json({ message: e.message });
-    }
-  });
-
-  app.patch("/api/recipes/:id", isAuthenticated, async (req, res) => {
-    try {
-      const clientId = await getClientId(req);
-      const id = parseInt(req.params.id);
-      const { ingredients, ...recipeData } = req.body;
-      const updated = await storage.updateRecipe(clientId, id, recipeData, ingredients);
-      if (!updated) return res.status(404).json({ message: "Recipe not found or access denied" });
-      res.json(updated);
     } catch (e: any) {
       res.status(500).json({ message: e.message });
     }

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { useLocation, Link } from "wouter";
 import { PageHeader } from "@/components/page-header";
@@ -7,10 +7,19 @@ import { CodeConfirmDialog } from "@/components/code-confirm-dialog";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { Switch } from "@/components/ui/switch";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { formatCurrency, formatPercentage, formatDate } from "@/lib/formatters";
-import { ChefHat, Plus, Eye, Trash2, TrendingUp, TrendingDown, Percent, Layers, Download } from "lucide-react";
+import { ChefHat, Plus, Eye, Trash2, TrendingUp, TrendingDown, Percent, Layers, Download, Search } from "lucide-react";
 import type { Recipe, RecipeCategory, RecipeSubcategory } from "@shared/schema";
 
 interface RecipeWithRelations extends Recipe {
@@ -19,10 +28,31 @@ interface RecipeWithRelations extends Recipe {
   ingredientCount?: number;
 }
 
+function computePlatoKpis(rows: RecipeWithRelations[]) {
+  const n = rows.length;
+  const active = rows.filter((r) => r.active).length;
+  const avg = (vals: number[]) => (vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : 0);
+  const cmvs = rows.map((r) => parseFloat(String(r.cmvPercentage || 0)));
+  const margins = rows.map((r) => parseFloat(String(r.marginPercentage || 0)));
+  const markups = rows.map((r) => parseFloat(String(r.markup || 0)));
+  return {
+    totalRecipes: n,
+    activeRecipes: active,
+    inactiveRecipes: n - active,
+    avgCmv: Math.round(avg(cmvs) * 100) / 100,
+    avgMargin: Math.round(avg(margins) * 100) / 100,
+    avgMarkup: Math.round(avg(markups) * 100) / 100,
+  };
+}
+
 export default function RecipesPage() {
   const { toast } = useToast();
   const [, navigate] = useLocation();
   const [deleteRecipe, setDeleteRecipe] = useState<RecipeWithRelations | null>(null);
+  const [searchName, setSearchName] = useState("");
+  const [filterCategoryId, setFilterCategoryId] = useState<string>("__all__");
+  const [filterSubcategoryId, setFilterSubcategoryId] = useState<string>("__all__");
+  const [filterActive, setFilterActive] = useState<string>("__all__");
 
   const { data: recipes = [], isLoading } = useQuery<RecipeWithRelations[]>({
     queryKey: ["/api/recipes"],
@@ -42,7 +72,72 @@ export default function RecipesPage() {
     queryKey: ["/api/recipes/stats"],
   });
 
+  const { data: recipeCategories = [] } = useQuery<RecipeCategory[]>({
+    queryKey: ["/api/recipe-categories"],
+  });
+
+  const { data: recipeSubcategories = [] } = useQuery<
+    (RecipeSubcategory & { recipeCategory?: RecipeCategory | null })[]
+  >({
+    queryKey: ["/api/recipe-subcategories"],
+  });
+
   const platos = recipes.filter(r => r.recipeType !== 'sub');
+
+  const subcategoryFilterOptions = useMemo(() => {
+    if (filterCategoryId === "__all__") {
+      return [...recipeSubcategories].sort((a, b) => {
+        const an = a.recipeCategory?.name || "";
+        const bn = b.recipeCategory?.name || "";
+        if (an !== bn) return an.localeCompare(bn);
+        return a.name.localeCompare(b.name);
+      });
+    }
+    const cid = Number.parseInt(filterCategoryId, 10);
+    return recipeSubcategories.filter((s) => s.recipeCategoryId === cid);
+  }, [recipeSubcategories, filterCategoryId]);
+
+  const platosStructuralFiltered = useMemo(() => {
+    let rows = platos;
+    if (filterCategoryId !== "__all__") {
+      const cid = Number.parseInt(filterCategoryId, 10);
+      rows = rows.filter(
+        (r) => r.category?.id === cid || r.subcategory?.recipeCategoryId === cid,
+      );
+    }
+    if (filterSubcategoryId !== "__all__") {
+      const sid = Number.parseInt(filterSubcategoryId, 10);
+      rows = rows.filter((r) => r.subcategory?.id === sid);
+    }
+    if (filterActive === "active") rows = rows.filter((r) => r.active);
+    if (filterActive === "inactive") rows = rows.filter((r) => !r.active);
+    return rows;
+  }, [platos, filterCategoryId, filterSubcategoryId, filterActive]);
+
+  const platosForTable = useMemo(() => {
+    const q = searchName.trim().toLowerCase();
+    if (!q) return platosStructuralFiltered;
+    return platosStructuralFiltered.filter((r) => r.name.toLowerCase().includes(q));
+  }, [platosStructuralFiltered, searchName]);
+
+  const dashboardKpis = useMemo(
+    () => computePlatoKpis(platosStructuralFiltered),
+    [platosStructuralFiltered],
+  );
+
+  const patchActiveMutation = useMutation({
+    mutationFn: async ({ id, active }: { id: number; active: boolean }) => {
+      await apiRequest("PATCH", `/api/recipes/${id}`, { active });
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/recipes"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/recipes/stats"] });
+      toast({ title: "Estado actualizado" });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Error al actualizar estado", description: error.message, variant: "destructive" });
+    },
+  });
 
   const deleteMutation = useMutation({
     mutationFn: async (id: number) => {
@@ -215,9 +310,17 @@ export default function RecipesPage() {
       key: "active",
       header: "Estado",
       cell: (row) => (
-        <Badge variant={row.active ? "default" : "secondary"}>
-          {row.active ? "Activo" : "Inactivo"}
-        </Badge>
+        <div className="flex items-center gap-2">
+          <Switch
+            checked={row.active}
+            disabled={patchActiveMutation.isPending}
+            onCheckedChange={(checked) => patchActiveMutation.mutate({ id: row.id, active: checked })}
+            data-testid={`switch-active-${row.id}`}
+          />
+          <span className="text-xs text-muted-foreground whitespace-nowrap">
+            {row.active ? "Activo" : "Inactivo"}
+          </span>
+        </div>
       ),
     },
     {
@@ -281,7 +384,7 @@ export default function RecipesPage() {
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold font-mono" data-testid="stat-total">
-              {stats?.totalRecipes || 0}
+              {dashboardKpis.totalRecipes}
             </div>
           </CardContent>
         </Card>
@@ -292,7 +395,7 @@ export default function RecipesPage() {
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold font-mono text-green-600" data-testid="stat-active">
-              {stats?.activeRecipes || 0}
+              {dashboardKpis.activeRecipes}
             </div>
           </CardContent>
         </Card>
@@ -303,7 +406,7 @@ export default function RecipesPage() {
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold font-mono" data-testid="stat-inactive">
-              {stats?.inactiveRecipes || 0}
+              {dashboardKpis.inactiveRecipes}
             </div>
           </CardContent>
         </Card>
@@ -314,7 +417,7 @@ export default function RecipesPage() {
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold font-mono" data-testid="stat-avg-cmv">
-              {formatPercentage(stats?.avgCmv || 0)}
+              {formatPercentage(dashboardKpis.avgCmv)}
             </div>
           </CardContent>
         </Card>
@@ -325,7 +428,7 @@ export default function RecipesPage() {
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold font-mono text-green-600" data-testid="stat-avg-margin">
-              {formatPercentage(stats?.avgMargin || 0)}
+              {formatPercentage(dashboardKpis.avgMargin)}
             </div>
           </CardContent>
         </Card>
@@ -336,17 +439,83 @@ export default function RecipesPage() {
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold font-mono" data-testid="stat-avg-markup">
-              {formatPercentage(stats?.avgMarkup || 0)}
+              {formatPercentage(dashboardKpis.avgMarkup)}
             </div>
           </CardContent>
         </Card>
       </div>
 
+      <div className="flex flex-col gap-3 rounded-lg border bg-card p-4">
+        <div className="flex flex-col gap-3 lg:flex-row lg:flex-wrap lg:items-end">
+          <div className="relative flex-1 min-w-[200px]">
+            <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              placeholder="Buscar por nombre..."
+              value={searchName}
+              onChange={(e) => setSearchName(e.target.value)}
+              className="pl-9"
+              data-testid="input-recipe-search"
+            />
+          </div>
+          <div className="flex flex-col gap-1 min-w-[180px]">
+            <span className="text-xs text-muted-foreground">Categoria</span>
+            <Select
+              value={filterCategoryId}
+              onValueChange={(v) => {
+                setFilterCategoryId(v);
+                setFilterSubcategoryId("__all__");
+              }}
+            >
+              <SelectTrigger data-testid="filter-recipe-category">
+                <SelectValue placeholder="Todas" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="__all__">Todas las categorias</SelectItem>
+                {recipeCategories.map((c) => (
+                  <SelectItem key={c.id} value={String(c.id)}>
+                    {c.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="flex flex-col gap-1 min-w-[200px]">
+            <span className="text-xs text-muted-foreground">Subcategoria</span>
+            <Select value={filterSubcategoryId} onValueChange={setFilterSubcategoryId}>
+              <SelectTrigger data-testid="filter-recipe-subcategory">
+                <SelectValue placeholder="Todas" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="__all__">Todas las subcategorias</SelectItem>
+                {subcategoryFilterOptions.map((s) => (
+                  <SelectItem key={s.id} value={String(s.id)}>
+                    {(s.recipeCategory?.name || "?") + " — " + s.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="flex flex-col gap-1 min-w-[160px]">
+            <span className="text-xs text-muted-foreground">Activo / Inactivo</span>
+            <Select value={filterActive} onValueChange={setFilterActive}>
+              <SelectTrigger data-testid="filter-recipe-active">
+                <SelectValue placeholder="Todos" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="__all__">Todos</SelectItem>
+                <SelectItem value="active">Solo activas</SelectItem>
+                <SelectItem value="inactive">Solo inactivas</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+        </div>
+      </div>
+
       <DataTable
         columns={columns}
-        data={platos}
+        data={platosForTable}
         isLoading={isLoading}
-        searchPlaceholder="Buscar por nombre..."
+        showSearch={false}
         searchKeys={["name"]}
         emptyMessage="No hay recetas registradas. Los costos se calculan automaticamente basandose en los insumos y sus ultimos precios de compra."
         pageSize={15}

@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo, useRef } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
-import { useForm, useFieldArray, useWatch } from "react-hook-form";
+import { useForm, useFieldArray, useWatch, useFormState } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import { useLocation, useParams } from "wouter";
@@ -168,31 +168,13 @@ export default function RecipeFormPage() {
     queryKey: ["/api/units"],
   });
 
-  const { data: subRecipes = [] } = useQuery<RecipeWithCategory[]>({
+  const { data: allSubRecipesRaw = [] } = useQuery<RecipeWithCategory[]>({
     queryKey: ["/api/recipes"],
-    select: (data: RecipeWithCategory[]) => data.filter((r: RecipeWithCategory) => r.recipeType === "sub" && r.active),
+    select: (data: RecipeWithCategory[]) => data.filter((r: RecipeWithCategory) => r.recipeType === "sub"),
   });
 
-  const ingredientOptions = useMemo(() => {
-    const supplyOptions = supplies
-      .filter((s) => s.active)
-      .map((s) => ({
-        value: `supply:${s.id}`,
-        label: s.name,
-        type: "supply" as const,
-        unitLabel: s.unitOfMeasure ? `${formatCurrency(getSupplyUnitCost(s))}/${s.unitOfMeasure.abbreviation}` : null,
-      }));
-
-    const subRecipeOptions = (isSubRecipe ? [] : subRecipes)
-      .map((sr) => ({
-        value: `subrecipe:${sr.id}`,
-        label: sr.name,
-        type: "subrecipe" as const,
-        unitLabel: `${formatCurrency(getSubRecipeUnitCost(sr))}/${getSubRecipeUnitLabel(sr, units)}`,
-      }));
-
-    return { supplyOptions, subRecipeOptions };
-  }, [supplies, subRecipes, isSubRecipe, units]);
+  const editingRecipeId =
+    isEditing && params.id && params.id !== "nueva" ? Number.parseInt(params.id, 10) : undefined;
 
   const form = useForm<FormData>({
     resolver: zodResolver(formSchema),
@@ -227,12 +209,16 @@ export default function RecipeFormPage() {
           }))
         : [{ type: "supply" as const, supplyId: 0, subRecipeId: undefined, quantityTotal: 1, quantityUseful: 0, wastePercentage: 0 }];
 
+      const saleWT = parseFloat(String(existingRecipe.salePriceWithTax) || "0");
+      const saleSin = parseFloat(String(existingRecipe.salePrice) || "0");
+      const salePriceWithTaxHydrated = saleWT > 0 ? saleWT : (saleSin > 0 ? saleSin * 1.21 : 0);
+
       form.reset({
         name: existingRecipe.name,
         subcategoryId: existingRecipe.subcategoryId || undefined,
         description: existingRecipe.description || "",
         preparationSteps: existingRecipe.preparationSteps || "",
-        salePriceWithTax: parseFloat(String(existingRecipe.salePriceWithTax) || "0"),
+        salePriceWithTax: salePriceWithTaxHydrated,
         cmvIdeal: existingRecipe.cmvIdeal ? parseFloat(String(existingRecipe.cmvIdeal)) : undefined,
         usefulYield: existingRecipe.usefulYield ? parseFloat(String(existingRecipe.usefulYield)) : undefined,
         yieldUnit: existingRecipe.yieldUnit || "",
@@ -255,7 +241,8 @@ export default function RecipeFormPage() {
         setPhotoPreview(existingRecipe.photoUrl);
       }
     }
-  }, [existingRecipe, form, replaceIngredients]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- reset solo al cargar la receta; `form`/`replaceIngredients` inestables
+  }, [existingRecipe]);
 
   const watchIngredients = useWatch({
     control: form.control,
@@ -274,9 +261,45 @@ export default function RecipeFormPage() {
     name: "usefulYield",
   });
 
+  const { dirtyFields } = useFormState({ control: form.control });
+
+  const subRecipePickerList = useMemo(() => {
+    const refIds = new Set(
+      (watchIngredients || [])
+        .filter((i) => i?.type === "subrecipe" && i?.subRecipeId)
+        .map((i) => Number(i!.subRecipeId)),
+    );
+    return allSubRecipesRaw.filter(
+      (sr) =>
+        sr.id !== editingRecipeId &&
+        (sr.active !== false || refIds.has(sr.id)),
+    );
+  }, [allSubRecipesRaw, editingRecipeId, watchIngredients]);
+
+  const ingredientOptions = useMemo(() => {
+    const supplyOptions = supplies
+      .filter((s) => s.active)
+      .map((s) => ({
+        value: `supply:${s.id}`,
+        label: s.name,
+        type: "supply" as const,
+        unitLabel: s.unitOfMeasure ? `${formatCurrency(getSupplyUnitCost(s))}/${s.unitOfMeasure.abbreviation}` : null,
+      }));
+
+    const sourceForSubRecipeLines = isSubRecipe ? subRecipePickerList : allSubRecipesRaw.filter((sr) => sr.active);
+    const subRecipeOptions = sourceForSubRecipeLines.map((sr) => ({
+      value: `subrecipe:${sr.id}`,
+      label: sr.name,
+      type: "subrecipe" as const,
+      unitLabel: `${formatCurrency(getSubRecipeUnitCost(sr))}/${getSubRecipeUnitLabel(sr, units)}`,
+    }));
+
+    return { supplyOptions, subRecipeOptions };
+  }, [supplies, allSubRecipesRaw, subRecipePickerList, isSubRecipe, units]);
+
   const getIngredientUnitCost = (ing: FormData["ingredients"][number]) => {
     if (ing.type === "subrecipe" && ing.subRecipeId) {
-      const sr = subRecipes.find((r) => r.id === Number(ing.subRecipeId));
+      const sr = allSubRecipesRaw.find((r) => r.id === Number(ing.subRecipeId));
       if (sr) return getSubRecipeUnitCost(sr);
     }
     if (ing.supplyId) {
@@ -305,7 +328,25 @@ export default function RecipeFormPage() {
       totalCost += getIngredientCost(idx);
     });
 
-    const salePriceWithTax = watchSalePriceWithTax || 0;
+    const salePriceDirty = !!dirtyFields.salePriceWithTax;
+    const watchedSale = Number(watchSalePriceWithTax ?? 0);
+    const serverSaleWT =
+      !isSubRecipe && existingRecipe ? parseFloat(String(existingRecipe.salePriceWithTax ?? "0")) || 0 : 0;
+    const serverSaleSin =
+      !isSubRecipe && existingRecipe ? parseFloat(String(existingRecipe.salePrice ?? "0")) || 0 : 0;
+    const inferredFromSinIva = serverSaleWT <= 0 && serverSaleSin > 0 ? serverSaleSin * 1.21 : 0;
+
+    let salePriceWithTax = 0;
+    if (salePriceDirty) {
+      salePriceWithTax = Number.isFinite(watchedSale) ? watchedSale : 0;
+    } else if (watchedSale > 0) {
+      salePriceWithTax = watchedSale;
+    } else if (serverSaleWT > 0) {
+      salePriceWithTax = serverSaleWT;
+    } else if (inferredFromSinIva > 0) {
+      salePriceWithTax = inferredFromSinIva;
+    }
+
     const salePrice = salePriceWithTax / 1.21;
     const cmvPercentage = salePrice > 0 ? (totalCost / salePrice) * 100 : 0;
     const margin = salePrice - totalCost;
@@ -325,7 +366,16 @@ export default function RecipeFormPage() {
       cmvIdeal,
       cmvDiff,
     };
-  }, [watchIngredients, watchSalePriceWithTax, watchCmvIdeal, supplies, subRecipes]);
+  }, [
+    watchIngredients,
+    watchSalePriceWithTax,
+    watchCmvIdeal,
+    supplies,
+    allSubRecipesRaw,
+    dirtyFields.salePriceWithTax,
+    existingRecipe,
+    isSubRecipe,
+  ]);
 
   const subRecipeWasteCalc = useMemo(() => {
     if (!isSubRecipe) return null;
@@ -472,8 +522,21 @@ export default function RecipeFormPage() {
       return ing.supplyId && Number(ing.supplyId) > 0;
     });
     if (validIngredients.length === 0) {
-      toast({ title: "Debe agregar al menos un ingrediente con insumo seleccionado", variant: "destructive" });
+      toast({ title: "Debe agregar al menos un ingrediente (insumo o sub-receta) confirmado", variant: "destructive" });
       return;
+    }
+    if (isSubRecipe && editingRecipeId) {
+      const selfIngredient = validIngredients.some(
+        (ing) => ing.type === "subrecipe" && Number(ing.subRecipeId) === editingRecipeId,
+      );
+      if (selfIngredient) {
+        toast({
+          title: "Sub-receta invalida",
+          description: "No puede incluir la misma sub-receta como ingrediente de si misma.",
+          variant: "destructive",
+        });
+        return;
+      }
     }
     createMutation.mutate(data);
   };
@@ -589,9 +652,20 @@ export default function RecipeFormPage() {
                                 type="number"
                                 step="0.01"
                                 min="0"
-                                {...field}
                                 className="font-mono"
                                 data-testid="input-sale-price"
+                                name={field.name}
+                                ref={field.ref}
+                                onBlur={field.onBlur}
+                                value={
+                                  field.value === undefined || field.value === null || Number.isNaN(Number(field.value))
+                                    ? ""
+                                    : field.value
+                                }
+                                onChange={(e) => {
+                                  const v = e.target.value;
+                                  field.onChange(v === "" ? 0 : Number.parseFloat(v));
+                                }}
                               />
                             </FormControl>
                             <p className="text-xs text-muted-foreground font-mono">
@@ -702,7 +776,7 @@ export default function RecipeFormPage() {
                     const isSubRecipeIng = ing?.type === "subrecipe";
                     const supplyId = Number(ing?.supplyId) || 0;
                     const supply = supplies.find(s => s.id === supplyId);
-                    const subRecipe = isSubRecipeIng ? subRecipes.find(r => r.id === Number(ing?.subRecipeId)) : null;
+                    const subRecipe = isSubRecipeIng ? allSubRecipesRaw.find((r) => r.id === Number(ing?.subRecipeId)) : null;
                     const unitCostDisplay = isSubRecipeIng
                       ? getSubRecipeUnitCost(subRecipe)
                       : getSupplyUnitCost(supply);
@@ -852,7 +926,7 @@ export default function RecipeFormPage() {
                                         </CommandItem>
                                       ))}
                                     </CommandGroup>
-                                    {!isSubRecipe && (
+                                    {ingredientOptions.subRecipeOptions.length > 0 && (
                                       <CommandGroup heading="Sub-recetas">
                                         {ingredientOptions.subRecipeOptions.map((option) => (
                                           <CommandItem

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { useLocation, Link } from "wouter";
 import { PageHeader } from "@/components/page-header";
@@ -7,10 +7,19 @@ import { CodeConfirmDialog } from "@/components/code-confirm-dialog";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { Switch } from "@/components/ui/switch";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { formatCurrency, formatPercentage, formatDate } from "@/lib/formatters";
-import { Layers, Plus, Eye, Trash2, ArrowLeft } from "lucide-react";
+import { Layers, Plus, Eye, Trash2, ArrowLeft, Search } from "lucide-react";
 import type { Recipe, RecipeCategory, RecipeSubcategory, UnitOfMeasure } from "@shared/schema";
 
 interface RecipeWithRelations extends Recipe {
@@ -20,21 +29,25 @@ interface RecipeWithRelations extends Recipe {
   yieldUnitName?: string;
 }
 
+function computeSubRecipeKpis(rows: RecipeWithRelations[]) {
+  const n = rows.length;
+  const active = rows.filter((r) => r.active).length;
+  return {
+    totalSubRecipes: n,
+    activeSubRecipes: active,
+    inactiveSubRecipes: n - active,
+  };
+}
+
 export default function SubRecipesPage() {
   const { toast } = useToast();
   const [, navigate] = useLocation();
   const [deleteRecipe, setDeleteRecipe] = useState<RecipeWithRelations | null>(null);
+  const [searchName, setSearchName] = useState("");
+  const [filterActive, setFilterActive] = useState<string>("__all__");
 
   const { data: recipes = [], isLoading } = useQuery<RecipeWithRelations[]>({
     queryKey: ["/api/recipes"],
-  });
-
-  const { data: stats } = useQuery<{
-    totalSubRecipes: number;
-    activeSubRecipes: number;
-    inactiveSubRecipes: number;
-  }>({
-    queryKey: ["/api/recipes/stats"],
   });
 
   const { data: units = [] } = useQuery<UnitOfMeasure[]>({
@@ -42,6 +55,38 @@ export default function SubRecipesPage() {
   });
 
   const subRecipes = recipes.filter(r => r.recipeType === 'sub');
+
+  const subStructuralFiltered = useMemo(() => {
+    let rows = subRecipes;
+    if (filterActive === "active") rows = rows.filter((r) => r.active);
+    if (filterActive === "inactive") rows = rows.filter((r) => !r.active);
+    return rows;
+  }, [subRecipes, filterActive]);
+
+  const subRecipesForTable = useMemo(() => {
+    const q = searchName.trim().toLowerCase();
+    if (!q) return subStructuralFiltered;
+    return subStructuralFiltered.filter((r) => r.name.toLowerCase().includes(q));
+  }, [subStructuralFiltered, searchName]);
+
+  const subDashboardKpis = useMemo(
+    () => computeSubRecipeKpis(subStructuralFiltered),
+    [subStructuralFiltered],
+  );
+
+  const patchActiveMutation = useMutation({
+    mutationFn: async ({ id, active }: { id: number; active: boolean }) => {
+      await apiRequest("PATCH", `/api/recipes/${id}`, { active });
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/recipes"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/recipes/stats"] });
+      toast({ title: "Estado actualizado" });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Error al actualizar estado", description: error.message, variant: "destructive" });
+    },
+  });
 
   const deleteMutation = useMutation({
     mutationFn: async (id: number) => {
@@ -153,9 +198,17 @@ export default function SubRecipesPage() {
       key: "active",
       header: "Estado",
       cell: (row) => (
-        <Badge variant={row.active ? "default" : "secondary"}>
-          {row.active ? "Activa" : "Inactiva"}
-        </Badge>
+        <div className="flex items-center gap-2">
+          <Switch
+            checked={row.active}
+            disabled={patchActiveMutation.isPending}
+            onCheckedChange={(checked) => patchActiveMutation.mutate({ id: row.id, active: checked })}
+            data-testid={`switch-sub-active-${row.id}`}
+          />
+          <span className="text-xs text-muted-foreground whitespace-nowrap">
+            {row.active ? "Activa" : "Inactiva"}
+          </span>
+        </div>
       ),
     },
     {
@@ -210,7 +263,7 @@ export default function SubRecipesPage() {
             <Layers className="h-4 w-4 text-muted-foreground" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold font-mono" data-testid="stat-total-sub">{stats?.totalSubRecipes || 0}</div>
+            <div className="text-2xl font-bold font-mono" data-testid="stat-total-sub">{subDashboardKpis.totalSubRecipes}</div>
           </CardContent>
         </Card>
         <Card>
@@ -219,7 +272,7 @@ export default function SubRecipesPage() {
             <Layers className="h-4 w-4 text-green-600" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold font-mono text-green-600" data-testid="stat-active-sub">{stats?.activeSubRecipes || 0}</div>
+            <div className="text-2xl font-bold font-mono text-green-600" data-testid="stat-active-sub">{subDashboardKpis.activeSubRecipes}</div>
           </CardContent>
         </Card>
         <Card>
@@ -228,16 +281,42 @@ export default function SubRecipesPage() {
             <Layers className="h-4 w-4 text-muted-foreground" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold font-mono" data-testid="stat-inactive-sub">{stats?.inactiveSubRecipes || 0}</div>
+            <div className="text-2xl font-bold font-mono" data-testid="stat-inactive-sub">{subDashboardKpis.inactiveSubRecipes}</div>
           </CardContent>
         </Card>
       </div>
 
+      <div className="flex flex-col gap-3 rounded-lg border bg-card p-4 sm:flex-row sm:flex-wrap sm:items-end">
+        <div className="relative flex-1 min-w-[200px]">
+          <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+          <Input
+            placeholder="Buscar sub-receta..."
+            value={searchName}
+            onChange={(e) => setSearchName(e.target.value)}
+            className="pl-9"
+            data-testid="input-sub-recipe-search"
+          />
+        </div>
+        <div className="flex flex-col gap-1 min-w-[180px]">
+          <span className="text-xs text-muted-foreground">Activo / Inactivo</span>
+          <Select value={filterActive} onValueChange={setFilterActive}>
+            <SelectTrigger data-testid="filter-sub-active">
+              <SelectValue placeholder="Todos" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="__all__">Todas</SelectItem>
+              <SelectItem value="active">Solo activas</SelectItem>
+              <SelectItem value="inactive">Solo inactivas</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+      </div>
+
       <DataTable
         columns={columns}
-        data={subRecipes}
+        data={subRecipesForTable}
         isLoading={isLoading}
-        searchPlaceholder="Buscar sub-receta..."
+        showSearch={false}
         searchKeys={["name"]}
         emptyMessage="No hay sub-recetas registradas. Las sub-recetas son producciones intermedias (ej: masa, salsa) que se usan como ingredientes."
         pageSize={15}
