@@ -66,6 +66,9 @@ interface BranchMapping {
 
 type FilterTab = "all" | "uncategorized" | "categorized";
 
+/** Pestañas de banco siempre visibles (orden fijo), aunque el contador sea 0. */
+const PINNED_BANK_TAB_IDS = ["galicia", "mercadopago", "bbva"];
+
 interface AvailableBank {
   id: string;
   name: string;
@@ -495,7 +498,18 @@ export default function BankStatementsPage() {
     .filter(t => t.type === "expense" && t.categoryId)
     .reduce((sum, t) => sum + Math.abs(parseFloat(String(t.amount) || "0")), 0);
 
-  const uniqueBanks = [...new Set(transactions.map(t => t.bankSource).filter(Boolean))];
+  const banksForTabs = useMemo(() => {
+    const fromTx = Array.from(
+      new Set(
+        transactions.map((t) => t.bankSource).filter((id): id is string => Boolean(id)),
+      ),
+    );
+    const pinned = PINNED_BANK_TAB_IDS.filter((id) =>
+      availableBanks.some((b) => b.id === id),
+    );
+    const rest = fromTx.filter((id) => !pinned.includes(id)).sort();
+    return [...pinned, ...rest];
+  }, [transactions, availableBanks]);
 
   const bankFilteredTransactions = bankFilter === "all" 
     ? transactions 
@@ -762,9 +776,9 @@ export default function BankStatementsPage() {
             Todos
             <Badge variant="secondary" className="text-xs">{transactions.length}</Badge>
           </TabsTrigger>
-          {uniqueBanks.map(bank => {
-            const bankInfo = availableBanks.find(b => b.id === bank);
-            const bankCount = transactions.filter(t => t.bankSource === bank).length;
+          {banksForTabs.map((bank) => {
+            const bankInfo = availableBanks.find((b) => b.id === bank);
+            const bankCount = transactions.filter((t) => t.bankSource === bank).length;
             return (
               <TabsTrigger key={bank} value={bank as string} data-testid={`bank-tab-${bank}`} className="gap-2">
                 {bankInfo?.name || bank}
@@ -781,7 +795,7 @@ export default function BankStatementsPage() {
         </TabsList>
 
         {/* Bank-specific content for "all" and each bank */}
-        {(bankFilter === "all" || uniqueBanks.includes(bankFilter)) && (
+        {(bankFilter === "all" || banksForTabs.includes(bankFilter)) && (
           <div className="space-y-4">
             {/* Bank-specific stats */}
             <div className="grid gap-4 md:grid-cols-4">

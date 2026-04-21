@@ -42,6 +42,27 @@ function parseArgentineNumber(value: any): number {
   return isNaN(num) ? 0 : num;
 }
 
+/** Montos en columnas BBVA: con coma AR (1.234,56) o con punto decimal (-169886.82). */
+function parseBbvaAmount(value: any): number {
+  if (typeof value === "number") return value;
+  if (value === null || value === undefined) return 0;
+  const str = String(value).trim().replace(/\$/g, "").replace(/\s/g, "");
+  if (!str) return 0;
+  if (str.includes(",")) {
+    return parseArgentineNumber(str);
+  }
+  const n = parseFloat(str);
+  return isNaN(n) ? 0 : n;
+}
+
+function normalizeHeaderCell(value: any): string {
+  return String(value || "")
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .trim();
+}
+
 function parseExcelDate(value: any): string | null {
   if (!value) return null;
   
@@ -278,6 +299,209 @@ class GenericParser implements BankParser {
   }
 }
 
+const BBVA_MOVEMENT_SHEETS = ["Movimientos Históricos", "Movimientos del Día"];
+
+class BbvaParser implements BankParser {
+  bankId = "bbva";
+  bankName = "Banco BBVA";
+
+  parse(rawData: any[][]): ParseResult {
+    const transactions: ParsedTransaction[] = [];
+    const skippedReasons: string[] = [];
+    let skipped = 0;
+
+    if (!rawData || rawData.length < 2) {
+      return { transactions, skipped: 0, skippedReasons: ["Archivo vacío"], total: 0 };
+    }
+
+    const headerRowIdx = this.findHeaderRow(rawData);
+    if (headerRowIdx === -1) {
+      return {
+        transactions,
+        skipped: rawData.length,
+        skippedReasons: ["No se encontró la fila de encabezados (Fecha / Concepto / Crédito / Débito)."],
+        total: Math.max(0, rawData.length - 1),
+      };
+    }
+
+    const headers = (rawData[headerRowIdx] as any[]).map(normalizeHeaderCell);
+    let dateIdx = headers.findIndex(
+      (h) => h === "fecha" || (h.includes("fecha") && !h.includes("valor"))
+    );
+    if (dateIdx === -1) dateIdx = 0;
+
+    const descIdx = headers.findIndex((h) => h.includes("concepto"));
+    let creditIdx = headers.findIndex((h) => h.includes("credito"));
+    let debitIdx = headers.findIndex((h) => h.includes("debito"));
+    const officeIdx = headers.findIndex((h) => h.includes("oficina"));
+    const detailIdx = headers.findIndex(
+      (h) =>
+        h.includes("detalle") ||
+        (h.includes("saldo") && h.includes("parcial")) ||
+        h === "saldo parcial"
+    );
+
+    if (creditIdx === -1 && debitIdx === -1) {
+      return {
+        transactions,
+        skipped: rawData.length - headerRowIdx - 1,
+        skippedReasons: ["No hay columnas Crédito ni Débito."],
+        total: Math.max(0, rawData.length - headerRowIdx - 1),
+      };
+    }
+
+    const total = Math.max(0, rawData.length - headerRowIdx - 1);
+
+    for (let i = headerRowIdx + 1; i < rawData.length; i++) {
+      const row = rawData[i];
+      if (!row || row.length === 0) {
+        skipped++;
+        continue;
+      }
+
+      const dateValue = parseExcelDate(row[dateIdx]);
+      let description = descIdx !== -1 ? String(row[descIdx] || "").trim() : "";
+
+      const debitRaw = debitIdx !== -1 ? parseBbvaAmount(row[debitIdx]) : 0;
+      const creditRaw = creditIdx !== -1 ? parseBbvaAmount(row[creditIdx]) : 0;
+
+      const debitAbs = debitRaw !== 0 ? Math.abs(debitRaw) : 0;
+      const creditAbs = creditRaw > 0 ? creditRaw : 0;
+
+      if (!dateValue) {
+        skipped++;
+        skippedReasons.push(`Fila ${i + 1}: Fecha inválida`);
+        continue;
+      }
+
+      if (creditAbs === 0 && debitAbs === 0) {
+        skipped++;
+        continue;
+      }
+
+      const detail =
+        detailIdx !== -1 ? String(row[detailIdx] || "").trim() : "";
+
+      let amount = 0;
+      let type: "income" | "expense" = "expense";
+
+      if (creditAbs > 0) {
+        amount = creditAbs;
+        type = "income";
+      } else if (debitAbs > 0) {
+        amount = debitAbs;
+        type = "expense";
+      } else {
+        skipped++;
+        continue;
+      }
+
+      const office =
+        officeIdx !== -1 ? String(row[officeIdx] || "").trim() : "";
+      const parts = [description || "Movimiento BBVA"];
+      if (office) parts.push(office);
+      if (detail && detail !== office && !/saldo disponible/i.test(detail)) {
+        parts.push(detail);
+      }
+      description = parts.filter(Boolean).join(" — ");
+
+      transactions.push({
+        date: dateValue,
+        description,
+        amount,
+        type,
+        rawData: { rowIndex: i, sheetRow: i + 1 },
+      });
+    }
+
+    return { transactions, skipped, skippedReasons, total };
+  }
+
+  private findHeaderRow(rawData: any[][]): number {
+    const maxScan = Math.min(rawData.length, 50);
+    for (let r = 0; r < maxScan; r++) {
+      const row = rawData[r];
+      if (!row || row.length === 0) continue;
+      const headers = row.map(normalizeHeaderCell);
+      const hasConcepto = headers.some((h) => h.includes("concepto"));
+      const hasDebito = headers.some((h) => h.includes("debito"));
+      const hasCredito = headers.some((h) => h.includes("credito"));
+      const hasFecha = headers.some(
+        (h) => h === "fecha" || (h.includes("fecha") && !h.includes("valor"))
+      );
+      if (hasFecha && hasConcepto && (hasDebito || hasCredito)) {
+        return r;
+      }
+    }
+    return -1;
+  }
+}
+
+function dedupeBbvaTransactions(txs: ParsedTransaction[]): ParsedTransaction[] {
+  const seen = new Set<string>();
+  const out: ParsedTransaction[] = [];
+  for (const tx of txs) {
+    const cents = Math.round(tx.amount * 100);
+    const key = `${tx.date}|${tx.type}|${cents}|${tx.description}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(tx);
+  }
+  return out;
+}
+
+export function parseBbvaWorkbook(workbook: XLSX.WorkBook): ParseResult {
+  const parser = new BbvaParser();
+  const namesInBook = workbook.SheetNames;
+  const orderedSheets = BBVA_MOVEMENT_SHEETS.filter((n) => namesInBook.includes(n));
+
+  const sheetsToParse =
+    orderedSheets.length > 0
+      ? orderedSheets
+      : namesInBook.length > 0
+        ? [namesInBook[0]]
+        : [];
+
+  if (sheetsToParse.length === 0) {
+    return {
+      transactions: [],
+      skipped: 0,
+      skippedReasons: ["El libro no tiene hojas"],
+      total: 0,
+    };
+  }
+
+  let merged: ParsedTransaction[] = [];
+  let skipped = 0;
+  const skippedReasons: string[] = [];
+  let totalRows = 0;
+
+  for (const sheetName of sheetsToParse) {
+    const sheet = workbook.Sheets[sheetName];
+    const rawData = XLSX.utils.sheet_to_json(sheet, { header: 1 }) as any[][];
+    const part = parser.parse(rawData);
+    merged.push(...part.transactions);
+    skipped += part.skipped;
+    skippedReasons.push(...part.skippedReasons);
+    totalRows += part.total;
+  }
+
+  const before = merged.length;
+  const transactions = dedupeBbvaTransactions(merged);
+  const dupes = before - transactions.length;
+  if (dupes > 0) {
+    skipped += dupes;
+    skippedReasons.push(`Entre hojas: ${dupes} movimiento(s) duplicado(s) omitido(s)`);
+  }
+
+  return {
+    transactions,
+    skipped,
+    skippedReasons: skippedReasons.slice(0, 25),
+    total: totalRows,
+  };
+}
+
 class MercadoPagoParser implements BankParser {
   bankId = "mercadopago";
   bankName = "Mercado Pago";
@@ -427,7 +651,7 @@ const parsers: Map<string, BankParser> = new Map();
 
 parsers.set("galicia", new GaliciaParser());
 parsers.set("mercadopago", new MercadoPagoParser());
-parsers.set("bbva", Object.assign(new GenericParser(), { bankId: "bbva", bankName: "Banco BBVA" }));
+parsers.set("bbva", new BbvaParser());
 parsers.set("santander", Object.assign(new GenericParser(), { bankId: "santander", bankName: "Santander Rio" }));
 parsers.set("provincia", Object.assign(new GenericParser(), { bankId: "provincia", bankName: "Banco Provincia" }));
 parsers.set("nacion", Object.assign(new GenericParser(), { bankId: "nacion", bankName: "Banco Nacion" }));

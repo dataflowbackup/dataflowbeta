@@ -7,7 +7,7 @@ import { setupLocalAuth, isAuthenticatedLocal } from "./auth";
 import multer from "multer";
 import * as XLSX from "xlsx";
 import { z } from "zod";
-import { getAvailableBanks, getBankParser } from "./bankParsers";
+import { getAvailableBanks, getBankParser, parseBbvaWorkbook } from "./bankParsers";
 import { seedFinancialDataForClient } from "./seedFinancialData";
 import path from "path";
 
@@ -1859,18 +1859,26 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
       console.log("[IMPORT] Parsing Excel file...");
       const workbook = XLSX.read(req.file.buffer, { type: "buffer" });
-      const sheetName = workbook.SheetNames[0];
-      const sheet = workbook.Sheets[sheetName];
-      const rawData = XLSX.utils.sheet_to_json(sheet, { header: 1 }) as any[][];
-      console.log(`[IMPORT] Excel parsed: ${rawData.length} rows`);
-
-      if (rawData.length < 2) {
-        return res.status(400).json({ message: "El archivo esta vacio o no tiene datos" });
-      }
 
       const parser = getBankParser(bankId);
       console.log(`[IMPORT] Using parser: ${parser.bankName}`);
-      const parseResult = parser.parse(rawData);
+
+      let parseResult;
+      if (bankId === "bbva") {
+        parseResult = parseBbvaWorkbook(workbook);
+        console.log(`[IMPORT] BBVA sheets merged: ${parseResult.transactions.length} txs, sheets=${workbook.SheetNames.join(",")}`);
+      } else {
+        const sheetName = workbook.SheetNames[0];
+        const sheet = workbook.Sheets[sheetName];
+        const rawData = XLSX.utils.sheet_to_json(sheet, { header: 1 }) as any[][];
+        console.log(`[IMPORT] Excel parsed: ${rawData.length} rows`);
+
+        if (rawData.length < 2) {
+          return res.status(400).json({ message: "El archivo esta vacio o no tiene datos" });
+        }
+
+        parseResult = parser.parse(rawData);
+      }
       console.log(`[IMPORT] Parsed: ${parseResult.transactions.length} transactions, ${parseResult.skipped} skipped`);
       
       const unmappedBranches: string[] = [];
