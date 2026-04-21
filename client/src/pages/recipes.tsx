@@ -206,17 +206,16 @@ export default function RecipesPage() {
     {
       key: "name",
       header: "Receta",
-      className: "min-w-0 max-w-[9rem] sm:max-w-[13rem] lg:max-w-[16rem] xl:max-w-[20rem]",
+      className:
+        "min-w-0 align-top max-w-[min(18rem,calc(100vw-12rem))] md:max-w-[20rem]",
       cell: (row) => (
-        <div className="flex items-center gap-2 min-w-0">
-          <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-primary/10">
+        <div className="flex items-start gap-2 min-w-0">
+          <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-primary/10 mt-0.5">
             <ChefHat className="h-4 w-4 text-primary" />
           </div>
           <div className="min-w-0">
-            <div className="font-medium truncate" title={row.name}>
-              {row.name}
-            </div>
-            <div className="text-xs text-muted-foreground truncate">
+            <div className="font-medium leading-snug break-words">{row.name}</div>
+            <div className="text-xs text-muted-foreground mt-0.5">
               {row.ingredientCount || 0} ingredientes
             </div>
           </div>
@@ -226,7 +225,6 @@ export default function RecipesPage() {
     {
       key: "category",
       header: "Categoria",
-      hideBelow: "xl",
       cell: (row) =>
         row.category ? (
           <Badge variant="secondary">{row.category.name}</Badge>
@@ -237,7 +235,6 @@ export default function RecipesPage() {
     {
       key: "subcategory",
       header: "Subcategoria",
-      hideBelow: "xl",
       cell: (row) =>
         row.subcategory ? (
           <Badge variant="outline">{row.subcategory.name}</Badge>
@@ -258,7 +255,6 @@ export default function RecipesPage() {
     {
       key: "salePrice",
       header: "Precio Venta",
-      hideBelow: "lg",
       cell: (row) => (
         <div className="text-sm">
           <div className="font-mono">{formatCurrency(row.salePrice)}</div>
@@ -279,7 +275,6 @@ export default function RecipesPage() {
     {
       key: "marginPercentage",
       header: "Margen %",
-      hideBelow: "lg",
       className: "whitespace-nowrap",
       cell: (row) => (
         <span className="font-mono text-sm text-green-600">
@@ -290,7 +285,6 @@ export default function RecipesPage() {
     {
       key: "margin",
       header: "Margen $",
-      hideBelow: "xl",
       className: "whitespace-nowrap",
       cell: (row) => (
         <span className="font-mono text-sm text-green-600">
@@ -301,7 +295,6 @@ export default function RecipesPage() {
     {
       key: "markup",
       header: "Mark Up %",
-      hideBelow: "2xl",
       className: "whitespace-nowrap",
       cell: (row) => (
         <span className="font-mono text-sm">
@@ -312,7 +305,6 @@ export default function RecipesPage() {
     {
       key: "cmvIdeal",
       header: "CMV Ideal %",
-      hideBelow: "2xl",
       className: "whitespace-nowrap",
       cell: (row) => (
         <span className="font-mono text-sm">
@@ -323,7 +315,6 @@ export default function RecipesPage() {
     {
       key: "cmvDiff",
       header: "Dif CMV",
-      hideBelow: "2xl",
       className: "whitespace-nowrap",
       cell: (row) => {
         if (!row.cmvIdeal) return <span className="text-muted-foreground">-</span>;
@@ -338,14 +329,12 @@ export default function RecipesPage() {
     {
       key: "ingredientCount",
       header: "Ingred.",
-      hideBelow: "lg",
       className: "whitespace-nowrap",
       cell: (row) => <span className="font-mono text-sm">{row.ingredientCount || 0}</span>,
     },
     {
       key: "createdAt",
       header: "Creado",
-      hideBelow: "lg",
       className: "whitespace-nowrap",
       cell: (row) => (
         <span className="text-sm text-muted-foreground">{formatDate(row.createdAt)}</span>
