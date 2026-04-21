@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
-import { useForm, useFieldArray } from "react-hook-form";
+import { useForm, useFieldArray, useWatch } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import { useLocation, useParams } from "wouter";
@@ -23,13 +23,22 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import {
+  Command,
+  CommandEmpty,
+  CommandGroup,
+  CommandInput,
+  CommandItem,
+  CommandList,
+} from "@/components/ui/command";
 import { Textarea } from "@/components/ui/textarea";
 import { Separator } from "@/components/ui/separator";
 import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { formatCurrency, formatDateInput } from "@/lib/formatters";
-import { Plus, Trash2, Calculator, AlertTriangle, TrendingUp, TrendingDown, Check } from "lucide-react";
+import { Plus, Trash2, Calculator, AlertTriangle, TrendingUp, TrendingDown, Check, ChevronsUpDown } from "lucide-react";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import {
   Table,
@@ -40,6 +49,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import type { Supplier, Local, Supply, Tax, Rubro, SubRubro, UnitOfMeasure } from "@shared/schema";
+import { cn } from "@/lib/utils";
 
 interface SupplyWithUnit extends Supply {
   rubro?: Rubro | null;
@@ -157,6 +167,7 @@ export default function InvoiceFormPage() {
   const isEditing = params.id && params.id !== "nueva";
   const isViewing = !!isEditing;
   const [confirmedItems, setConfirmedItems] = useState<Set<number>>(new Set());
+  const [openSupplyPickerIndex, setOpenSupplyPickerIndex] = useState<number | null>(null);
 
   const { data: existingInvoice, isLoading: isLoadingInvoice } = useQuery<InvoiceDetail>({
     queryKey: ["/api/invoices", params.id],
@@ -218,7 +229,7 @@ export default function InvoiceFormPage() {
     name: "taxes",
   });
 
-  const watchItems = form.watch("items");
+  const watchItems = useWatch({ control: form.control, name: "items" }) ?? [];
   const watchDiscount = form.watch("discount");
   const watchAdvancePayment = form.watch("advancePayment");
   const watchSupplierIdRaw = form.watch("supplierId");
@@ -307,26 +318,37 @@ export default function InvoiceFormPage() {
     }
   }, [watchInvoiceDate, watchPaymentDays, form, existingInvoice]);
 
-  const calculations = useMemo(() => {
-    const subtotal = watchItems.reduce((sum, item) => {
-      const sub = Number(item.subtotal) || 0;
-      return sum + sub;
-    }, 0);
+  const supplierFilteredSupplies = useMemo(() => {
+    return supplies.filter((s) => {
+      if (!s.active) return false;
+      if (!watchSupplierId) return true;
+      const hasRelations = allSupplySuppliers.some((ss) => ss.supplyId === s.id);
+      if (!hasRelations) return true;
+      return allSupplySuppliers.some((ss) => ss.supplyId === s.id && ss.supplierId === watchSupplierId);
+    });
+  }, [supplies, watchSupplierId, allSupplySuppliers]);
 
-    const discount = watchDiscount || 0;
-    const subtotalAfterDiscount = subtotal - discount;
-
-    const taxTotal = taxFields.reduce((sum, _, index) => {
-      const taxAmount = form.getValues(`taxes.${index}.taxAmount`) || 0;
-      return sum + taxAmount;
-    }, 0);
-
-    const total = subtotalAfterDiscount + taxTotal;
-    const advancePayment = watchAdvancePayment || 0;
-    const balance = total - advancePayment;
-
-    return { subtotal, discount, subtotalAfterDiscount, taxTotal, total, balance };
-  }, [watchItems, watchDiscount, watchAdvancePayment, taxFields, form]);
+  const itemsSubtotalSum = watchItems.reduce((sum, item) => {
+    const sub = Number(item?.subtotal) || 0;
+    return sum + sub;
+  }, 0);
+  const discountVal = watchDiscount || 0;
+  const subtotalAfterDiscount = itemsSubtotalSum - discountVal;
+  const taxTotal = taxFields.reduce((sum, _, index) => {
+    const taxAmount = form.getValues(`taxes.${index}.taxAmount`) || 0;
+    return sum + taxAmount;
+  }, 0);
+  const total = subtotalAfterDiscount + taxTotal;
+  const advancePaymentVal = watchAdvancePayment || 0;
+  const balance = total - advancePaymentVal;
+  const calculations = {
+    subtotal: itemsSubtotalSum,
+    discount: discountVal,
+    subtotalAfterDiscount,
+    taxTotal,
+    total,
+    balance,
+  };
 
   useEffect(() => {
     watchItems.forEach((item, index) => {
@@ -846,36 +868,69 @@ export default function InvoiceFormPage() {
                           render={({ field: itemField }) => (
                             <FormItem>
                               <FormLabel>Insumo</FormLabel>
-                              <Select
-                                onValueChange={(val) => handleSupplyChange(index, parseInt(val))}
-                                value={itemField.value?.toString() || ""}
+                              <Popover
+                                open={openSupplyPickerIndex === index}
+                                onOpenChange={(open) => setOpenSupplyPickerIndex(open ? index : null)}
                               >
-                                <FormControl>
-                                  <SelectTrigger data-testid={`select-supply-${index}`}>
-                                    <SelectValue placeholder="Seleccionar insumo" />
-                                  </SelectTrigger>
-                                </FormControl>
-                                <SelectContent>
-                                  {supplies.filter(s => {
-                                    if (!s.active) return false;
-                                    if (!watchSupplierId) return true;
-                                    const hasRelations = allSupplySuppliers.some(ss => ss.supplyId === s.id);
-                                    if (!hasRelations) return true;
-                                    return allSupplySuppliers.some(ss => ss.supplyId === s.id && ss.supplierId === watchSupplierId);
-                                  }).map((supply) => (
-                                    <SelectItem key={supply.id} value={supply.id.toString()}>
-                                      <div className="flex items-center gap-2">
-                                        {supply.name}
-                                        {supply.unitOfMeasure && (
-                                          <span className="text-xs text-muted-foreground font-mono">
-                                            ({supply.unitOfMeasure.abbreviation})
-                                          </span>
+                                <PopoverTrigger asChild>
+                                  <FormControl>
+                                    <Button
+                                      type="button"
+                                      variant="outline"
+                                      role="combobox"
+                                      aria-expanded={openSupplyPickerIndex === index}
+                                      className={cn(
+                                        "w-full justify-between font-normal",
+                                        !itemField.value && "text-muted-foreground"
+                                      )}
+                                      data-testid={`select-supply-${index}`}
+                                    >
+                                      <span className="truncate text-left">
+                                        {selectedSupply ? (
+                                          <>
+                                            {selectedSupply.name}
+                                            {selectedSupply.unitOfMeasure && (
+                                              <span className="text-muted-foreground font-mono text-xs ml-1">
+                                                ({selectedSupply.unitOfMeasure.abbreviation})
+                                              </span>
+                                            )}
+                                          </>
+                                        ) : (
+                                          "Seleccionar insumo"
                                         )}
-                                      </div>
-                                    </SelectItem>
-                                  ))}
-                                </SelectContent>
-                              </Select>
+                                      </span>
+                                      <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+                                    </Button>
+                                  </FormControl>
+                                </PopoverTrigger>
+                                <PopoverContent className="w-[min(100vw-2rem,420px)] p-0" align="start">
+                                  <Command>
+                                    <CommandInput placeholder="Buscar insumo..." />
+                                    <CommandList>
+                                      <CommandEmpty>Sin resultados</CommandEmpty>
+                                      <CommandGroup>
+                                        {supplierFilteredSupplies.map((supply) => (
+                                          <CommandItem
+                                            key={supply.id}
+                                            value={`${supply.name} ${supply.unitOfMeasure?.abbreviation ?? ""} ${supply.id}`}
+                                            onSelect={() => {
+                                              handleSupplyChange(index, supply.id);
+                                              setOpenSupplyPickerIndex(null);
+                                            }}
+                                          >
+                                            <span className="truncate">{supply.name}</span>
+                                            {supply.unitOfMeasure && (
+                                              <span className="text-xs text-muted-foreground font-mono ml-2 shrink-0">
+                                                ({supply.unitOfMeasure.abbreviation})
+                                              </span>
+                                            )}
+                                          </CommandItem>
+                                        ))}
+                                      </CommandGroup>
+                                    </CommandList>
+                                  </Command>
+                                </PopoverContent>
+                              </Popover>
                             </FormItem>
                           )}
                         />
