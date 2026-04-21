@@ -11,6 +11,7 @@
     "db:push": "drizzle-kit push",
     "db:push:local": "drizzle-kit push --config=drizzle.config.local.ts",
     "db:push:turso": "drizzle-kit push --config=drizzle.config.turso.ts",
+    "turso:diag": "tsx script/turso-diagnostics.ts",
     "seed:bootstrap": "tsx server/seedBootstrap.ts",
     "doctor:local": "tsx script/check-local-dev.ts",
     "verify:supplier-xlsx": "tsx script/verify-supplier-xlsx-payload.ts"
