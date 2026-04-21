@@ -1,4 +1,5 @@
 import { useState, useEffect } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { useLocation, Link } from "wouter";
 import {
   FileText,
@@ -27,6 +28,7 @@ import {
   UsersRound,
   FolderTree,
   Layers,
+  Briefcase,
 } from "lucide-react";
 import { useAuth } from "@/hooks/useAuth";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
@@ -48,6 +50,8 @@ import {
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
 import { cn } from "@/lib/utils";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { Skeleton } from "@/components/ui/skeleton";
 
 interface MenuItem {
   title: string;
@@ -177,9 +181,17 @@ function CollapsibleMenuSection({
   );
 }
 
+type AuthOrganization = { id: number; name: string };
+
 export function AppSidebar() {
   const [location] = useLocation();
   const { user } = useAuth();
+
+  const { data: organization, isLoading: isOrgLoading } = useQuery<AuthOrganization | null>({
+    queryKey: ["/api/auth/organization"],
+    enabled: !!user,
+    staleTime: 5 * 60_000,
+  });
 
   const isActive = (url: string) => location === url;
 
@@ -193,13 +205,36 @@ export function AppSidebar() {
   return (
     <Sidebar>
       <SidebarHeader className="p-3">
-        <Link href="/" className="flex items-center gap-2">
-          <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary text-primary-foreground">
+        <Link href="/" className="flex gap-2.5 rounded-md outline-none ring-offset-background focus-visible:ring-2 focus-visible:ring-ring">
+          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-primary text-primary-foreground shadow-sm">
             <BarChart3 className="h-5 w-5" />
           </div>
-          <div className="flex flex-col">
-            <span className="text-base font-bold tracking-tight">Data Flow</span>
-            <span className="text-[10px] text-muted-foreground">Gestion Empresarial</span>
+          <div className="min-w-0 flex flex-1 flex-col gap-1">
+            <div className="leading-none">
+              <span className="text-base font-bold tracking-tight">Data Flow</span>
+            </div>
+            {isOrgLoading && (
+              <Skeleton className="h-3.5 w-[10rem] max-w-full rounded" />
+            )}
+            {!isOrgLoading && organization?.name && (
+              <Tooltip delayDuration={400}>
+                <TooltipTrigger asChild>
+                  <div className="flex items-start gap-1 min-w-0 rounded-md bg-muted/60 px-1.5 py-1 border border-border/80">
+                    <Briefcase className="h-3 w-3 shrink-0 mt-0.5 text-muted-foreground" aria-hidden />
+                    <span className="text-[11px] font-semibold leading-snug text-foreground line-clamp-2">
+                      {organization.name}
+                    </span>
+                  </div>
+                </TooltipTrigger>
+                <TooltipContent side="bottom" align="start" className="max-w-xs">
+                  <p className="font-medium">{organization.name}</p>
+                  <p className="text-xs text-muted-foreground mt-1">Empresa activa en esta sesión</p>
+                </TooltipContent>
+              </Tooltip>
+            )}
+            {!isOrgLoading && !organization?.name && (
+              <span className="text-[10px] text-muted-foreground leading-tight">Gestión empresarial</span>
+            )}
           </div>
         </Link>
       </SidebarHeader>

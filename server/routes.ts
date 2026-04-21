@@ -106,6 +106,31 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     res.json(dbUser || null);
   });
 
+  /** Empresa (cliente multi-tenant) asociada al usuario autenticado — para branding en UI. */
+  app.get("/api/auth/organization", async (req, res) => {
+    try {
+      const session = req.session as any;
+      if (session?.userId) {
+        const client = await storage.getClientByUserId(session.userId);
+        return res.json(client ? { id: client.id, name: client.name } : null);
+      }
+      const user = req.user as any;
+      if (!user?.claims?.sub) {
+        return res.json(null);
+      }
+      let client = await storage.getClientByUserId(user.claims.sub);
+      if (!client && user.claims?.email) {
+        const dbUser = await storage.getUserByEmail(user.claims.email);
+        if (dbUser) {
+          client = await storage.getClientByUserId(dbUser.id);
+        }
+      }
+      res.json(client ? { id: client.id, name: client.name } : null);
+    } catch {
+      res.json(null);
+    }
+  });
+
   app.get("/api/locals", isAuthenticated, async (req, res) => {
     try {
       const clientId = await getClientId(req);
