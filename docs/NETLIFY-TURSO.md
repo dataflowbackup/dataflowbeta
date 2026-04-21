@@ -67,6 +67,12 @@ Si aparece **“Site not available — reached its usage limits”**, el sitio e
 3. **Producción:** variables solo en **Netlify**; redeploy si cambiás variables sensibles.
 4. **Nunca commitear** `env.turso` ni tokens en el repo.
 
+## Facturas, recálculo de recetas y timeout de la función `api`
+
+Al **guardar o revertir una factura** con ítems de insumo, el backend actualiza stock/CPP y luego recalcula costos de **recetas afectadas** (ingredientes con esos insumos y recetas “padre” que usan esas preparaciones como sub-receta), en lugar de recorrer **todas** las recetas del cliente. Eso reduce mucho el tiempo de respuesta en menús grandes.
+
+Como **respaldo** frente a picos o menús muy enlazados, en `netlify.toml` la función **`api`** puede declarar `timeout` (p. ej. 26 s). El límite real lo impone el **plan de Netlify**; si el build avisa que el valor no es válido, hay que bajarlo o quitarlo según la documentación vigente del plan.
+
 ## Archivos relacionados en el repo
 
 | Archivo | Rol |
@@ -77,7 +83,9 @@ Si aparece **“Site not available — reached its usage limits”**, el sitio e
 | `script/turso-fix-recipe-subcategories.sql` | Parche SQL puntual (subcategorías) |
 | `server/db.ts` | Elección de driver (sqlite / turso / postgres) según `DATABASE_URL` y `DB_PROVIDER` |
 | `.env.example` | Documenta desarrollo local y mención de `env.turso` |
+| `netlify.toml` | Redirects + `[functions.api]` timeout (respaldo) y `node_bundler` |
+| `server/storage.ts` | `createInvoice` / `reverseInvoice`: recálculo acotado de costos de recetas |
 
 ---
 
-*Última actualización: alineación esquema recetas/subcategorías en Turso, `env.turso` para push seguro, y nota sobre límites Netlify.*
+*Última actualización: recálculo incremental de costos de recetas al facturar/revertir, timeout opcional de la función `api`, más lo anterior (Turso, `env.turso`, límites Netlify).*

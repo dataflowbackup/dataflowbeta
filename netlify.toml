@@ -6,6 +6,14 @@
 [build.environment]
   NPM_FLAGS = "--include=dev"
 
+# Respaldo (A): más margen para POST pesados (p. ej. factura + recálculo de recetas).
+# El tope efectivo depende del plan Netlify; si el deploy rechaza la clave, quitar o ajustar.
+[functions]
+  node_bundler = "esbuild"
+
+[functions.api]
+  timeout = 26
+
 [[redirects]]
   from = "/api/*"
   to = "/.netlify/functions/api/api/:splat"

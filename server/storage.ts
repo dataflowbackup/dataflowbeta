@@ -363,12 +363,86 @@ export interface IStorage {
 }
 
 export class DatabaseStorage implements IStorage {
+  /**
+   * Recetas que deben recalcularse cuando cambian costos de `supplyIds`:
+   * ingredientes con ese insumo + ancestros que referencian esas recetas como sub-receta.
+   */
+  private async collectRecipeIdsForSupplyCostChange(
+    clientId: number,
+    tx: typeof db,
+    supplyIds: number[],
+  ): Promise<number[]> {
+    const unique = [...new Set(supplyIds.filter((id) => Number(id) > 0))];
+    if (unique.length === 0) return [];
+
+    const directRows = await tx
+      .select({ recipeId: recipeIngredients.recipeId })
+      .from(recipeIngredients)
+      .innerJoin(recipes, eq(recipeIngredients.recipeId, recipes.id))
+      .where(
+        and(
+          eq(recipes.clientId, clientId),
+          isNotNull(recipeIngredients.supplyId),
+          inArray(recipeIngredients.supplyId, unique),
+        ),
+      );
+
+    const affected = new Set<number>();
+    for (const row of directRows) {
+      if (row.recipeId != null) affected.add(row.recipeId);
+    }
+
+    let toExpand = new Set(affected);
+    while (toExpand.size > 0) {
+      const frontierIds = [...toExpand];
+      toExpand = new Set();
+
+      const parentRows = await tx
+        .select({ recipeId: recipeIngredients.recipeId })
+        .from(recipeIngredients)
+        .innerJoin(recipes, eq(recipeIngredients.recipeId, recipes.id))
+        .where(
+          and(
+            eq(recipes.clientId, clientId),
+            isNotNull(recipeIngredients.subRecipeId),
+            inArray(recipeIngredients.subRecipeId, frontierIds),
+          ),
+        );
+
+      for (const row of parentRows) {
+        if (row.recipeId == null) continue;
+        if (!affected.has(row.recipeId)) {
+          affected.add(row.recipeId);
+          toExpand.add(row.recipeId);
+        }
+      }
+    }
+
+    return [...affected];
+  }
+
+  /**
+   * Recalcula costos de ingredientes y totales de recetas.
+   * @param affectedSupplyIds Si se pasa (posiblemente vacío), solo se procesan recetas vinculadas a esos insumos
+   *   (más ancestros por sub-recetas). Si es `undefined`, se recalcula todo el cliente (operación pesada).
+   */
   private async recalculateAllRecipeCostsForClient(
     clientId: number,
     tx: typeof db,
+    affectedSupplyIds?: number[],
   ): Promise<void> {
     const toFinite = (value: number, fallback = 0) => (Number.isFinite(value) ? value : fallback);
     const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
+
+    if (affectedSupplyIds !== undefined && affectedSupplyIds.length === 0) {
+      return;
+    }
+
+    let scopedRecipeIds: number[] | undefined;
+    if (affectedSupplyIds !== undefined) {
+      scopedRecipeIds = await this.collectRecipeIdsForSupplyCostChange(clientId, tx, affectedSupplyIds);
+      if (scopedRecipeIds.length === 0) return;
+    }
 
     // Memoize to avoid recalculating the same recipe multiple times (nested sub-recipes).
     const memo = new Map<number, { totalCost: number; usefulYield: number }>();
@@ -531,13 +605,12 @@ export class DatabaseStorage implements IStorage {
       return result;
     };
 
-    const allRecipeIds = await tx
-      .select({ id: recipes.id })
-      .from(recipes)
-      .where(eq(recipes.clientId, clientId));
+    const recipeIdsToProcess =
+      scopedRecipeIds ??
+      (await tx.select({ id: recipes.id }).from(recipes).where(eq(recipes.clientId, clientId))).map((r) => r.id);
 
-    for (const r of allRecipeIds) {
-      await computeAndPersist(r.id);
+    for (const id of recipeIdsToProcess) {
+      await computeAndPersist(id);
     }
   }
 
@@ -1010,10 +1083,10 @@ export class DatabaseStorage implements IStorage {
       await db.insert(invoiceTaxes).values({ ...tax, invoiceId: newInvoice.id });
     }
 
-    // Keep recipe totals in sync with updated supply costs.
+    // Keep recipe totals in sync with updated supply costs (solo recetas que usan esos insumos o sub-recetas padre).
+    const affectedSupplyIds = [...aggregatedItems.keys()];
     await db.transaction(async (tx) => {
-      // Recompute for all recipes in this client (platos and sub-recetas).
-      await this.recalculateAllRecipeCostsForClient(invoice.clientId, tx);
+      await this.recalculateAllRecipeCostsForClient(invoice.clientId, tx, affectedSupplyIds);
     });
     
     return newInvoice;
@@ -1129,9 +1202,10 @@ export class DatabaseStorage implements IStorage {
       .where(and(eq(invoices.id, invoiceId), eq(invoices.clientId, clientId)))
       .returning();
     
-    // Keep recipe totals in sync with reverted supply costs.
+    // Recetas impactadas por la reversión de costos de stock (mismo alcance acotado que al crear factura).
+    const affectedSupplyIds = [...aggregatedItems.keys()];
     await db.transaction(async (tx) => {
-      await this.recalculateAllRecipeCostsForClient(clientId, tx);
+      await this.recalculateAllRecipeCostsForClient(clientId, tx, affectedSupplyIds);
     });
 
     return updated;
