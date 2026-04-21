@@ -1,5 +1,5 @@
 import { db } from "./db";
-import { eq, and, desc, gte, lte, sql, isNull, isNotNull, inArray } from "drizzle-orm";
+import { eq, and, desc, asc, gte, lte, sql, isNull, isNotNull, inArray } from "drizzle-orm";
 import {
   users,
   clients,
@@ -179,6 +179,21 @@ export interface IStorage {
   deleteUnit(clientId: number, id: number): Promise<boolean>;
   
   getSupplies(clientId: number): Promise<Supply[]>;
+  getSupplyUsageDetail(
+    clientId: number,
+    supplyId: number,
+  ): Promise<{
+    supplyName: string;
+    recipes: { id: number; name: string; recipeType: string | null; categoryName: string | null; subcategoryName: string | null }[];
+    suppliers: { id: number; name: string }[];
+  } | null>;
+  getSubRecipeParentUsageDetail(
+    clientId: number,
+    subRecipeId: number,
+  ): Promise<{
+    subRecipeName: string;
+    parents: { id: number; name: string; recipeType: string | null; categoryName: string | null; subcategoryName: string | null }[];
+  } | null>;
   createSupply(supply: InsertSupply): Promise<Supply>;
   updateSupply(clientId: number, id: number, supply: Partial<InsertSupply>): Promise<Supply | undefined>;
   deleteSupply(clientId: number, id: number): Promise<boolean>;
@@ -910,6 +925,118 @@ export class DatabaseStorage implements IStorage {
       lastPurchaseUnitCost: latestPurchaseBySupplyId.get(r.supply.id)?.unitPrice ?? null,
       lastPurchaseDate: latestPurchaseBySupplyId.get(r.supply.id)?.invoiceDate ?? null,
     }));
+  }
+
+  async getSupplyUsageDetail(
+    clientId: number,
+    supplyId: number,
+  ): Promise<{
+    supplyName: string;
+    recipes: { id: number; name: string; recipeType: string | null; categoryName: string | null; subcategoryName: string | null }[];
+    suppliers: { id: number; name: string }[];
+  } | null> {
+    const [supply] = await db
+      .select()
+      .from(supplies)
+      .where(and(eq(supplies.id, supplyId), eq(supplies.clientId, clientId)));
+    if (!supply) return null;
+
+    const recipeRows = await db
+      .select({
+        id: recipes.id,
+        name: recipes.name,
+        recipeType: recipes.recipeType,
+        categoryName: recipeCategories.name,
+        subcategoryName: recipeSubcategories.name,
+      })
+      .from(recipeIngredients)
+      .innerJoin(recipes, eq(recipeIngredients.recipeId, recipes.id))
+      .leftJoin(recipeCategories, eq(recipes.categoryId, recipeCategories.id))
+      .leftJoin(recipeSubcategories, eq(recipes.subcategoryId, recipeSubcategories.id))
+      .where(and(eq(recipes.clientId, clientId), eq(recipeIngredients.supplyId, supplyId)))
+      .orderBy(asc(recipes.recipeType), asc(recipes.name));
+
+    const byRecipe = new Map<
+      number,
+      { id: number; name: string; recipeType: string | null; categoryName: string | null; subcategoryName: string | null }
+    >();
+    for (const r of recipeRows) {
+      if (!byRecipe.has(r.id)) {
+        byRecipe.set(r.id, {
+          id: r.id,
+          name: r.name,
+          recipeType: r.recipeType,
+          categoryName: r.categoryName,
+          subcategoryName: r.subcategoryName,
+        });
+      }
+    }
+
+    const supplierRows = await db
+      .select({
+        id: suppliers.id,
+        name: suppliers.businessName,
+      })
+      .from(supplySuppliers)
+      .innerJoin(suppliers, eq(supplySuppliers.supplierId, suppliers.id))
+      .where(and(eq(supplySuppliers.clientId, clientId), eq(supplySuppliers.supplyId, supplyId)))
+      .orderBy(asc(suppliers.businessName));
+
+    return {
+      supplyName: supply.name,
+      recipes: [...byRecipe.values()],
+      suppliers: supplierRows.map((s) => ({ id: s.id, name: s.name })),
+    };
+  }
+
+  async getSubRecipeParentUsageDetail(
+    clientId: number,
+    subRecipeId: number,
+  ): Promise<{
+    subRecipeName: string;
+    parents: { id: number; name: string; recipeType: string | null; categoryName: string | null; subcategoryName: string | null }[];
+  } | null> {
+    const [sub] = await db
+      .select()
+      .from(recipes)
+      .where(and(eq(recipes.id, subRecipeId), eq(recipes.clientId, clientId)));
+    if (!sub || sub.recipeType !== "sub") return null;
+
+    const parentRows = await db
+      .select({
+        id: recipes.id,
+        name: recipes.name,
+        recipeType: recipes.recipeType,
+        categoryName: recipeCategories.name,
+        subcategoryName: recipeSubcategories.name,
+      })
+      .from(recipeIngredients)
+      .innerJoin(recipes, eq(recipeIngredients.recipeId, recipes.id))
+      .leftJoin(recipeCategories, eq(recipes.categoryId, recipeCategories.id))
+      .leftJoin(recipeSubcategories, eq(recipes.subcategoryId, recipeSubcategories.id))
+      .where(and(eq(recipes.clientId, clientId), eq(recipeIngredients.subRecipeId, subRecipeId)))
+      .orderBy(asc(recipes.recipeType), asc(recipes.name));
+
+    const byRecipe = new Map<
+      number,
+      { id: number; name: string; recipeType: string | null; categoryName: string | null; subcategoryName: string | null }
+    >();
+    for (const r of parentRows) {
+      if (!byRecipe.has(r.id)) {
+        byRecipe.set(r.id, {
+          id: r.id,
+          name: r.name,
+          recipeType: r.recipeType,
+          categoryName: r.categoryName,
+          subcategoryName: r.subcategoryName,
+        });
+      }
+    }
+
+    return {
+      subRecipeName: sub.name,
+      parents: [...byRecipe.values()],
+    };
   }
 
   async createSupply(supply: InsertSupply): Promise<Supply> {

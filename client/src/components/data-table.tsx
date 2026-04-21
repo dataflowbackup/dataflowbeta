@@ -12,12 +12,17 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { ChevronLeft, ChevronRight, Search, Plus, Filter } from "lucide-react";
 import { useState, useMemo, useEffect } from "react";
+import { cn } from "@/lib/utils";
+
+export type ColumnHideBelow = "md" | "lg" | "xl" | "2xl";
 
 export interface Column<T> {
   key: string;
   header: string;
   cell?: (row: T) => React.ReactNode;
   className?: string;
+  /** Oculta la columna por debajo de este breakpoint (tabla mas ancha = menos scroll horizontal). */
+  hideBelow?: ColumnHideBelow;
 }
 
 export interface FilterOption {
@@ -30,6 +35,11 @@ export interface FilterConfig<T> {
   label: string;
   options: FilterOption[];
   allLabel?: string;
+}
+
+function columnResponsiveClass(hideBelow?: ColumnHideBelow): string {
+  if (!hideBelow) return "";
+  return `hidden ${hideBelow}:table-cell`;
 }
 
 interface DataTableProps<T> {
@@ -45,6 +55,8 @@ interface DataTableProps<T> {
   addLabel?: string;
   emptyMessage?: string;
   pageSize?: number;
+  /** Clases extra en `<table>` (ej. `text-sm` para tablas muy anchas). */
+  tableClassName?: string;
 }
 
 export function DataTable<T extends { id: number | string }>({
@@ -59,6 +71,7 @@ export function DataTable<T extends { id: number | string }>({
   addLabel = "Agregar",
   emptyMessage = "No hay datos para mostrar",
   pageSize = 10,
+  tableClassName,
 }: DataTableProps<T>) {
   const [search, setSearch] = useState("");
   const [page, setPage] = useState(0);
@@ -121,12 +134,12 @@ export function DataTable<T extends { id: number | string }>({
           {showSearch && <Skeleton className="h-10 w-72" />}
           <Skeleton className="h-10 w-32" />
         </div>
-        <div className="rounded-lg border">
-          <Table>
+        <div className="rounded-lg border overflow-x-auto">
+          <Table className={cn("w-full", tableClassName)}>
             <TableHeader>
               <TableRow>
                 {columns.map((col) => (
-                  <TableHead key={col.key}>
+                  <TableHead key={col.key} className={cn(col.className, columnResponsiveClass(col.hideBelow))}>
                     <Skeleton className="h-4 w-20" />
                   </TableHead>
                 ))}
@@ -136,7 +149,7 @@ export function DataTable<T extends { id: number | string }>({
               {Array.from({ length: 5 }).map((_, i) => (
                 <TableRow key={i}>
                   {columns.map((col) => (
-                    <TableCell key={col.key}>
+                    <TableCell key={col.key} className={cn(col.className, columnResponsiveClass(col.hideBelow))}>
                       <Skeleton className="h-4 w-full" />
                     </TableCell>
                   ))}
@@ -204,12 +217,12 @@ export function DataTable<T extends { id: number | string }>({
         )}
       </div>
 
-      <div className="rounded-lg border">
-        <Table>
+      <div className="rounded-lg border overflow-x-auto">
+        <Table className={cn("w-full", tableClassName)}>
           <TableHeader>
             <TableRow>
               {columns.map((col) => (
-                <TableHead key={col.key} className={col.className}>
+                <TableHead key={col.key} className={cn(col.className, columnResponsiveClass(col.hideBelow))}>
                   {col.header}
                 </TableHead>
               ))}
@@ -229,7 +242,7 @@ export function DataTable<T extends { id: number | string }>({
               paginatedData.map((row) => (
                 <TableRow key={row.id} data-testid={`row-${row.id}`}>
                   {columns.map((col) => (
-                    <TableCell key={col.key} className={col.className}>
+                    <TableCell key={col.key} className={cn(col.className, columnResponsiveClass(col.hideBelow))}>
                       {col.cell ? col.cell(row) : String((row as any)[col.key] ?? "")}
                     </TableCell>
                   ))}

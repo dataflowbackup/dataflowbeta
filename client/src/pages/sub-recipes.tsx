@@ -19,7 +19,8 @@ import { Switch } from "@/components/ui/switch";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { formatCurrency, formatPercentage, formatDate } from "@/lib/formatters";
-import { Layers, Plus, Eye, Trash2, ArrowLeft, Search } from "lucide-react";
+import { Layers, Plus, Eye, Trash2, ArrowLeft, Search, SquarePen } from "lucide-react";
+import { SubRecipeUsageDialog } from "@/components/catalog-usage-dialog";
 import type { Recipe, RecipeCategory, RecipeSubcategory, UnitOfMeasure } from "@shared/schema";
 
 interface RecipeWithRelations extends Recipe {
@@ -43,6 +44,7 @@ export default function SubRecipesPage() {
   const { toast } = useToast();
   const [, navigate] = useLocation();
   const [deleteRecipe, setDeleteRecipe] = useState<RecipeWithRelations | null>(null);
+  const [usageSubRecipeId, setUsageSubRecipeId] = useState<number | null>(null);
   const [searchName, setSearchName] = useState("");
   const [filterActive, setFilterActive] = useState<string>("__all__");
 
@@ -214,14 +216,31 @@ export default function SubRecipesPage() {
       ),
     },
     {
+      key: "usos",
+      header: "Usos",
+      className: "w-14 text-center",
+      cell: (row) => (
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon"
+          aria-label={`Ver donde se usa ${row.name}`}
+          onClick={() => setUsageSubRecipeId(row.id)}
+          data-testid={`button-subrecipe-usages-${row.id}`}
+        >
+          <Eye className="h-4 w-4" />
+        </Button>
+      ),
+    },
+    {
       key: "actions",
       header: "",
       className: "w-24",
       cell: (row) => (
         <div className="flex items-center gap-1">
           <Link href={`/recetas/${row.id}?type=sub`}>
-            <Button variant="ghost" size="icon" data-testid={`button-view-${row.id}`}>
-              <Eye className="h-4 w-4" />
+            <Button variant="ghost" size="icon" title="Editar sub-receta" data-testid={`button-view-${row.id}`}>
+              <SquarePen className="h-4 w-4" />
             </Button>
           </Link>
           <Button
@@ -313,6 +332,14 @@ export default function SubRecipesPage() {
           </Select>
         </div>
       </div>
+
+      <SubRecipeUsageDialog
+        open={usageSubRecipeId !== null}
+        onOpenChange={(open) => {
+          if (!open) setUsageSubRecipeId(null);
+        }}
+        subRecipeId={usageSubRecipeId}
+      />
 
       <DataTable
         columns={columns}

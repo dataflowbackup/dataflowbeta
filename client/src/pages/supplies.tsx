@@ -35,7 +35,8 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { formatCurrency, formatDate } from "@/lib/formatters";
-import { Edit, Trash2, Package, Upload, Download, Users, Building2 } from "lucide-react";
+import { Edit, Trash2, Package, Upload, Download, Users, Building2, Eye } from "lucide-react";
+import { SupplyUsageDialog } from "@/components/catalog-usage-dialog";
 import type { Supply, Rubro, SubRubro, UnitOfMeasure, Supplier, SupplySupplier } from "@shared/schema";
 
 interface SubRubroWithRubro extends SubRubro {
@@ -69,6 +70,7 @@ export default function SuppliesPage() {
   const [selectedSupplierIds, setSelectedSupplierIds] = useState<number[]>([]);
   const [editingSupply, setEditingSupply] = useState<SupplyWithRelations | null>(null);
   const [deleteSupply, setDeleteSupply] = useState<SupplyWithRelations | null>(null);
+  const [usageSupplyId, setUsageSupplyId] = useState<number | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const { data: supplies = [], isLoading } = useQuery<SupplyWithRelations[]>({
@@ -475,6 +477,23 @@ export default function SuppliesPage() {
       ),
     },
     {
+      key: "usos",
+      header: "Usos",
+      className: "w-14 text-center",
+      cell: (row) => (
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon"
+          aria-label={`Ver vinculaciones de ${row.name}`}
+          onClick={() => setUsageSupplyId(row.id)}
+          data-testid={`button-supply-usages-${row.id}`}
+        >
+          <Eye className="h-4 w-4" />
+        </Button>
+      ),
+    },
+    {
       key: "actions",
       header: "",
       className: "w-24",
@@ -518,6 +537,14 @@ export default function SuppliesPage() {
             </Button>
           </div>
         }
+      />
+
+      <SupplyUsageDialog
+        open={usageSupplyId !== null}
+        onOpenChange={(open) => {
+          if (!open) setUsageSupplyId(null);
+        }}
+        supplyId={usageSupplyId}
       />
 
       <DataTable

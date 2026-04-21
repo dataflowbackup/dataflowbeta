@@ -206,14 +206,17 @@ export default function RecipesPage() {
     {
       key: "name",
       header: "Receta",
+      className: "min-w-0 max-w-[9rem] sm:max-w-[13rem] lg:max-w-[16rem] xl:max-w-[20rem]",
       cell: (row) => (
-        <div className="flex items-center gap-2">
-          <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary/10">
+        <div className="flex items-center gap-2 min-w-0">
+          <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-primary/10">
             <ChefHat className="h-4 w-4 text-primary" />
           </div>
-          <div>
-            <div className="font-medium">{row.name}</div>
-            <div className="text-xs text-muted-foreground">
+          <div className="min-w-0">
+            <div className="font-medium truncate" title={row.name}>
+              {row.name}
+            </div>
+            <div className="text-xs text-muted-foreground truncate">
               {row.ingredientCount || 0} ingredientes
             </div>
           </div>
@@ -223,6 +226,7 @@ export default function RecipesPage() {
     {
       key: "category",
       header: "Categoria",
+      hideBelow: "xl",
       cell: (row) =>
         row.category ? (
           <Badge variant="secondary">{row.category.name}</Badge>
@@ -233,6 +237,7 @@ export default function RecipesPage() {
     {
       key: "subcategory",
       header: "Subcategoria",
+      hideBelow: "xl",
       cell: (row) =>
         row.subcategory ? (
           <Badge variant="outline">{row.subcategory.name}</Badge>
@@ -243,6 +248,7 @@ export default function RecipesPage() {
     {
       key: "totalCost",
       header: "Costo sin IVA",
+      className: "whitespace-nowrap",
       cell: (row) => (
         <span className="font-mono text-sm">
           {formatCurrency(row.totalCost)}
@@ -252,6 +258,7 @@ export default function RecipesPage() {
     {
       key: "salePrice",
       header: "Precio Venta",
+      hideBelow: "lg",
       cell: (row) => (
         <div className="text-sm">
           <div className="font-mono">{formatCurrency(row.salePrice)}</div>
@@ -266,11 +273,14 @@ export default function RecipesPage() {
     {
       key: "cmvPercentage",
       header: "CMV %",
+      className: "whitespace-nowrap",
       cell: (row) => getCmvBadge(row.cmvPercentage),
     },
     {
       key: "marginPercentage",
       header: "Margen %",
+      hideBelow: "lg",
+      className: "whitespace-nowrap",
       cell: (row) => (
         <span className="font-mono text-sm text-green-600">
           {formatPercentage(row.marginPercentage)}
@@ -280,6 +290,8 @@ export default function RecipesPage() {
     {
       key: "margin",
       header: "Margen $",
+      hideBelow: "xl",
+      className: "whitespace-nowrap",
       cell: (row) => (
         <span className="font-mono text-sm text-green-600">
           {formatCurrency(row.margin)}
@@ -289,6 +301,8 @@ export default function RecipesPage() {
     {
       key: "markup",
       header: "Mark Up %",
+      hideBelow: "2xl",
+      className: "whitespace-nowrap",
       cell: (row) => (
         <span className="font-mono text-sm">
           {formatPercentage(row.markup)}
@@ -298,6 +312,8 @@ export default function RecipesPage() {
     {
       key: "cmvIdeal",
       header: "CMV Ideal %",
+      hideBelow: "2xl",
+      className: "whitespace-nowrap",
       cell: (row) => (
         <span className="font-mono text-sm">
           {row.cmvIdeal ? formatPercentage(row.cmvIdeal) : "-"}
@@ -307,6 +323,8 @@ export default function RecipesPage() {
     {
       key: "cmvDiff",
       header: "Dif CMV",
+      hideBelow: "2xl",
+      className: "whitespace-nowrap",
       cell: (row) => {
         if (!row.cmvIdeal) return <span className="text-muted-foreground">-</span>;
         const diff = parseFloat(row.cmvPercentage || "0") - parseFloat(row.cmvIdeal || "0");
@@ -320,11 +338,15 @@ export default function RecipesPage() {
     {
       key: "ingredientCount",
       header: "Ingred.",
+      hideBelow: "lg",
+      className: "whitespace-nowrap",
       cell: (row) => <span className="font-mono text-sm">{row.ingredientCount || 0}</span>,
     },
     {
       key: "createdAt",
       header: "Creado",
+      hideBelow: "lg",
+      className: "whitespace-nowrap",
       cell: (row) => (
         <span className="text-sm text-muted-foreground">{formatDate(row.createdAt)}</span>
       ),
@@ -332,6 +354,7 @@ export default function RecipesPage() {
     {
       key: "active",
       header: "Estado",
+      className: "whitespace-nowrap",
       cell: (row) => (
         <div className="flex items-center gap-2">
           <Switch
@@ -349,7 +372,7 @@ export default function RecipesPage() {
     {
       key: "actions",
       header: "",
-      className: "w-24",
+      className: "w-24 shrink-0",
       cell: (row) => (
         <div className="flex items-center gap-1">
           <Link href={`/recetas/${row.id}`}>
@@ -573,6 +596,7 @@ export default function RecipesPage() {
         searchKeys={["name"]}
         emptyMessage="No hay recetas registradas. Los costos se calculan automaticamente basandose en los insumos y sus ultimos precios de compra."
         pageSize={15}
+        tableClassName="text-xs sm:text-sm [&_th]:px-2 [&_td]:px-2"
       />
 
       <CodeConfirmDialog

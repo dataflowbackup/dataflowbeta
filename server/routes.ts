@@ -881,6 +881,19 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
   });
 
+  app.get("/api/supplies/:id/usages", isAuthenticated, async (req, res) => {
+    try {
+      const clientId = await getClientId(req);
+      const id = parseInt(req.params.id);
+      if (Number.isNaN(id)) return res.status(400).json({ message: "ID invalido" });
+      const detail = await storage.getSupplyUsageDetail(clientId, id);
+      if (!detail) return res.status(404).json({ message: "Insumo no encontrado" });
+      res.json(detail);
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
   app.patch("/api/supplies/:id", isAuthenticated, async (req, res) => {
     try {
       const clientId = await getClientId(req);
@@ -1502,6 +1515,19 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const { ingredients, ...recipe } = req.body;
       const data = await storage.createRecipe({ ...recipe, clientId }, ingredients || []);
       res.json(data);
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
+  app.get("/api/recipes/:id/parent-usages", isAuthenticated, async (req, res) => {
+    try {
+      const clientId = await getClientId(req);
+      const id = parseInt(req.params.id);
+      if (Number.isNaN(id)) return res.status(400).json({ message: "ID invalido" });
+      const detail = await storage.getSubRecipeParentUsageDetail(clientId, id);
+      if (!detail) return res.status(404).json({ message: "Sub-receta no encontrada" });
+      res.json(detail);
     } catch (e: any) {
       res.status(500).json({ message: e.message });
     }
