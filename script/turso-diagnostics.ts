@@ -1,22 +1,26 @@
 /**
- * Compara la base a la que apunta tu .env con la de Netlify.
- * Ejecutar: npx tsx script/turso-diagnostics.ts
+ * Muestra que base usa tu entorno y si existe recipe_subcategories.
  *
- * No imprime tokens; solo host / fragmentos de la URL.
+ *   npm run turso:diag
+ *
+ * Carga: .env → env.local → .env.local → env.turso (el ultimo gana).
+ * Para diagnosticar PRODUCCION: crea `env.turso` con DATABASE_URL de Netlify (ver env.turso.example).
  */
 import dotenv from "dotenv";
 import path from "node:path";
-import { createClient } from "@libsql/client/web";
+import { createClient as createWebClient } from "@libsql/client/web";
+import { createClient as createFileClient } from "@libsql/client";
 
 dotenv.config({ path: path.join(process.cwd(), ".env") });
 dotenv.config({ path: path.join(process.cwd(), "env.local"), override: true });
 dotenv.config({ path: path.join(process.cwd(), ".env.local"), override: true });
+dotenv.config({ path: path.join(process.cwd(), "env.turso"), override: true });
 
 const url = process.env.DATABASE_URL;
 const authToken = process.env.TURSO_AUTH_TOKEN || undefined;
 
 if (!url) {
-  console.error("Falta DATABASE_URL en .env / env.local / .env.local");
+  console.error("Falta DATABASE_URL en .env / env.local / .env.local / env.turso");
   process.exit(1);
 }
 
@@ -31,12 +35,23 @@ function redactDbUrl(u: string): string {
   return s.length > 120 ? `${s.slice(0, 120)}…` : s;
 }
 
-console.log("--- Base usada por ESTE .env (la misma que drizzle-kit push) ---");
+console.log("--- Base usada por ESTE entorno (ultimo .env que definio DATABASE_URL) ---");
 console.log("DATABASE_URL (redactada):", redactDbUrl(url));
 console.log("TURSO_AUTH_TOKEN:", authToken ? "definido" : "no definido");
 console.log("DB_PROVIDER:", process.env.DB_PROVIDER || "(no set)");
 
-const client = createClient({ url, authToken });
+if (url.startsWith("file:")) {
+  console.log(
+    "\n>>> ATENCION: estas usando SQLite LOCAL (dev.db), NO Turso remoto.\n" +
+      "    El `npm run db:push:turso` con esta config solo toca el archivo local.\n" +
+      "    Para arreglar Netlify: crea `env.turso` (copia de env.turso.example) con\n" +
+      "    DATABASE_URL + TURSO_AUTH_TOKEN de Netlify y volve a correr db:push:turso.\n",
+  );
+}
+
+const client = url.startsWith("file:")
+  ? createFileClient({ url })
+  : createWebClient({ url, authToken });
 
 const tables = await client.execute({
   sql: `SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE '%recipe%' ORDER BY name`,

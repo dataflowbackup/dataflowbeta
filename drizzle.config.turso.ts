@@ -6,6 +6,8 @@ import { defineConfig } from "drizzle-kit";
 dotenv.config({ path: path.join(process.cwd(), ".env") });
 dotenv.config({ path: path.join(process.cwd(), "env.local"), override: true });
 dotenv.config({ path: path.join(process.cwd(), ".env.local"), override: true });
+// Credenciales Turso remotas (mismas que Netlify). Si existe, pisa DATABASE_URL=file:... del .env de desarrollo.
+dotenv.config({ path: path.join(process.cwd(), "env.turso"), override: true });
 
 if (!process.env.DATABASE_URL) {
   throw new Error("DATABASE_URL is required for Turso.");
