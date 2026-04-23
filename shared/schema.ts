@@ -609,6 +609,7 @@ export type TransactionCategory = typeof transactionCategories.$inferSelect;
 export const bankAccounts = pgTable("bank_accounts", {
   id: serial("id").primaryKey(),
   clientId: integer("client_id").notNull().references(() => clients.id, { onDelete: "cascade" }),
+  localId: integer("local_id").references(() => locals.id),
   name: varchar("name", { length: 255 }).notNull(),
   type: varchar("type", { length: 50 }).default("bank"),
   accountNumber: varchar("account_number", { length: 100 }),
@@ -619,6 +620,59 @@ export const bankAccounts = pgTable("bank_accounts", {
 export const insertBankAccountSchema = createInsertSchema(bankAccounts).omit({ id: true, createdAt: true });
 export type InsertBankAccount = z.infer<typeof insertBankAccountSchema>;
 export type BankAccount = typeof bankAccounts.$inferSelect;
+
+// ==========================================
+// FINANCIAL IMPORT BATCHES (Metadatos por extracto importado)
+// ==========================================
+export const financialImportBatches = pgTable(
+  "financial_import_batches",
+  {
+    id: serial("id").primaryKey(),
+    clientId: integer("client_id").notNull().references(() => clients.id, { onDelete: "cascade" }),
+    importBatchId: varchar("import_batch_id", { length: 50 }).notNull(),
+    bankAccountId: integer("bank_account_id").notNull().references(() => bankAccounts.id),
+    bankSource: varchar("bank_source", { length: 50 }),
+    openingBalance: decimal("opening_balance", { precision: 12, scale: 2 }),
+    closingBalance: decimal("closing_balance", { precision: 12, scale: 2 }),
+    periodStart: date("period_start"),
+    periodEnd: date("period_end"),
+    createdAt: timestamp("created_at").defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("financial_import_batches_client_id_import_batch_id_uq").on(
+      table.clientId,
+      table.importBatchId,
+    ),
+  ],
+);
+
+export const insertFinancialImportBatchSchema = createInsertSchema(financialImportBatches).omit({
+  id: true,
+  createdAt: true,
+});
+export type InsertFinancialImportBatch = z.infer<typeof insertFinancialImportBatchSchema>;
+export type FinancialImportBatch = typeof financialImportBatches.$inferSelect;
+
+// ==========================================
+// FINANCIAL SAVED VIEWS (Atajos de filtros por usuario)
+// ==========================================
+export const financialSavedViews = pgTable("financial_saved_views", {
+  id: serial("id").primaryKey(),
+  clientId: integer("client_id").notNull().references(() => clients.id, { onDelete: "cascade" }),
+  userId: varchar("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  name: varchar("name", { length: 255 }).notNull(),
+  filters: jsonb("filters").notNull(),
+  createdAt: timestamp("created_at").defaultNow(),
+  updatedAt: timestamp("updated_at").defaultNow(),
+});
+
+export const insertFinancialSavedViewSchema = createInsertSchema(financialSavedViews).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+export type InsertFinancialSavedView = z.infer<typeof insertFinancialSavedViewSchema>;
+export type FinancialSavedView = typeof financialSavedViews.$inferSelect;
 
 // ==========================================
 // CLIENT BANKS (Bancos configurados por cliente)

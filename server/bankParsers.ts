@@ -19,6 +19,11 @@ export interface ParseResult {
   total: number;
 }
 
+/** Resultado de `parseBbvaWorkbook` (incluye saldo inicial leído del encabezado del Excel). */
+export interface BbvaWorkbookParseResult extends ParseResult {
+  openingBalance: number | null;
+}
+
 export interface BankParser {
   bankId: string;
   bankName: string;
@@ -61,6 +66,28 @@ function normalizeHeaderCell(value: any): string {
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "")
     .trim();
+}
+
+/** Saldo inicial típico en extractos BBVA (fila tipo "Saldo:" antes de la tabla de movimientos). */
+function extractBbvaOpeningBalance(rawData: any[][]): number | null {
+  const len = Math.min(40, rawData?.length ?? 0);
+  for (let r = 0; r < len; r++) {
+    const row = rawData[r];
+    if (!row?.length) continue;
+    const label = normalizeHeaderCell(row[0]);
+    if (!label || !label.includes("saldo")) continue;
+    if (
+      label.includes("parcial") ||
+      label.includes("disponible") ||
+      label.includes("minimo") ||
+      label.includes("movimientos de")
+    ) {
+      continue;
+    }
+    const n = parseBbvaAmount(row[1]);
+    if (n !== 0 && !Number.isNaN(n)) return n;
+  }
+  return null;
 }
 
 function parseExcelDate(value: any): string | null {
@@ -431,7 +458,7 @@ class BbvaParser implements BankParser {
   }
 }
 
-export function parseBbvaWorkbook(workbook: XLSX.WorkBook): ParseResult {
+export function parseBbvaWorkbook(workbook: XLSX.WorkBook): BbvaWorkbookParseResult {
   const parser = new BbvaParser();
   const namesInBook = workbook.SheetNames;
   const orderedSheets = BBVA_MOVEMENT_SHEETS.filter((n) => namesInBook.includes(n));
@@ -449,6 +476,7 @@ export function parseBbvaWorkbook(workbook: XLSX.WorkBook): ParseResult {
       skipped: 0,
       skippedReasons: ["El libro no tiene hojas"],
       total: 0,
+      openingBalance: null,
     };
   }
 
@@ -456,10 +484,15 @@ export function parseBbvaWorkbook(workbook: XLSX.WorkBook): ParseResult {
   let skipped = 0;
   const skippedReasons: string[] = [];
   let totalRows = 0;
+  let openingBalance: number | null = null;
 
   for (const sheetName of sheetsToParse) {
     const sheet = workbook.Sheets[sheetName];
     const rawData = XLSX.utils.sheet_to_json(sheet, { header: 1 }) as any[][];
+    if (openingBalance === null) {
+      const ob = extractBbvaOpeningBalance(rawData);
+      if (ob !== null) openingBalance = ob;
+    }
     const part = parser.parse(rawData);
     merged.push(...part.transactions);
     skipped += part.skipped;
@@ -475,6 +508,7 @@ export function parseBbvaWorkbook(workbook: XLSX.WorkBook): ParseResult {
     skipped,
     skippedReasons: skippedReasons.slice(0, 25),
     total: totalRows,
+    openingBalance,
   };
 }
 

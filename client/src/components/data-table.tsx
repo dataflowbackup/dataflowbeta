@@ -11,14 +11,14 @@ import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { ChevronLeft, ChevronRight, Search, Plus, Filter } from "lucide-react";
-import { useState, useMemo, useEffect } from "react";
+import { useState, useMemo, useEffect, type ReactNode } from "react";
 import { cn } from "@/lib/utils";
 
 export type ColumnHideBelow = "md" | "lg" | "xl" | "2xl";
 
 export interface Column<T> {
   key: string;
-  header: string;
+  header: ReactNode | (() => ReactNode);
   cell?: (row: T) => React.ReactNode;
   className?: string;
   /** Oculta la columna por debajo de este breakpoint (tabla mas ancha = menos scroll horizontal). */
@@ -223,7 +223,7 @@ export function DataTable<T extends { id: number | string }>({
             <TableRow>
               {columns.map((col) => (
                 <TableHead key={col.key} className={cn(col.className, columnResponsiveClass(col.hideBelow))}>
-                  {col.header}
+                  {typeof col.header === "function" ? (col.header as () => ReactNode)() : col.header}
                 </TableHead>
               ))}
             </TableRow>

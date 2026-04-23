@@ -25,6 +25,8 @@ import {
   financialGroups,
   transactionCategories,
   bankAccounts,
+  financialImportBatches,
+  financialSavedViews,
   clientBanks,
   transactions,
   monthlyBalances,
@@ -94,6 +96,10 @@ import {
   type TransactionCategory,
   type InsertBankAccount,
   type BankAccount,
+  type InsertFinancialImportBatch,
+  type FinancialImportBatch,
+  type InsertFinancialSavedView,
+  type FinancialSavedView,
   type InsertClientBank,
   type ClientBank,
   type InsertTransaction,
@@ -256,9 +262,14 @@ export interface IStorage {
   deleteTransactionCategory(clientId: number, id: number): Promise<boolean>;
   
   getBankAccounts(clientId: number): Promise<BankAccount[]>;
+  getBankAccount(clientId: number, id: number): Promise<BankAccount | undefined>;
   createBankAccount(account: InsertBankAccount): Promise<BankAccount>;
   updateBankAccount(clientId: number, id: number, account: Partial<InsertBankAccount>): Promise<BankAccount | undefined>;
   deleteBankAccount(clientId: number, id: number): Promise<boolean>;
+  createFinancialImportBatch(row: InsertFinancialImportBatch): Promise<FinancialImportBatch>;
+  getFinancialSavedViews(clientId: number, userId: string): Promise<FinancialSavedView[]>;
+  createFinancialSavedView(row: InsertFinancialSavedView): Promise<FinancialSavedView>;
+  deleteFinancialSavedView(clientId: number, userId: string, id: number): Promise<boolean>;
   
   getTransactions(clientId: number): Promise<Transaction[]>;
   createTransaction(transaction: InsertTransaction): Promise<Transaction>;
@@ -1659,6 +1670,15 @@ export class DatabaseStorage implements IStorage {
     return db.select().from(bankAccounts).where(eq(bankAccounts.clientId, clientId)).orderBy(bankAccounts.name);
   }
 
+  async getBankAccount(clientId: number, id: number): Promise<BankAccount | undefined> {
+    const [row] = await db
+      .select()
+      .from(bankAccounts)
+      .where(and(eq(bankAccounts.clientId, clientId), eq(bankAccounts.id, id)))
+      .limit(1);
+    return row;
+  }
+
   async createBankAccount(account: InsertBankAccount): Promise<BankAccount> {
     const [newAccount] = await db.insert(bankAccounts).values(account).returning();
     return newAccount;
@@ -1673,9 +1693,52 @@ export class DatabaseStorage implements IStorage {
   }
 
   async deleteBankAccount(clientId: number, id: number): Promise<boolean> {
-    const result = await db.delete(bankAccounts)
-      .where(and(eq(bankAccounts.id, id), eq(bankAccounts.clientId, clientId)));
+    const [txRef] = await db
+      .select({ id: transactions.id })
+      .from(transactions)
+      .where(and(eq(transactions.clientId, clientId), eq(transactions.bankAccountId, id)))
+      .limit(1);
+    if (txRef) return false;
+    const [batchRef] = await db
+      .select({ id: financialImportBatches.id })
+      .from(financialImportBatches)
+      .where(and(eq(financialImportBatches.clientId, clientId), eq(financialImportBatches.bankAccountId, id)))
+      .limit(1);
+    if (batchRef) return false;
+    const result = await db.delete(bankAccounts).where(and(eq(bankAccounts.id, id), eq(bankAccounts.clientId, clientId)));
     return (result.rowCount ?? 0) > 0;
+  }
+
+  async createFinancialImportBatch(row: InsertFinancialImportBatch): Promise<FinancialImportBatch> {
+    const [created] = await db.insert(financialImportBatches).values(row).returning();
+    return created;
+  }
+
+  async getFinancialSavedViews(clientId: number, userId: string): Promise<FinancialSavedView[]> {
+    return db
+      .select()
+      .from(financialSavedViews)
+      .where(and(eq(financialSavedViews.clientId, clientId), eq(financialSavedViews.userId, userId)))
+      .orderBy(desc(financialSavedViews.updatedAt));
+  }
+
+  async createFinancialSavedView(row: InsertFinancialSavedView): Promise<FinancialSavedView> {
+    const [created] = await db.insert(financialSavedViews).values(row).returning();
+    return created;
+  }
+
+  async deleteFinancialSavedView(clientId: number, userId: string, id: number): Promise<boolean> {
+    const del = await db
+      .delete(financialSavedViews)
+      .where(
+        and(
+          eq(financialSavedViews.id, id),
+          eq(financialSavedViews.clientId, clientId),
+          eq(financialSavedViews.userId, userId),
+        ),
+      )
+      .returning({ id: financialSavedViews.id });
+    return del.length > 0;
   }
 
   async getTransactions(clientId: number): Promise<Transaction[]> {
@@ -1730,7 +1793,11 @@ export class DatabaseStorage implements IStorage {
   }
 
   async deleteTransactionBatch(clientId: number, importBatchId: string): Promise<number> {
-    // SQLite/Turso suele no poblar rowCount en DELETE; usar .returning() para contar bien.
+    await db
+      .delete(financialImportBatches)
+      .where(
+        and(eq(financialImportBatches.clientId, clientId), eq(financialImportBatches.importBatchId, importBatchId)),
+      );
     const deleted = await db
       .delete(transactions)
       .where(and(eq(transactions.clientId, clientId), eq(transactions.importBatchId, importBatchId)))
@@ -1738,22 +1805,107 @@ export class DatabaseStorage implements IStorage {
     return deleted.length;
   }
 
-  async getImportBatches(clientId: number): Promise<Array<{ importBatchId: string; bankSource: string | null; count: number; minDate: string | null; maxDate: string | null; importedAt: Date | null }>> {
+  async getImportBatches(clientId: number): Promise<
+    Array<{
+      importBatchId: string;
+      bankSource: string | null;
+      count: number;
+      minDate: string | null;
+      maxDate: string | null;
+      importedAt: Date | null;
+      bankAccountId: number | null;
+      bankAccountName: string | null;
+      openingBalance: string | null;
+      closingBalance: string | null;
+    }>
+  > {
     const allTx = await db.select().from(transactions).where(
-      and(eq(transactions.clientId, clientId), isNotNull(transactions.importBatchId))
+      and(eq(transactions.clientId, clientId), isNotNull(transactions.importBatchId)),
     );
-    const batches = new Map<string, { bankSource: string | null; count: number; minDate: string | null; maxDate: string | null; importedAt: Date | null }>();
+    const batches = new Map<
+      string,
+      { bankSource: string | null; count: number; minDate: string | null; maxDate: string | null; importedAt: Date | null }
+    >();
     for (const tx of allTx) {
       const batchId = tx.importBatchId!;
       if (!batches.has(batchId)) {
-        batches.set(batchId, { bankSource: tx.bankSource, count: 0, minDate: tx.transactionDate, maxDate: tx.transactionDate, importedAt: tx.createdAt });
+        batches.set(batchId, {
+          bankSource: tx.bankSource,
+          count: 0,
+          minDate: tx.transactionDate,
+          maxDate: tx.transactionDate,
+          importedAt: tx.createdAt,
+        });
       }
       const b = batches.get(batchId)!;
       b.count++;
       if (tx.transactionDate && (!b.minDate || tx.transactionDate < b.minDate)) b.minDate = tx.transactionDate;
       if (tx.transactionDate && (!b.maxDate || tx.transactionDate > b.maxDate)) b.maxDate = tx.transactionDate;
     }
-    return Array.from(batches.entries()).map(([importBatchId, data]) => ({ importBatchId, ...data }));
+
+    const metaRows = await db
+      .select()
+      .from(financialImportBatches)
+      .where(eq(financialImportBatches.clientId, clientId));
+    const metaByBatch = new Map(metaRows.map((m) => [m.importBatchId, m]));
+
+    const accountRows = await db.select().from(bankAccounts).where(eq(bankAccounts.clientId, clientId));
+    const accNameById = new Map(accountRows.map((a) => [a.id, a.name]));
+
+    const out: Array<{
+      importBatchId: string;
+      bankSource: string | null;
+      count: number;
+      minDate: string | null;
+      maxDate: string | null;
+      importedAt: Date | null;
+      bankAccountId: number | null;
+      bankAccountName: string | null;
+      openingBalance: string | null;
+      closingBalance: string | null;
+    }> = [];
+
+    for (const [importBatchId, data] of batches.entries()) {
+      const meta = metaByBatch.get(importBatchId);
+      let bankAccountId: number | null = meta?.bankAccountId ?? null;
+      if (bankAccountId == null) {
+        const idsInBatch = new Set(
+          allTx
+            .filter((t) => t.importBatchId === importBatchId)
+            .map((t) => t.bankAccountId)
+            .filter((x): x is number => x != null),
+        );
+        if (idsInBatch.size === 1) bankAccountId = [...idsInBatch][0]!;
+      }
+      const openingBalance =
+        meta?.openingBalance != null && String(meta.openingBalance) !== ""
+          ? String(meta.openingBalance)
+          : null;
+      const closingBalance =
+        meta?.closingBalance != null && String(meta.closingBalance) !== ""
+          ? String(meta.closingBalance)
+          : null;
+
+      out.push({
+        importBatchId,
+        bankSource: meta?.bankSource ?? data.bankSource,
+        count: data.count,
+        minDate: data.minDate,
+        maxDate: data.maxDate,
+        importedAt: data.importedAt,
+        bankAccountId,
+        bankAccountName: bankAccountId != null ? accNameById.get(bankAccountId) ?? null : null,
+        openingBalance,
+        closingBalance,
+      });
+    }
+
+    out.sort((a, b) => {
+      const ta = a.importedAt instanceof Date ? a.importedAt.getTime() : 0;
+      const tb = b.importedAt instanceof Date ? b.importedAt.getTime() : 0;
+      return tb - ta;
+    });
+    return out;
   }
 
   async getMonthlyBalances(clientId: number, year: number): Promise<MonthlyBalance[]> {

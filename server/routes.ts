@@ -7,9 +7,15 @@ import { setupLocalAuth, isAuthenticatedLocal } from "./auth";
 import multer from "multer";
 import * as XLSX from "xlsx";
 import { z } from "zod";
-import { getAvailableBanks, getBankParser, parseBbvaWorkbook } from "./bankParsers";
+import { getAvailableBanks, getBankParser, parseBbvaWorkbook, type ParseResult } from "./bankParsers";
 import { seedFinancialDataForClient } from "./seedFinancialData";
 import path from "path";
+import type {
+  InsertBankAccount,
+  InsertFinancialImportBatch,
+  InsertFinancialSavedView,
+  InsertTransaction,
+} from "@shared/schema";
 
 const upload = multer({ 
   storage: multer.memoryStorage(),
@@ -37,6 +43,35 @@ const updateTransactionSchema = z.object({
   }),
   invoiced: z.union([z.boolean(), z.coerce.boolean()]).optional(),
 }).strict();
+
+const createBankAccountBodySchema = z.object({
+  name: z.string().min(1),
+  type: z.string().max(50).optional(),
+  accountNumber: z.string().max(100).optional(),
+  localId: z.union([z.coerce.number().int().positive(), z.null()]).optional(),
+  active: z.boolean().optional(),
+});
+
+const patchBankAccountBodySchema = z
+  .object({
+    name: z.string().min(1).optional(),
+    type: z.string().max(50).optional(),
+    accountNumber: z.string().max(100).optional(),
+    localId: z.union([z.coerce.number().int().positive(), z.null()]).optional(),
+    active: z.boolean().optional(),
+  })
+  .strict();
+
+const financialSavedViewFiltersSchema = z.object({
+  bankFilter: z.string(),
+  accountContextFilter: z.string(),
+  filterTab: z.enum(["all", "uncategorized", "categorized"]),
+});
+
+const postFinancialSavedViewSchema = z.object({
+  name: z.string().min(1).max(255),
+  filters: financialSavedViewFiltersSchema,
+});
 
 async function getClientId(req: any): Promise<number> {
   const session = req.session as any;
@@ -1803,7 +1838,140 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     try {
       const clientId = await getClientId(req);
       const data = await storage.getBankAccounts(clientId);
-      res.json(data);
+      const locs = await storage.getLocals(clientId);
+      const localMap = new Map(locs.map((l) => [l.id, l]));
+      res.json(
+        data.map((a) => ({
+          ...a,
+          local:
+            a.localId != null
+              ? { id: a.localId, name: localMap.get(a.localId)?.name ?? "" }
+              : null,
+        })),
+      );
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
+  app.post("/api/bank-accounts", isAuthenticated, async (req, res) => {
+    try {
+      const clientId = await getClientId(req);
+      const parsed = createBankAccountBodySchema.safeParse(req.body);
+      if (!parsed.success) {
+        return res.status(400).json({ message: "Datos invalidos", errors: parsed.error.errors });
+      }
+      const { name, type, accountNumber, localId, active } = parsed.data;
+      if (localId != null) {
+        const locs = await storage.getLocals(clientId);
+        if (!locs.some((l) => l.id === localId)) {
+          return res.status(400).json({ message: "Local invalido" });
+        }
+      }
+      const created = await storage.createBankAccount({
+        clientId,
+        name,
+        type: type ?? "bank",
+        accountNumber: accountNumber ?? undefined,
+        ...(localId !== undefined ? { localId } : {}),
+        active: active ?? true,
+      } as unknown as InsertBankAccount);
+      res.status(201).json(created);
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
+  app.patch("/api/bank-accounts/:id", isAuthenticated, async (req, res) => {
+    try {
+      const clientId = await getClientId(req);
+      const id = parseInt(req.params.id, 10);
+      if (Number.isNaN(id)) return res.status(400).json({ message: "ID invalido" });
+      const parsed = patchBankAccountBodySchema.safeParse(req.body);
+      if (!parsed.success) {
+        return res.status(400).json({ message: "Datos invalidos", errors: parsed.error.errors });
+      }
+      if (parsed.data.localId != null) {
+        const locs = await storage.getLocals(clientId);
+        if (!locs.some((l) => l.id === parsed.data.localId)) {
+          return res.status(400).json({ message: "Local invalido" });
+        }
+      }
+      const updated = await storage.updateBankAccount(clientId, id, parsed.data as unknown as Partial<InsertBankAccount>);
+      if (!updated) return res.status(404).json({ message: "Cuenta no encontrada" });
+      res.json(updated);
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
+  app.delete("/api/bank-accounts/:id", isAuthenticated, async (req, res) => {
+    try {
+      const clientId = await getClientId(req);
+      const id = parseInt(req.params.id, 10);
+      if (Number.isNaN(id)) return res.status(400).json({ message: "ID invalido" });
+      const ok = await storage.deleteBankAccount(clientId, id);
+      if (!ok) {
+        const acc = await storage.getBankAccount(clientId, id);
+        if (acc) {
+          return res.status(409).json({
+            message: "No se puede eliminar: hay movimientos o extractos vinculados a esta cuenta",
+          });
+        }
+        return res.status(404).json({ message: "Cuenta no encontrada" });
+      }
+      res.json({ success: true });
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
+  app.get("/api/financial-saved-views", isAuthenticated, async (req, res) => {
+    try {
+      const clientId = await getClientId(req);
+      const session = req.session as any;
+      const userId = session?.userId || (req.user as any)?.claims?.sub;
+      if (!userId) return res.status(401).json({ message: "Usuario no identificado" });
+      const rows = await storage.getFinancialSavedViews(clientId, userId);
+      res.json(rows);
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
+  app.post("/api/financial-saved-views", isAuthenticated, async (req, res) => {
+    try {
+      const clientId = await getClientId(req);
+      const session = req.session as any;
+      const userId = session?.userId || (req.user as any)?.claims?.sub;
+      if (!userId) return res.status(401).json({ message: "Usuario no identificado" });
+      const parsed = postFinancialSavedViewSchema.safeParse(req.body);
+      if (!parsed.success) {
+        return res.status(400).json({ message: "Datos invalidos", errors: parsed.error.errors });
+      }
+      const row = await storage.createFinancialSavedView({
+        clientId,
+        userId,
+        name: parsed.data.name,
+        filters: parsed.data.filters,
+      } as unknown as InsertFinancialSavedView);
+      res.status(201).json(row);
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
+  app.delete("/api/financial-saved-views/:id", isAuthenticated, async (req, res) => {
+    try {
+      const clientId = await getClientId(req);
+      const session = req.session as any;
+      const userId = session?.userId || (req.user as any)?.claims?.sub;
+      if (!userId) return res.status(401).json({ message: "Usuario no identificado" });
+      const id = parseInt(req.params.id, 10);
+      if (Number.isNaN(id)) return res.status(400).json({ message: "ID invalido" });
+      const ok = await storage.deleteFinancialSavedView(clientId, userId, id);
+      if (!ok) return res.status(404).json({ message: "Vista no encontrada" });
+      res.json({ success: true });
     } catch (e: any) {
       res.status(500).json({ message: e.message });
     }
@@ -1850,6 +2018,17 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const session = req.session as any;
       const userId = session?.userId || (req.user as any)?.claims?.sub;
       const bankId = req.body.bankId || "generic";
+
+      const bankAccountParsed = z.coerce.number().int().positive().safeParse(req.body.bankAccountId);
+      if (!bankAccountParsed.success) {
+        return res.status(400).json({
+          message: "Debe seleccionar una cuenta bancaria o caja para importar el extracto",
+        });
+      }
+      const bankAccountRow = await storage.getBankAccount(clientId, bankAccountParsed.data);
+      if (!bankAccountRow) {
+        return res.status(400).json({ message: "La cuenta seleccionada no existe o no pertenece a su empresa" });
+      }
       
       console.log(`[IMPORT] Client: ${clientId}, Bank: ${bankId}, File size: ${req.file?.size || 0} bytes`);
       
@@ -1863,9 +2042,18 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const parser = getBankParser(bankId);
       console.log(`[IMPORT] Using parser: ${parser.bankName}`);
 
-      let parseResult;
+      let parseResult: ParseResult;
+      let openingBalanceDetected: number | null = null;
+
       if (bankId === "bbva") {
-        parseResult = parseBbvaWorkbook(workbook);
+        const bbva = parseBbvaWorkbook(workbook);
+        parseResult = {
+          transactions: bbva.transactions,
+          skipped: bbva.skipped,
+          skippedReasons: bbva.skippedReasons,
+          total: bbva.total,
+        };
+        openingBalanceDetected = bbva.openingBalance;
         console.log(`[IMPORT] BBVA sheets merged: ${parseResult.transactions.length} txs, sheets=${workbook.SheetNames.join(",")}`);
       } else {
         const sheetName = workbook.SheetNames[0];
@@ -1913,6 +2101,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         transactionsToInsert.push({
           clientId,
           localId,
+          bankAccountId: bankAccountParsed.data,
+          createdBy: userId ?? undefined,
           transactionDate: tx.date,
           description: tx.description,
           amount: String(tx.amount),
@@ -1929,8 +2119,21 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       
       console.log(`[IMPORT] Inserting ${transactionsToInsert.length} transactions in batch...`);
       
-      const imported = await storage.createTransactionsBatch(transactionsToInsert);
+      const imported = await storage.createTransactionsBatch(
+        transactionsToInsert as unknown as InsertTransaction[],
+      );
       console.log(`[IMPORT] Complete: ${imported} imported`);
+
+      if (imported > 0) {
+        await storage.createFinancialImportBatch({
+          clientId,
+          importBatchId,
+          bankAccountId: bankAccountParsed.data,
+          bankSource: bankId,
+          openingBalance:
+            openingBalanceDetected != null ? String(openingBalanceDetected) : undefined,
+        } as unknown as InsertFinancialImportBatch);
+      }
       
       res.json({ 
         imported, 
@@ -1938,7 +2141,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         skipped: parseResult.skipped,
         skippedReasons: parseResult.skippedReasons.slice(0, 10),
         bankUsed: parser.bankName,
-        unmappedBranches: unmappedBranches.length > 0 ? unmappedBranches : undefined
+        unmappedBranches: unmappedBranches.length > 0 ? unmappedBranches : undefined,
+        batchOpeningBalance: openingBalanceDetected,
       });
     } catch (e: any) {
       res.status(500).json({ message: e.message });

@@ -1,4 +1,4 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { PageHeader } from "@/components/page-header";
 import { DataTable, Column } from "@/components/data-table";
@@ -25,6 +25,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
+import { useAuth } from "@/hooks/useAuth";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { formatCurrency, formatDate } from "@/lib/formatters";
 import { 
@@ -43,8 +44,17 @@ import {
   Split,
   Plus,
   Trash2,
+  Bookmark,
+  Landmark,
 } from "lucide-react";
-import type { Transaction, BankAccount, TransactionCategory, Local, LocalAlias } from "@shared/schema";
+import type {
+  Transaction,
+  BankAccount,
+  TransactionCategory,
+  Local,
+  LocalAlias,
+  FinancialSavedView,
+} from "@shared/schema";
 
 interface TransactionWithRelations extends Transaction {
   bankAccount?: BankAccount | null;
@@ -81,10 +91,36 @@ interface ImportBatch {
   minDate: string | null;
   maxDate: string | null;
   importedAt: string | null;
+  bankAccountId?: number | null;
+  bankAccountName?: string | null;
+  openingBalance?: string | null;
+  closingBalance?: string | null;
+}
+
+type BankAccountWithLocal = BankAccount & {
+  local?: { id: number; name: string } | null;
+};
+
+function parseSavedViewFilters(raw: unknown): {
+  bankFilter: string;
+  accountContextFilter: string;
+  filterTab: FilterTab;
+} | null {
+  if (!raw || typeof raw !== "object") return null;
+  const o = raw as Record<string, unknown>;
+  const filterTab = o.filterTab;
+  if (filterTab !== "all" && filterTab !== "uncategorized" && filterTab !== "categorized") return null;
+  return {
+    bankFilter: typeof o.bankFilter === "string" ? o.bankFilter : "all",
+    accountContextFilter:
+      typeof o.accountContextFilter === "string" ? o.accountContextFilter : "all",
+    filterTab,
+  };
 }
 
 export default function BankStatementsPage() {
   const { toast } = useToast();
+  const { user } = useAuth();
   const [isUploadOpen, setIsUploadOpen] = useState(false);
   const [isCategorizeOpen, setIsCategorizeOpen] = useState(false);
   const [isBatchCategorizeOpen, setIsBatchCategorizeOpen] = useState(false);
@@ -112,13 +148,25 @@ export default function BankStatementsPage() {
   const [isDeleteBatchOpen, setIsDeleteBatchOpen] = useState(false);
   const [deleteBatchTarget, setDeleteBatchTarget] = useState<ImportBatch | null>(null);
   const [deleteConfirmCode, setDeleteConfirmCode] = useState("");
+  const [accountContextFilter, setAccountContextFilter] = useState<string>("all");
+  const [uploadBankAccountId, setUploadBankAccountId] = useState("");
+  const [isAccountsDialogOpen, setIsAccountsDialogOpen] = useState(false);
+  const [newAccountName, setNewAccountName] = useState("");
+  const [newAccountLocalId, setNewAccountLocalId] = useState<string>("none");
+  const [isSaveViewDialogOpen, setIsSaveViewDialogOpen] = useState(false);
+  const [saveViewName, setSaveViewName] = useState("");
 
   const { data: transactions = [], isLoading } = useQuery<TransactionWithRelations[]>({
     queryKey: ["/api/transactions"],
   });
 
-  const { data: bankAccounts = [] } = useQuery<BankAccount[]>({
+  const { data: bankAccounts = [] } = useQuery<BankAccountWithLocal[]>({
     queryKey: ["/api/bank-accounts"],
+  });
+
+  const { data: savedViews = [] } = useQuery<FinancialSavedView[]>({
+    queryKey: ["/api/financial-saved-views"],
+    enabled: !!user?.id,
   });
 
   const { data: categories = [] } = useQuery<TransactionCategory[]>({
@@ -178,6 +226,64 @@ export default function BankStatementsPage() {
     },
   });
 
+  const createBankAccountMutation = useMutation({
+    mutationFn: async (payload: { name: string; localId?: number | null }) => {
+      const res = await apiRequest("POST", "/api/bank-accounts", payload);
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/bank-accounts"] });
+      toast({ title: "Cuenta creada" });
+      setNewAccountName("");
+      setNewAccountLocalId("none");
+    },
+    onError: (error: Error) => {
+      toast({ title: "Error al crear cuenta", description: error.message, variant: "destructive" });
+    },
+  });
+
+  const deleteBankAccountMutation = useMutation({
+    mutationFn: async (id: number) => {
+      await apiRequest("DELETE", `/api/bank-accounts/${id}`);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/bank-accounts"] });
+      toast({ title: "Cuenta eliminada" });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Error al eliminar cuenta", description: error.message, variant: "destructive" });
+    },
+  });
+
+  const saveViewMutation = useMutation({
+    mutationFn: async (payload: { name: string; filters: Record<string, unknown> }) => {
+      const res = await apiRequest("POST", "/api/financial-saved-views", payload);
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/financial-saved-views"] });
+      toast({ title: "Vista guardada" });
+      setIsSaveViewDialogOpen(false);
+      setSaveViewName("");
+    },
+    onError: (error: Error) => {
+      toast({ title: "Error al guardar vista", description: error.message, variant: "destructive" });
+    },
+  });
+
+  const deleteViewMutation = useMutation({
+    mutationFn: async (id: number) => {
+      await apiRequest("DELETE", `/api/financial-saved-views/${id}`);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/financial-saved-views"] });
+      toast({ title: "Vista eliminada" });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Error al eliminar vista", description: error.message, variant: "destructive" });
+    },
+  });
+
   const uploadMutation = useMutation({
     mutationFn: async (formData: FormData) => {
       const res = await fetch("/api/transactions/import", {
@@ -206,6 +312,9 @@ export default function BankStatementsPage() {
       let description = data.skipped > 0 
         ? `Importados: ${data.imported}. Saltados: ${data.skipped}. Total: ${data.total}. Banco: ${data.bankUsed}`
         : `Se importaron ${data.imported} de ${data.total} movimientos usando ${data.bankUsed}`;
+      if (data.batchOpeningBalance != null && data.batchOpeningBalance !== "") {
+        description += `. Saldo inicial detectado (BBVA): ${formatCurrency(Number(data.batchOpeningBalance))}`;
+      }
       
       if (data.skippedReasons && data.skippedReasons.length > 0 && data.imported === 0) {
         description += `. Razones: ${data.skippedReasons.slice(0, 3).join("; ")}`;
@@ -303,10 +412,63 @@ export default function BankStatementsPage() {
       toast({ title: "Seleccione un banco", variant: "destructive" });
       return;
     }
+    if (!uploadBankAccountId) {
+      toast({
+        title: "Seleccione una cuenta",
+        description: "Cada importe debe asociarse a una cuenta o caja registrada.",
+        variant: "destructive",
+      });
+      return;
+    }
     const formData = new FormData();
     formData.append("file", file);
     formData.append("bankId", selectedBankId);
+    formData.append("bankAccountId", uploadBankAccountId);
     uploadMutation.mutate(formData);
+  };
+
+  useEffect(() => {
+    if (!isUploadOpen || bankAccounts.length === 0) return;
+    if (!uploadBankAccountId) {
+      setUploadBankAccountId(String(bankAccounts[0].id));
+    }
+  }, [isUploadOpen, bankAccounts, uploadBankAccountId]);
+
+  const applySavedView = (view: FinancialSavedView) => {
+    const f = parseSavedViewFilters(view.filters);
+    if (!f) {
+      toast({ title: "Vista invalida", variant: "destructive" });
+      return;
+    }
+    setBankFilter(f.bankFilter);
+    setAccountContextFilter(f.accountContextFilter);
+    setFilterTab(f.filterTab);
+  };
+
+  const handleCreateAccount = () => {
+    if (!newAccountName.trim()) {
+      toast({ title: "Indique el nombre de la cuenta", variant: "destructive" });
+      return;
+    }
+    createBankAccountMutation.mutate({
+      name: newAccountName.trim(),
+      localId: newAccountLocalId === "none" ? null : parseInt(newAccountLocalId, 10),
+    });
+  };
+
+  const handleSaveCurrentView = () => {
+    if (!saveViewName.trim()) {
+      toast({ title: "Indique un nombre para la vista", variant: "destructive" });
+      return;
+    }
+    saveViewMutation.mutate({
+      name: saveViewName.trim(),
+      filters: {
+        bankFilter,
+        accountContextFilter,
+        filterTab,
+      },
+    });
   };
 
   const handleCategorize = () => {
@@ -519,11 +681,21 @@ export default function BankStatementsPage() {
     ? transactions 
     : transactions.filter(t => t.bankSource === bankFilter);
 
+  const accountFilteredTransactions = useMemo(() => {
+    if (accountContextFilter === "all") return bankFilteredTransactions;
+    if (accountContextFilter === "unassigned") {
+      return bankFilteredTransactions.filter((t) => !t.bankAccountId);
+    }
+    const aid = parseInt(accountContextFilter, 10);
+    if (Number.isNaN(aid)) return bankFilteredTransactions;
+    return bankFilteredTransactions.filter((t) => t.bankAccountId === aid);
+  }, [bankFilteredTransactions, accountContextFilter]);
+
   const filteredTransactions = filterTab === "all" 
-    ? bankFilteredTransactions 
+    ? accountFilteredTransactions 
     : filterTab === "uncategorized" 
-      ? bankFilteredTransactions.filter(t => !t.categoryId)
-      : bankFilteredTransactions.filter(t => t.categoryId);
+      ? accountFilteredTransactions.filter(t => !t.categoryId)
+      : accountFilteredTransactions.filter(t => t.categoryId);
 
   const columns: Column<TransactionWithRelations>[] = [
     {
@@ -566,6 +738,16 @@ export default function BankStatementsPage() {
           <span className="truncate max-w-xs">{row.description || "-"}</span>
         </div>
       ),
+    },
+    {
+      key: "bankAccount",
+      header: "Cuenta",
+      cell: (row) =>
+        row.bankAccount ? (
+          <span className="text-sm truncate max-w-[140px] block">{row.bankAccount.name}</span>
+        ) : (
+          <span className="text-xs text-muted-foreground">—</span>
+        ),
     },
     {
       key: "category",
@@ -635,7 +817,7 @@ export default function BankStatementsPage() {
         title="Extractos Bancarios"
         description="Importa y gestiona los movimientos de tus cuentas"
         actions={
-          <div className="flex gap-2">
+          <div className="flex flex-wrap gap-2">
             {selectedTransactionIds.size > 0 && (
               <Button 
                 variant="secondary"
@@ -653,6 +835,10 @@ export default function BankStatementsPage() {
             >
               <Tag className="h-4 w-4 mr-2" />
               Clasificacion Masiva
+            </Button>
+            <Button variant="outline" onClick={() => setIsAccountsDialogOpen(true)} data-testid="button-bank-accounts">
+              <Landmark className="h-4 w-4 mr-2" />
+              Cuentas
             </Button>
             <Button onClick={() => setIsUploadOpen(true)} data-testid="button-import">
               <Upload className="h-4 w-4 mr-2" />
@@ -748,6 +934,74 @@ export default function BankStatementsPage() {
         </Card>
       </div>
 
+      <div className="space-y-3 rounded-lg border-2 border-primary/20 bg-primary/5 p-4">
+        <p className="text-sm font-semibold text-foreground">Vista por cuenta y atajos</p>
+        <div className="flex flex-col gap-3 md:flex-row md:flex-wrap md:items-end">
+        <div className="space-y-2 min-w-[220px] flex-1">
+          <Label className="text-xs font-medium text-foreground">Cuenta / caja (vista)</Label>
+          <Select value={accountContextFilter} onValueChange={setAccountContextFilter}>
+            <SelectTrigger data-testid="select-account-context" className="w-full md:max-w-md">
+              <SelectValue placeholder="Filtrar por cuenta..." />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">Todas las cuentas</SelectItem>
+              <SelectItem value="unassigned">Sin cuenta asignada (importes antiguos)</SelectItem>
+              {bankAccounts.map((a) => (
+                <SelectItem key={a.id} value={String(a.id)}>
+                  {a.name}
+                  {a.local?.name ? ` · ${a.local.name}` : ""}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+        <div className="flex flex-1 flex-wrap items-center gap-2">
+          {user?.id && savedViews.length > 0 && (
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-xs text-muted-foreground shrink-0">Vistas:</span>
+              {savedViews.map((v) => (
+                <div key={v.id} className="flex items-center gap-0.5 rounded-md border bg-background">
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="h-8 px-2 text-xs"
+                    onClick={() => applySavedView(v)}
+                  >
+                    <Bookmark className="h-3 w-3 mr-1 opacity-70" />
+                    {v.name}
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    className="h-8 w-8 shrink-0 text-muted-foreground hover:text-destructive"
+                    title="Eliminar vista"
+                    onClick={() => deleteViewMutation.mutate(v.id)}
+                    disabled={deleteViewMutation.isPending}
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                  </Button>
+                </div>
+              ))}
+            </div>
+          )}
+          {user?.id && (
+            <Button
+              type="button"
+              variant="secondary"
+              size="sm"
+              className="h-8"
+              onClick={() => setIsSaveViewDialogOpen(true)}
+              data-testid="button-save-view"
+            >
+              Guardar vista
+            </Button>
+          )}
+        </div>
+        </div>
+      </div>
+
       {categorizationPercent < 100 && transactions.length > 0 && (
         <Card className="border-amber-500/50 bg-amber-500/5">
           <CardContent className="py-4">
@@ -812,7 +1066,7 @@ export default function BankStatementsPage() {
                 </CardHeader>
                 <CardContent>
                   <div className="text-2xl font-bold font-mono" data-testid="stat-bank-total">
-                    {bankFilteredTransactions.length}
+                    {accountFilteredTransactions.length}
                   </div>
                 </CardContent>
               </Card>
@@ -824,7 +1078,7 @@ export default function BankStatementsPage() {
                 </CardHeader>
                 <CardContent>
                   <div className="text-2xl font-bold font-mono text-green-600" data-testid="stat-bank-income">
-                    {formatCurrency(bankFilteredTransactions.filter(t => t.type === "income").reduce((sum, t) => sum + parseFloat(String(t.amount) || "0"), 0))}
+                    {formatCurrency(accountFilteredTransactions.filter(t => t.type === "income").reduce((sum, t) => sum + parseFloat(String(t.amount) || "0"), 0))}
                   </div>
                 </CardContent>
               </Card>
@@ -836,7 +1090,7 @@ export default function BankStatementsPage() {
                 </CardHeader>
                 <CardContent>
                   <div className="text-2xl font-bold font-mono text-red-600" data-testid="stat-bank-expense">
-                    {formatCurrency(bankFilteredTransactions.filter(t => t.type === "expense").reduce((sum, t) => sum + Math.abs(parseFloat(String(t.amount) || "0")), 0))}
+                    {formatCurrency(accountFilteredTransactions.filter(t => t.type === "expense").reduce((sum, t) => sum + Math.abs(parseFloat(String(t.amount) || "0")), 0))}
                   </div>
                 </CardContent>
               </Card>
@@ -848,8 +1102,8 @@ export default function BankStatementsPage() {
                 </CardHeader>
                 <CardContent>
                   {(() => {
-                    const bankIncome = bankFilteredTransactions.filter(t => t.type === "income").reduce((sum, t) => sum + parseFloat(String(t.amount) || "0"), 0);
-                    const bankExpense = bankFilteredTransactions.filter(t => t.type === "expense").reduce((sum, t) => sum + Math.abs(parseFloat(String(t.amount) || "0")), 0);
+                    const bankIncome = accountFilteredTransactions.filter(t => t.type === "income").reduce((sum, t) => sum + parseFloat(String(t.amount) || "0"), 0);
+                    const bankExpense = accountFilteredTransactions.filter(t => t.type === "expense").reduce((sum, t) => sum + Math.abs(parseFloat(String(t.amount) || "0")), 0);
                     const bankBalance = bankIncome - bankExpense;
                     return (
                       <div className={`text-2xl font-bold font-mono ${bankBalance >= 0 ? "text-green-600" : "text-red-600"}`} data-testid="stat-bank-balance">
@@ -866,13 +1120,13 @@ export default function BankStatementsPage() {
               <Tabs value={filterTab} onValueChange={(v) => setFilterTab(v as FilterTab)}>
                 <TabsList>
                   <TabsTrigger value="all" data-testid="filter-all">
-                    Todos ({bankFilteredTransactions.length})
+                    Todos ({accountFilteredTransactions.length})
                   </TabsTrigger>
                   <TabsTrigger value="uncategorized" data-testid="filter-uncategorized" className="text-amber-600">
-                    Sin categorizar ({bankFilteredTransactions.filter(t => !t.categoryId).length})
+                    Sin categorizar ({accountFilteredTransactions.filter(t => !t.categoryId).length})
                   </TabsTrigger>
                   <TabsTrigger value="categorized" data-testid="filter-categorized">
-                    Categorizados ({bankFilteredTransactions.filter(t => t.categoryId).length})
+                    Categorizados ({accountFilteredTransactions.filter(t => t.categoryId).length})
                   </TabsTrigger>
                 </TabsList>
               </Tabs>
@@ -925,6 +1179,16 @@ export default function BankStatementsPage() {
                                   Importado: {formatDate(batch.importedAt)}
                                 </span>
                               )}
+                              {batch.bankAccountName && (
+                                <span className="ml-3">Cuenta: {batch.bankAccountName}</span>
+                              )}
+                              {batch.openingBalance != null &&
+                                batch.openingBalance !== "" &&
+                                Number.isFinite(parseFloat(batch.openingBalance)) && (
+                                  <span className="ml-3">
+                                    Saldo inicial: {formatCurrency(parseFloat(batch.openingBalance))}
+                                  </span>
+                                )}
                             </p>
                           </div>
                         </div>
@@ -1109,12 +1373,41 @@ export default function BankStatementsPage() {
         </TabsContent>
       </Tabs>
 
-      <Dialog open={isUploadOpen} onOpenChange={setIsUploadOpen}>
+      <Dialog
+        open={isUploadOpen}
+        onOpenChange={(open) => {
+          setIsUploadOpen(open);
+          if (!open) setUploadBankAccountId("");
+        }}
+      >
         <DialogContent>
           <DialogHeader>
             <DialogTitle>Importar Extracto Bancario</DialogTitle>
+            <DialogDescription>
+              El archivo se asocia a la cuenta que elijas; todos los movimientos quedan vinculados a esa caja o cuenta.
+            </DialogDescription>
           </DialogHeader>
           <div className="space-y-4">
+            <div className="space-y-2">
+              <Label>Cuenta o caja *</Label>
+              <Select
+                value={uploadBankAccountId}
+                onValueChange={setUploadBankAccountId}
+                disabled={bankAccounts.length === 0}
+              >
+                <SelectTrigger data-testid="select-upload-bank-account">
+                  <SelectValue placeholder={bankAccounts.length ? "Seleccionar cuenta..." : "Cree una cuenta primero"} />
+                </SelectTrigger>
+                <SelectContent>
+                  {bankAccounts.map((a) => (
+                    <SelectItem key={a.id} value={String(a.id)}>
+                      {a.name}
+                      {a.local?.name ? ` · ${a.local.name}` : ""}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
             <div className="space-y-2">
               <Label>Banco</Label>
               <Select value={selectedBankId} onValueChange={setSelectedBankId}>
@@ -1148,10 +1441,124 @@ export default function BankStatementsPage() {
               </Button>
               <Button
                 onClick={handleUpload}
-                disabled={!file || !selectedBankId || uploadMutation.isPending}
+                disabled={
+                  !file ||
+                  !selectedBankId ||
+                  !uploadBankAccountId ||
+                  bankAccounts.length === 0 ||
+                  uploadMutation.isPending
+                }
                 data-testid="button-upload"
               >
                 {uploadMutation.isPending ? "Importando..." : "Importar"}
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={isAccountsDialogOpen} onOpenChange={setIsAccountsDialogOpen}>
+        <DialogContent className="sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Cuentas y cajas</DialogTitle>
+            <DialogDescription>
+              Registra cada cuenta o caja para importar extractos y filtrar movimientos. Opcionalmente vincula un local.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 max-h-[50vh] overflow-y-auto">
+            {bankAccounts.length === 0 ? (
+              <p className="text-sm text-muted-foreground">No hay cuentas registradas.</p>
+            ) : (
+              <ul className="space-y-2">
+                {bankAccounts.map((a) => (
+                  <li
+                    key={a.id}
+                    className="flex items-center justify-between gap-2 rounded-md border p-2 text-sm"
+                  >
+                    <div>
+                      <span className="font-medium">{a.name}</span>
+                      {a.local?.name && (
+                        <span className="text-muted-foreground"> · {a.local.name}</span>
+                      )}
+                    </div>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon"
+                      className="shrink-0 text-muted-foreground hover:text-destructive"
+                      title="Eliminar cuenta"
+                      onClick={() => deleteBankAccountMutation.mutate(a.id)}
+                      disabled={deleteBankAccountMutation.isPending}
+                    >
+                      <Trash2 className="h-4 w-4" />
+                    </Button>
+                  </li>
+                ))}
+              </ul>
+            )}
+            <div className="space-y-2 border-t pt-4">
+              <Label>Nueva cuenta</Label>
+              <Input
+                placeholder="Nombre (ej. CC Galicia — Centro)"
+                value={newAccountName}
+                onChange={(e) => setNewAccountName(e.target.value)}
+                data-testid="input-new-account-name"
+              />
+              <Label className="text-xs text-muted-foreground">Local (opcional)</Label>
+              <Select value={newAccountLocalId} onValueChange={setNewAccountLocalId}>
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="none">Sin local</SelectItem>
+                  {locals.map((l) => (
+                    <SelectItem key={l.id} value={String(l.id)}>
+                      {l.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <Button
+                type="button"
+                className="w-full"
+                onClick={handleCreateAccount}
+                disabled={createBankAccountMutation.isPending}
+              >
+                {createBankAccountMutation.isPending ? "Guardando..." : "Crear cuenta"}
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={isSaveViewDialogOpen} onOpenChange={setIsSaveViewDialogOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Guardar vista</DialogTitle>
+            <DialogDescription>
+              Guarda el banco activo, el filtro de cuenta y la pestaña de categorización para recuperarlos con un clic.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="space-y-2">
+              <Label>Nombre</Label>
+              <Input
+                value={saveViewName}
+                onChange={(e) => setSaveViewName(e.target.value)}
+                placeholder="Ej. Galicia + cuenta caja"
+                data-testid="input-save-view-name"
+              />
+            </div>
+            <div className="flex justify-end gap-2">
+              <Button variant="outline" onClick={() => setIsSaveViewDialogOpen(false)}>
+                Cancelar
+              </Button>
+              <Button
+                onClick={handleSaveCurrentView}
+                disabled={saveViewMutation.isPending}
+                data-testid="button-confirm-save-view"
+              >
+                {saveViewMutation.isPending ? "Guardando..." : "Guardar"}
               </Button>
             </div>
           </div>
