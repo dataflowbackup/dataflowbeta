@@ -200,17 +200,33 @@ export default function BankStatementsPage() {
     queryKey: ["/api/transactions/import-batches"],
   });
 
+  const effectiveContextAccountId = useMemo(() => {
+    // Si el usuario eligió una cuenta específica, usamos esa.
+    if (accountContextFilter !== "all" && accountContextFilter !== "unassigned") {
+      const aid = parseInt(accountContextFilter, 10);
+      return Number.isFinite(aid) ? aid : null;
+    }
+
+    // Si la vista está en "todas", pero en la práctica hay movimientos de una sola cuenta,
+    // mostramos el saldo de esa cuenta para evitar confusión (caso típico: solo Galicia cargado).
+    const ids = new Set<number>();
+    for (const t of transactions) {
+      if (bankFilter !== "all" && t.bankSource !== bankFilter) continue;
+      const id = (t as any).bankAccountId;
+      if (typeof id === "number" && Number.isFinite(id)) ids.add(id);
+    }
+    return ids.size === 1 ? Array.from(ids)[0] : null;
+  }, [accountContextFilter, bankFilter, transactions]);
+
   const latestContextBatch = useMemo(() => {
     if (!importBatches.length) return null;
-    if (accountContextFilter === "all" || accountContextFilter === "unassigned") return null;
-    const aid = parseInt(accountContextFilter, 10);
-    if (!Number.isFinite(aid)) return null;
-    const filtered = importBatches.filter((b) => b.bankAccountId === aid);
+    if (effectiveContextAccountId == null) return null;
+    const filtered = importBatches.filter((b) => b.bankAccountId === effectiveContextAccountId);
     const byBank =
       bankFilter === "all" ? filtered : filtered.filter((b) => b.bankSource === bankFilter);
     const sorted = [...byBank].sort((a, b) => (b.importedAt || "").localeCompare(a.importedAt || ""));
     return sorted[0] ?? null;
-  }, [importBatches, accountContextFilter, bankFilter]);
+  }, [importBatches, effectiveContextAccountId, bankFilter]);
 
   const contextOpening = useMemo(() => {
     const v = latestContextBatch?.openingBalance;
