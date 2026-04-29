@@ -200,6 +200,32 @@ export default function BankStatementsPage() {
     queryKey: ["/api/transactions/import-batches"],
   });
 
+  const latestContextBatch = useMemo(() => {
+    if (!importBatches.length) return null;
+    if (accountContextFilter === "all" || accountContextFilter === "unassigned") return null;
+    const aid = parseInt(accountContextFilter, 10);
+    if (!Number.isFinite(aid)) return null;
+    const filtered = importBatches.filter((b) => b.bankAccountId === aid);
+    const byBank =
+      bankFilter === "all" ? filtered : filtered.filter((b) => b.bankSource === bankFilter);
+    const sorted = [...byBank].sort((a, b) => (b.importedAt || "").localeCompare(a.importedAt || ""));
+    return sorted[0] ?? null;
+  }, [importBatches, accountContextFilter, bankFilter]);
+
+  const contextOpening = useMemo(() => {
+    const v = latestContextBatch?.openingBalance;
+    if (v == null || v === "") return null;
+    const n = parseFloat(String(v));
+    return Number.isFinite(n) ? n : null;
+  }, [latestContextBatch]);
+
+  const contextClosing = useMemo(() => {
+    const v = latestContextBatch?.closingBalance;
+    if (v == null || v === "") return null;
+    const n = parseFloat(String(v));
+    return Number.isFinite(n) ? n : null;
+  }, [latestContextBatch]);
+
   const deleteBatchMutation = useMutation({
     mutationFn: async ({ batchId, confirmCode }: { batchId: string; confirmCode: string }) => {
       return apiRequest(
@@ -334,7 +360,10 @@ export default function BankStatementsPage() {
         ? `Importados: ${data.imported}. Saltados: ${data.skipped}. Total: ${data.total}. Banco: ${data.bankUsed}`
         : `Se importaron ${data.imported} de ${data.total} movimientos usando ${data.bankUsed}`;
       if (data.batchOpeningBalance != null && data.batchOpeningBalance !== "") {
-        description += `. Saldo inicial detectado (BBVA): ${formatCurrency(Number(data.batchOpeningBalance))}`;
+        description += `. Saldo inicial: ${formatCurrency(Number(data.batchOpeningBalance))}`;
+      }
+      if (data.batchClosingBalance != null && data.batchClosingBalance !== "") {
+        description += `. Saldo final: ${formatCurrency(Number(data.batchClosingBalance))}`;
       }
       
       if (data.skippedReasons && data.skippedReasons.length > 0 && data.imported === 0) {
@@ -344,7 +373,8 @@ export default function BankStatementsPage() {
       
       toast({ 
         title: "Importacion completada", 
-        description
+        description,
+        duration: 12000,
       });
       setIsUploadOpen(false);
       setFile(null);
@@ -692,6 +722,9 @@ export default function BankStatementsPage() {
     .reduce((sum, t) => sum + Math.abs(parseFloat(String(t.amount) || "0")), 0);
 
   const balance = totalIncome - totalExpense;
+  const contextDelta =
+    contextOpening != null && contextClosing != null ? contextClosing - contextOpening : null;
+  const balanceDisplayValue = contextClosing != null ? contextClosing : balance;
 
   const incomeCategories = categories.filter(c => c.type === "income" || c.type === "both");
   const expenseCategories = categories.filter(c => c.type === "expense" || c.type === "both");
@@ -960,15 +993,28 @@ export default function BankStatementsPage() {
 
         <Card>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2 gap-2">
-            <CardTitle className="text-sm font-medium">Balance Neto</CardTitle>
+            <CardTitle className="text-sm font-medium">
+              {contextClosing != null ? "Saldo final" : "Balance Neto"}
+            </CardTitle>
             <DollarSign className="h-4 w-4 text-muted-foreground" />
           </CardHeader>
           <CardContent>
-            <div className={`text-2xl font-bold font-mono ${balance >= 0 ? "text-green-600" : "text-red-600"}`} data-testid="stat-balance">
-              {formatCurrency(balance)}
+            <div
+              className={`text-2xl font-bold font-mono ${balanceDisplayValue >= 0 ? "text-green-600" : "text-red-600"}`}
+              data-testid="stat-balance"
+            >
+              {formatCurrency(balanceDisplayValue)}
             </div>
             <p className="text-xs text-muted-foreground mt-1">
-              Bruto: {formatCurrency(totalIncome + totalExpense)}
+              {contextOpening != null && contextClosing != null ? (
+                <>
+                  Saldo inicial: {formatCurrency(contextOpening)}
+                  {" · "}
+                  Variación: {formatCurrency(contextDelta ?? 0)}
+                </>
+              ) : (
+                <>Bruto: {formatCurrency(totalIncome + totalExpense)}</>
+              )}
             </p>
           </CardContent>
         </Card>
@@ -1204,6 +1250,16 @@ export default function BankStatementsPage() {
                     .sort((a, b) => (b.importedAt || "").localeCompare(a.importedAt || ""))
                     .map((batch) => {
                     const bankInfo = availableBanks.find(b => b.id === batch.bankSource);
+                    const openingNum =
+                      batch.openingBalance != null && batch.openingBalance !== "" && Number.isFinite(parseFloat(batch.openingBalance))
+                        ? parseFloat(batch.openingBalance)
+                        : null;
+                    const closingNum =
+                      batch.closingBalance != null && batch.closingBalance !== "" && Number.isFinite(parseFloat(batch.closingBalance))
+                        ? parseFloat(batch.closingBalance)
+                        : null;
+                    const deltaNum =
+                      openingNum != null && closingNum != null ? closingNum - openingNum : null;
                     return (
                       <div key={batch.importBatchId} className="flex items-center justify-between p-3 rounded-lg border" data-testid={`batch-${batch.importBatchId}`}>
                         <div className="flex items-center gap-4">
@@ -1222,13 +1278,15 @@ export default function BankStatementsPage() {
                               {batch.bankAccountName && (
                                 <span className="ml-3">Cuenta: {batch.bankAccountName}</span>
                               )}
-                              {batch.openingBalance != null &&
-                                batch.openingBalance !== "" &&
-                                Number.isFinite(parseFloat(batch.openingBalance)) && (
-                                  <span className="ml-3">
-                                    Saldo inicial: {formatCurrency(parseFloat(batch.openingBalance))}
-                                  </span>
-                                )}
+                              {openingNum != null && (
+                                <span className="ml-3">Saldo inicial: {formatCurrency(openingNum)}</span>
+                              )}
+                              {closingNum != null && (
+                                <span className="ml-3">Saldo final: {formatCurrency(closingNum)}</span>
+                              )}
+                              {deltaNum != null && (
+                                <span className="ml-3">Variación: {formatCurrency(deltaNum)}</span>
+                              )}
                             </p>
                           </div>
                         </div>
