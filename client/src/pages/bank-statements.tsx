@@ -150,6 +150,9 @@ export default function BankStatementsPage() {
   const [deleteConfirmCode, setDeleteConfirmCode] = useState("");
   const [accountContextFilter, setAccountContextFilter] = useState<string>("all");
   const [uploadBankAccountId, setUploadBankAccountId] = useState("");
+  const [uploadDefaultLocalId, setUploadDefaultLocalId] = useState<string>("none");
+  const [uploadOpeningBalance, setUploadOpeningBalance] = useState<string>("");
+  const [uploadClosingBalance, setUploadClosingBalance] = useState<string>("");
   const [isAccountsDialogOpen, setIsAccountsDialogOpen] = useState(false);
   const [newAccountName, setNewAccountName] = useState("");
   const [newAccountLocalId, setNewAccountLocalId] = useState<string>("none");
@@ -424,6 +427,15 @@ export default function BankStatementsPage() {
     formData.append("file", file);
     formData.append("bankId", selectedBankId);
     formData.append("bankAccountId", uploadBankAccountId);
+    if (uploadDefaultLocalId && uploadDefaultLocalId !== "none") {
+      formData.append("defaultLocalId", uploadDefaultLocalId);
+    }
+    if (uploadOpeningBalance.trim()) {
+      formData.append("openingBalance", uploadOpeningBalance.trim());
+    }
+    if (uploadClosingBalance.trim()) {
+      formData.append("closingBalance", uploadClosingBalance.trim());
+    }
     uploadMutation.mutate(formData);
   };
 
@@ -1425,6 +1437,47 @@ export default function BankStatementsPage() {
               <p className="text-xs text-muted-foreground">
                 Cada banco tiene un formato de extracto diferente. Selecciona el banco para una importacion precisa.
               </p>
+            </div>
+            <div className="space-y-2">
+              <Label>Local (opcional)</Label>
+              <Select value={uploadDefaultLocalId} onValueChange={setUploadDefaultLocalId}>
+                <SelectTrigger data-testid="select-upload-default-local">
+                  <SelectValue placeholder="Sin local (asignar luego)" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="none">Sin local (asignar luego)</SelectItem>
+                  {locals.map((l) => (
+                    <SelectItem key={l.id} value={String(l.id)}>
+                      {l.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <p className="text-xs text-muted-foreground">
+                Si lo elegís, los movimientos sin sucursal/alias se importan con ese local.
+              </p>
+            </div>
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <div className="space-y-2">
+                <Label>Saldo inicial (opcional)</Label>
+                <Input
+                  value={uploadOpeningBalance}
+                  onChange={(e) => setUploadOpeningBalance(e.target.value)}
+                  inputMode="decimal"
+                  placeholder="Ej: 125000.50"
+                  data-testid="input-opening-balance"
+                />
+              </div>
+              <div className="space-y-2">
+                <Label>Saldo final (opcional)</Label>
+                <Input
+                  value={uploadClosingBalance}
+                  onChange={(e) => setUploadClosingBalance(e.target.value)}
+                  inputMode="decimal"
+                  placeholder="Ej: 130250.75"
+                  data-testid="input-closing-balance"
+                />
+              </div>
             </div>
             <div className="space-y-2">
               <Label>Archivo Excel (.xlsx)</Label>

@@ -28,6 +28,9 @@ import {
   financialImportBatches,
   financialSavedViews,
   clientBanks,
+  businessNames,
+  counterparties,
+  counterpartyIdentifiers,
   transactions,
   monthlyBalances,
   sales,
@@ -102,6 +105,12 @@ import {
   type FinancialSavedView,
   type InsertClientBank,
   type ClientBank,
+  type InsertBusinessName,
+  type BusinessName,
+  type InsertCounterparty,
+  type Counterparty,
+  type InsertCounterpartyIdentifier,
+  type CounterpartyIdentifier,
   type InsertTransaction,
   type Transaction,
   type InsertMonthlyBalance,
@@ -267,6 +276,7 @@ export interface IStorage {
   updateBankAccount(clientId: number, id: number, account: Partial<InsertBankAccount>): Promise<BankAccount | undefined>;
   deleteBankAccount(clientId: number, id: number): Promise<boolean>;
   createFinancialImportBatch(row: InsertFinancialImportBatch): Promise<FinancialImportBatch>;
+  getLastFinancialImportBatchForAccount(clientId: number, bankAccountId: number): Promise<FinancialImportBatch | undefined>;
   getFinancialSavedViews(clientId: number, userId: string): Promise<FinancialSavedView[]>;
   createFinancialSavedView(row: InsertFinancialSavedView): Promise<FinancialSavedView>;
   deleteFinancialSavedView(clientId: number, userId: string, id: number): Promise<boolean>;
@@ -1624,6 +1634,92 @@ export class DatabaseStorage implements IStorage {
       .orderBy(clientBanks.displayOrder);
   }
 
+  async getBusinessNames(clientId: number): Promise<BusinessName[]> {
+    return db
+      .select()
+      .from(businessNames)
+      .where(eq(businessNames.clientId, clientId))
+      .orderBy(asc(businessNames.name));
+  }
+
+  async createBusinessName(row: InsertBusinessName): Promise<BusinessName> {
+    const [created] = await db.insert(businessNames).values(row).returning();
+    return created;
+  }
+
+  async updateBusinessName(
+    clientId: number,
+    id: number,
+    row: Partial<InsertBusinessName>,
+  ): Promise<BusinessName | undefined> {
+    const [updated] = await db
+      .update(businessNames)
+      .set(row)
+      .where(and(eq(businessNames.clientId, clientId), eq(businessNames.id, id)))
+      .returning();
+    return updated;
+  }
+
+  async deleteBusinessName(clientId: number, id: number): Promise<boolean> {
+    const result = await db
+      .delete(businessNames)
+      .where(and(eq(businessNames.clientId, clientId), eq(businessNames.id, id)));
+    return (result.rowCount ?? 0) > 0;
+  }
+
+  async getCounterparties(clientId: number): Promise<Counterparty[]> {
+    return db
+      .select()
+      .from(counterparties)
+      .where(eq(counterparties.clientId, clientId))
+      .orderBy(asc(counterparties.displayName));
+  }
+
+  async createCounterparty(row: InsertCounterparty): Promise<Counterparty> {
+    const [created] = await db.insert(counterparties).values(row).returning();
+    return created;
+  }
+
+  async updateCounterparty(
+    clientId: number,
+    id: number,
+    row: Partial<InsertCounterparty>,
+  ): Promise<Counterparty | undefined> {
+    const [updated] = await db
+      .update(counterparties)
+      .set(row)
+      .where(and(eq(counterparties.clientId, clientId), eq(counterparties.id, id)))
+      .returning();
+    return updated;
+  }
+
+  async deleteCounterparty(clientId: number, id: number): Promise<boolean> {
+    const result = await db
+      .delete(counterparties)
+      .where(and(eq(counterparties.clientId, clientId), eq(counterparties.id, id)));
+    return (result.rowCount ?? 0) > 0;
+  }
+
+  async getCounterpartyIdentifiers(clientId: number, counterpartyId: number): Promise<CounterpartyIdentifier[]> {
+    return db
+      .select()
+      .from(counterpartyIdentifiers)
+      .where(and(eq(counterpartyIdentifiers.clientId, clientId), eq(counterpartyIdentifiers.counterpartyId, counterpartyId)))
+      .orderBy(asc(counterpartyIdentifiers.type), asc(counterpartyIdentifiers.value));
+  }
+
+  async createCounterpartyIdentifier(row: InsertCounterpartyIdentifier): Promise<CounterpartyIdentifier> {
+    const [created] = await db.insert(counterpartyIdentifiers).values(row).returning();
+    return created;
+  }
+
+  async deleteCounterpartyIdentifier(clientId: number, id: number): Promise<boolean> {
+    const result = await db
+      .delete(counterpartyIdentifiers)
+      .where(and(eq(counterpartyIdentifiers.clientId, clientId), eq(counterpartyIdentifiers.id, id)));
+    return (result.rowCount ?? 0) > 0;
+  }
+
   async createClientBank(bank: InsertClientBank): Promise<ClientBank> {
     const [newBank] = await db.insert(clientBanks).values(bank).returning();
     return newBank;
@@ -1712,6 +1808,24 @@ export class DatabaseStorage implements IStorage {
   async createFinancialImportBatch(row: InsertFinancialImportBatch): Promise<FinancialImportBatch> {
     const [created] = await db.insert(financialImportBatches).values(row).returning();
     return created;
+  }
+
+  async getLastFinancialImportBatchForAccount(
+    clientId: number,
+    bankAccountId: number,
+  ): Promise<FinancialImportBatch | undefined> {
+    const [row] = await db
+      .select()
+      .from(financialImportBatches)
+      .where(
+        and(
+          eq(financialImportBatches.clientId, clientId),
+          eq(financialImportBatches.bankAccountId, bankAccountId),
+        ),
+      )
+      .orderBy(desc(financialImportBatches.createdAt))
+      .limit(1);
+    return row;
   }
 
   async getFinancialSavedViews(clientId: number, userId: string): Promise<FinancialSavedView[]> {

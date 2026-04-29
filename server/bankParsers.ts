@@ -3,6 +3,8 @@ import XLSX from "xlsx";
 export interface ParsedTransaction {
   date: string; // YYYY-MM-DD format
   description: string;
+  description2?: string;
+  counterpartyRef?: string;
   amount: number;
   type: "income" | "expense";
   rawData?: Record<string, any>;
@@ -17,6 +19,10 @@ export interface ParseResult {
   skipped: number;
   skippedReasons: string[];
   total: number;
+  openingBalance?: number | null;
+  closingBalance?: number | null;
+  periodStart?: string | null;
+  periodEnd?: string | null;
 }
 
 /** Resultado de `parseBbvaWorkbook` (incluye saldo inicial leído del encabezado del Excel). */
@@ -126,6 +132,28 @@ function parseExcelDate(value: any): string | null {
   return null;
 }
 
+function normalizeIdentifier(raw: string): string {
+  return raw.toLowerCase().replace(/\s+/g, "").trim();
+}
+
+function extractCounterpartyRef(value: string): string | null {
+  const v = String(value || "").trim();
+  if (!v) return null;
+
+  // CBU/CVU (22 dígitos) o CUIT (11 dígitos) dentro del texto
+  const digits = v.replace(/\D/g, "");
+  if (digits.length === 22) return digits;
+  if (digits.length === 11) return digits;
+
+  // Alias/identificador: si parece email-like o contiene puntos/guiones y es "corto"
+  const norm = normalizeIdentifier(v);
+  if (norm.length >= 6 && norm.length <= 40 && /[a-z]/.test(norm) && /\d/.test(norm)) {
+    return v;
+  }
+
+  return null;
+}
+
 class GaliciaParser implements BankParser {
   bankId = "galicia";
   bankName = "Banco Galicia";
@@ -149,6 +177,8 @@ class GaliciaParser implements BankParser {
     let descIdx = headers.findIndex(h => 
       h.includes("concepto") || h.includes("descripcion") || h.includes("detalle") || h.includes("movimiento")
     );
+    // Segunda descripción (columna K típica)
+    let desc2Idx = headers.findIndex((h) => h.includes("descripcion 2") || h.includes("detalle 2") || h.includes("referencia"));
     let debitIdx = headers.findIndex(h => 
       h.includes("debito") || h === "debe" || h.includes("egreso")
     );
@@ -167,6 +197,7 @@ class GaliciaParser implements BankParser {
     }
     
     if (descIdx === -1) descIdx = dateIdx + 1;
+    if (desc2Idx === -1) desc2Idx = 10; // K
     
     if (debitIdx === -1 && creditIdx === -1) {
       for (let i = 0; i < headers.length; i++) {
@@ -177,6 +208,8 @@ class GaliciaParser implements BankParser {
     }
     
     const total = rawData.length - 1;
+    let openingBalance: number | null = null;
+    let closingBalance: number | null = null;
     
     for (let i = 1; i < rawData.length; i++) {
       const row = rawData[i];
@@ -188,6 +221,7 @@ class GaliciaParser implements BankParser {
       
       const dateValue = parseExcelDate(row[dateIdx]);
       const description = String(row[descIdx] || "").trim();
+      const description2 = String(row[desc2Idx] || "").trim();
       
       if (!dateValue) {
         skipped++;
@@ -222,13 +256,24 @@ class GaliciaParser implements BankParser {
       transactions.push({
         date: dateValue,
         description,
+        description2: description2 || undefined,
+        counterpartyRef: extractCounterpartyRef(description2) ?? undefined,
         amount,
         type,
         rawData: { rowIndex: i, debit: debitVal, credit: creditVal }
       });
     }
     
-    return { transactions, skipped, skippedReasons, total };
+    const periodStart =
+      transactions.length > 0
+        ? transactions.reduce((min, t) => (t.date < min ? t.date : min), transactions[0].date)
+        : null;
+    const periodEnd =
+      transactions.length > 0
+        ? transactions.reduce((max, t) => (t.date > max ? t.date : max), transactions[0].date)
+        : null;
+
+    return { transactions, skipped, skippedReasons, total, periodStart, periodEnd };
   }
 }
 
@@ -509,6 +554,10 @@ export function parseBbvaWorkbook(workbook: XLSX.WorkBook): BbvaWorkbookParseRes
     skippedReasons: skippedReasons.slice(0, 25),
     total: totalRows,
     openingBalance,
+    periodStart:
+      merged.length > 0 ? merged.reduce((min, t) => (t.date < min ? t.date : min), merged[0].date) : null,
+    periodEnd:
+      merged.length > 0 ? merged.reduce((max, t) => (t.date > max ? t.date : max), merged[0].date) : null,
   };
 }
 
@@ -533,6 +582,24 @@ class MercadoPagoParser implements BankParser {
     
     const dateIdx = headers.findIndex(h => h.includes("FECHA DE LIBERACIÓN") || h.includes("FECHA DE LIBERACION"));
     const descIdx = headers.findIndex(h => h === "DESCRIPCIÓN" || h === "DESCRIPCION");
+    const desc2Idx =
+      headers.findIndex((h) =>
+        h.includes("DESCRIPCION 2") ||
+        h.includes("DETALLE") ||
+        h.includes("REFERENCIA") ||
+        h.includes("DESTINAT") ||
+        h.includes("CBU") ||
+        h.includes("CVU"),
+      ) !== -1
+        ? headers.findIndex((h) =>
+            h.includes("DESCRIPCION 2") ||
+            h.includes("DETALLE") ||
+            h.includes("REFERENCIA") ||
+            h.includes("DESTINAT") ||
+            h.includes("CBU") ||
+            h.includes("CVU"),
+          )
+        : 45; // AT
     const grossIdx = headers.findIndex(h => h.includes("MONTO BRUTO"));
     const commissionIdx = headers.findIndex(h => h.includes("COMISIÓN DE MERCADO PAGO") || h.includes("COMISION DE MERCADO PAGO"));
     const taxIdx = headers.findIndex(h => h.includes("RETENCIONES IIBB"));
@@ -570,8 +637,17 @@ class MercadoPagoParser implements BankParser {
       }
       
       const description = descIdx !== -1 ? String(row[descIdx] || "").trim() : "";
+      const description2 = String(row[desc2Idx] || "").trim();
       
-      if (summaryDescriptions.some(s => description.toLowerCase().includes(s))) {
+      const descLower = description.toLowerCase();
+      if (summaryDescriptions.some(s => descLower.includes(s))) {
+        const n = this.parseNumber(row[grossIdx]);
+        if (descLower.includes("saldo inicial") || descLower.includes("periodo anterior") || descLower.includes("período anterior")) {
+          if (n !== 0) openingBalance = n;
+        }
+        if (descLower.includes("saldo final")) {
+          if (n !== 0) closingBalance = n;
+        }
         skipped++;
         skippedReasons.push(`Fila ${i + 1}: Fila de resumen/saldo (${description})`);
         continue;
@@ -601,6 +677,8 @@ class MercadoPagoParser implements BankParser {
       transactions.push({
         date: dateValue,
         description: description || "Movimiento Mercado Pago",
+        description2: description2 || undefined,
+        counterpartyRef: extractCounterpartyRef(description2) ?? undefined,
         amount: Math.abs(netAmount),
         type,
         grossAmount,
@@ -617,7 +695,16 @@ class MercadoPagoParser implements BankParser {
       });
     }
     
-    return { transactions, skipped, skippedReasons, total };
+    const periodStart =
+      transactions.length > 0
+        ? transactions.reduce((min, t) => (t.date < min ? t.date : min), transactions[0].date)
+        : null;
+    const periodEnd =
+      transactions.length > 0
+        ? transactions.reduce((max, t) => (t.date > max ? t.date : max), transactions[0].date)
+        : null;
+
+    return { transactions, skipped, skippedReasons, total, openingBalance, closingBalance, periodStart, periodEnd };
   }
   
   private parseISODate(value: any): string | null {

@@ -163,6 +163,29 @@ export type InsertClientInvitation = z.infer<typeof insertClientInvitationSchema
 export type ClientInvitation = typeof clientInvitations.$inferSelect;
 
 // ==========================================
+// BUSINESS NAMES (Razones Sociales)
+// ==========================================
+export const businessNames = pgTable(
+  "business_names",
+  {
+    id: serial("id").primaryKey(),
+    clientId: integer("client_id").notNull().references(() => clients.id, { onDelete: "cascade" }),
+    name: varchar("name", { length: 255 }).notNull(),
+    cuit: varchar("cuit", { length: 13 }),
+    active: boolean("active").default(true),
+    createdAt: timestamp("created_at").defaultNow(),
+  },
+  (table) => [uniqueIndex("business_names_client_name_uq").on(table.clientId, table.name)],
+);
+
+export const insertBusinessNameSchema = createInsertSchema(businessNames).omit({
+  id: true,
+  createdAt: true,
+});
+export type InsertBusinessName = z.infer<typeof insertBusinessNameSchema>;
+export type BusinessName = typeof businessNames.$inferSelect;
+
+// ==========================================
 // LOCALS (Business Locations)
 // ==========================================
 export const locals = pgTable("locals", {
@@ -170,7 +193,9 @@ export const locals = pgTable("locals", {
   clientId: integer("client_id").notNull().references(() => clients.id, { onDelete: "cascade" }),
   name: varchar("name", { length: 255 }).notNull(),
   businessName: varchar("business_name", { length: 255 }),
+  businessNameId: integer("business_name_id").references(() => businessNames.id),
   address: text("address"),
+  postalCode: varchar("postal_code", { length: 20 }),
   cuit: varchar("cuit", { length: 13 }),
   afipPOS: varchar("afip_pos", { length: 5 }),
   ivaCondition: varchar("iva_condition", { length: 50 }).default("responsable_inscripto"),
@@ -610,9 +635,14 @@ export const bankAccounts = pgTable("bank_accounts", {
   id: serial("id").primaryKey(),
   clientId: integer("client_id").notNull().references(() => clients.id, { onDelete: "cascade" }),
   localId: integer("local_id").references(() => locals.id),
+  clientBankId: integer("client_bank_id").references(() => clientBanks.id),
+  businessNameId: integer("business_name_id").references(() => businessNames.id),
   name: varchar("name", { length: 255 }).notNull(),
-  type: varchar("type", { length: 50 }).default("bank"),
+  type: varchar("type", { length: 50 }).default("bank"), // bank | wallet | cashbox
+  accountType: varchar("account_type", { length: 20 }), // cc | ca | cvu | mp | other
   accountNumber: varchar("account_number", { length: 100 }),
+  openingBalance: decimal("opening_balance", { precision: 12, scale: 2 }),
+  openingBalanceSetAt: timestamp("opening_balance_set_at"),
   active: boolean("active").default(true),
   createdAt: timestamp("created_at").defaultNow(),
 });
@@ -620,6 +650,57 @@ export const bankAccounts = pgTable("bank_accounts", {
 export const insertBankAccountSchema = createInsertSchema(bankAccounts).omit({ id: true, createdAt: true });
 export type InsertBankAccount = z.infer<typeof insertBankAccountSchema>;
 export type BankAccount = typeof bankAccounts.$inferSelect;
+
+// ==========================================
+// COUNTERPARTIES (Agenda de destinatarios)
+// ==========================================
+export const counterparties = pgTable(
+  "counterparties",
+  {
+    id: serial("id").primaryKey(),
+    clientId: integer("client_id").notNull().references(() => clients.id, { onDelete: "cascade" }),
+    type: varchar("type", { length: 20 }).default("entity"), // entity | person
+    displayName: varchar("display_name", { length: 255 }).notNull(),
+    cuit: varchar("cuit", { length: 13 }),
+    notes: text("notes"),
+    active: boolean("active").default(true),
+    createdAt: timestamp("created_at").defaultNow(),
+  },
+  (table) => [index("counterparties_client_name_idx").on(table.clientId, table.displayName)],
+);
+
+export const insertCounterpartySchema = createInsertSchema(counterparties).omit({
+  id: true,
+  createdAt: true,
+});
+export type InsertCounterparty = z.infer<typeof insertCounterpartySchema>;
+export type Counterparty = typeof counterparties.$inferSelect;
+
+export const counterpartyIdentifiers = pgTable(
+  "counterparty_identifiers",
+  {
+    id: serial("id").primaryKey(),
+    clientId: integer("client_id").notNull().references(() => clients.id, { onDelete: "cascade" }),
+    counterpartyId: integer("counterparty_id")
+      .notNull()
+      .references(() => counterparties.id, { onDelete: "cascade" }),
+    type: varchar("type", { length: 20 }).notNull(), // cbu | cvu | alias | name | other
+    value: varchar("value", { length: 255 }).notNull(),
+    normalizedValue: varchar("normalized_value", { length: 255 }).notNull(),
+    createdAt: timestamp("created_at").defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("counterparty_identifiers_client_norm_uq").on(table.clientId, table.normalizedValue),
+    index("counterparty_identifiers_client_counterparty_idx").on(table.clientId, table.counterpartyId),
+  ],
+);
+
+export const insertCounterpartyIdentifierSchema = createInsertSchema(counterpartyIdentifiers).omit({
+  id: true,
+  createdAt: true,
+});
+export type InsertCounterpartyIdentifier = z.infer<typeof insertCounterpartyIdentifierSchema>;
+export type CounterpartyIdentifier = typeof counterpartyIdentifiers.$inferSelect;
 
 // ==========================================
 // FINANCIAL IMPORT BATCHES (Metadatos por extracto importado)
@@ -704,6 +785,9 @@ export const transactions = pgTable("transactions", {
   categoryId: integer("category_id").references(() => transactionCategories.id),
   transactionDate: date("transaction_date").notNull(),
   description: text("description"),
+  description2: text("description_2"),
+  counterpartyRef: varchar("counterparty_ref", { length: 255 }),
+  counterpartyId: integer("counterparty_id").references(() => counterparties.id),
   amount: decimal("amount", { precision: 12, scale: 2 }).notNull(),
   type: varchar("type", { length: 20 }).notNull(),
   source: varchar("source", { length: 50 }).default("manual"),

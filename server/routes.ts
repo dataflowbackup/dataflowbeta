@@ -15,6 +15,9 @@ import type {
   InsertFinancialImportBatch,
   InsertFinancialSavedView,
   InsertTransaction,
+  InsertBusinessName,
+  InsertCounterparty,
+  InsertCounterpartyIdentifier,
 } from "@shared/schema";
 
 const upload = multer({ 
@@ -47,8 +50,12 @@ const updateTransactionSchema = z.object({
 const createBankAccountBodySchema = z.object({
   name: z.string().min(1),
   type: z.string().max(50).optional(),
+  accountType: z.string().max(20).optional(),
   accountNumber: z.string().max(100).optional(),
   localId: z.union([z.coerce.number().int().positive(), z.null()]).optional(),
+  clientBankId: z.union([z.coerce.number().int().positive(), z.null()]).optional(),
+  businessNameId: z.union([z.coerce.number().int().positive(), z.null()]).optional(),
+  openingBalance: z.union([z.coerce.number(), z.null()]).optional(),
   active: z.boolean().optional(),
 });
 
@@ -56,8 +63,12 @@ const patchBankAccountBodySchema = z
   .object({
     name: z.string().min(1).optional(),
     type: z.string().max(50).optional(),
+    accountType: z.string().max(20).optional(),
     accountNumber: z.string().max(100).optional(),
     localId: z.union([z.coerce.number().int().positive(), z.null()]).optional(),
+    clientBankId: z.union([z.coerce.number().int().positive(), z.null()]).optional(),
+    businessNameId: z.union([z.coerce.number().int().positive(), z.null()]).optional(),
+    openingBalance: z.union([z.coerce.number(), z.null()]).optional(),
     active: z.boolean().optional(),
   })
   .strict();
@@ -1861,7 +1872,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       if (!parsed.success) {
         return res.status(400).json({ message: "Datos invalidos", errors: parsed.error.errors });
       }
-      const { name, type, accountNumber, localId, active } = parsed.data;
+      const { name, type, accountType, accountNumber, localId, clientBankId, businessNameId, openingBalance, active } = parsed.data;
       if (localId != null) {
         const locs = await storage.getLocals(clientId);
         if (!locs.some((l) => l.id === localId)) {
@@ -1872,7 +1883,11 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         clientId,
         name,
         type: type ?? "bank",
+        accountType: accountType ?? undefined,
         accountNumber: accountNumber ?? undefined,
+        ...(clientBankId !== undefined ? { clientBankId } : {}),
+        ...(businessNameId !== undefined ? { businessNameId } : {}),
+        ...(openingBalance !== undefined ? { openingBalance: openingBalance == null ? null : String(openingBalance) } : {}),
         ...(localId !== undefined ? { localId } : {}),
         active: active ?? true,
       } as unknown as InsertBankAccount);
@@ -2011,6 +2026,113 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
   });
 
+  // =========================
+  // Razones sociales (catálogo)
+  // =========================
+  app.get("/api/business-names", isAuthenticated, async (req, res) => {
+    try {
+      const clientId = await getClientId(req);
+      const rows = await (storage as any).getBusinessNames(clientId);
+      res.json(rows);
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
+  app.post("/api/business-names", isAuthenticated, async (req, res) => {
+    try {
+      const clientId = await getClientId(req);
+      const parsed = z
+        .object({ name: z.string().min(1).max(255), cuit: z.string().max(13).optional(), active: z.boolean().optional() })
+        .safeParse(req.body);
+      if (!parsed.success) return res.status(400).json({ message: "Datos invalidos", errors: parsed.error.errors });
+      const row = await (storage as any).createBusinessName({
+        clientId,
+        name: parsed.data.name.trim(),
+        cuit: parsed.data.cuit?.trim() ?? undefined,
+        active: parsed.data.active ?? true,
+      } as unknown as InsertBusinessName);
+      res.status(201).json(row);
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
+  // =========================
+  // Agenda de destinatarios
+  // =========================
+  app.get("/api/counterparties", isAuthenticated, async (req, res) => {
+    try {
+      const clientId = await getClientId(req);
+      const rows = await (storage as any).getCounterparties(clientId);
+      res.json(rows);
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
+  app.post("/api/counterparties", isAuthenticated, async (req, res) => {
+    try {
+      const clientId = await getClientId(req);
+      const parsed = z
+        .object({
+          type: z.string().max(20).optional(),
+          displayName: z.string().min(1).max(255),
+          cuit: z.string().max(13).optional(),
+          notes: z.string().max(2000).optional(),
+          active: z.boolean().optional(),
+        })
+        .safeParse(req.body);
+      if (!parsed.success) return res.status(400).json({ message: "Datos invalidos", errors: parsed.error.errors });
+      const row = await (storage as any).createCounterparty({
+        clientId,
+        type: parsed.data.type ?? "entity",
+        displayName: parsed.data.displayName.trim(),
+        cuit: parsed.data.cuit?.trim() ?? undefined,
+        notes: parsed.data.notes?.trim() ?? undefined,
+        active: parsed.data.active ?? true,
+      } as unknown as InsertCounterparty);
+      res.status(201).json(row);
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
+  app.get("/api/counterparties/:id/identifiers", isAuthenticated, async (req, res) => {
+    try {
+      const clientId = await getClientId(req);
+      const id = parseInt(req.params.id, 10);
+      if (Number.isNaN(id)) return res.status(400).json({ message: "ID invalido" });
+      const rows = await (storage as any).getCounterpartyIdentifiers(clientId, id);
+      res.json(rows);
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
+  app.post("/api/counterparties/:id/identifiers", isAuthenticated, async (req, res) => {
+    try {
+      const clientId = await getClientId(req);
+      const counterpartyId = parseInt(req.params.id, 10);
+      if (Number.isNaN(counterpartyId)) return res.status(400).json({ message: "ID invalido" });
+      const parsed = z
+        .object({ type: z.string().min(1).max(20), value: z.string().min(1).max(255) })
+        .safeParse(req.body);
+      if (!parsed.success) return res.status(400).json({ message: "Datos invalidos", errors: parsed.error.errors });
+      const normalizedValue = parsed.data.value.toLowerCase().replace(/\s+/g, "").trim();
+      const row = await (storage as any).createCounterpartyIdentifier({
+        clientId,
+        counterpartyId,
+        type: parsed.data.type,
+        value: parsed.data.value.trim(),
+        normalizedValue,
+      } as unknown as InsertCounterpartyIdentifier);
+      res.status(201).json(row);
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
   app.post("/api/transactions/import", isAuthenticated, upload.single("file"), async (req, res) => {
     try {
       console.log("[IMPORT] Starting import request");
@@ -2018,6 +2140,20 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const session = req.session as any;
       const userId = session?.userId || (req.user as any)?.claims?.sub;
       const bankId = req.body.bankId || "generic";
+
+      const defaultLocalParsed = z
+        .union([z.coerce.number().int().positive(), z.null(), z.literal(""), z.literal("none")])
+        .safeParse(req.body.defaultLocalId);
+      const defaultLocalId =
+        defaultLocalParsed.success && typeof defaultLocalParsed.data === "number"
+          ? defaultLocalParsed.data
+          : null;
+      if (defaultLocalId != null) {
+        const locs = await storage.getLocals(clientId);
+        if (!locs.some((l) => l.id === defaultLocalId)) {
+          return res.status(400).json({ message: "Local invalido" });
+        }
+      }
 
       const bankAccountParsed = z.coerce.number().int().positive().safeParse(req.body.bankAccountId);
       if (!bankAccountParsed.success) {
@@ -2044,6 +2180,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
       let parseResult: ParseResult;
       let openingBalanceDetected: number | null = null;
+      let closingBalanceDetected: number | null = null;
+      let periodStartDetected: string | null = null;
+      let periodEndDetected: string | null = null;
 
       if (bankId === "bbva") {
         const bbva = parseBbvaWorkbook(workbook);
@@ -2052,8 +2191,13 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
           skipped: bbva.skipped,
           skippedReasons: bbva.skippedReasons,
           total: bbva.total,
+          openingBalance: bbva.openingBalance,
+          periodStart: bbva.periodStart ?? null,
+          periodEnd: bbva.periodEnd ?? null,
         };
         openingBalanceDetected = bbva.openingBalance;
+        periodStartDetected = bbva.periodStart ?? null;
+        periodEndDetected = bbva.periodEnd ?? null;
         console.log(`[IMPORT] BBVA sheets merged: ${parseResult.transactions.length} txs, sheets=${workbook.SheetNames.join(",")}`);
       } else {
         const sheetName = workbook.SheetNames[0];
@@ -2066,6 +2210,32 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         }
 
         parseResult = parser.parse(rawData);
+        openingBalanceDetected = parseResult.openingBalance ?? null;
+        closingBalanceDetected = parseResult.closingBalance ?? null;
+        periodStartDetected = parseResult.periodStart ?? null;
+        periodEndDetected = parseResult.periodEnd ?? null;
+      }
+      const openingBalanceManual = z.coerce.number().safeParse(req.body.openingBalance);
+      const closingBalanceManual = z.coerce.number().safeParse(req.body.closingBalance);
+      const openingBalanceToUse =
+        openingBalanceManual.success ? openingBalanceManual.data : openingBalanceDetected;
+      const closingBalanceToUse =
+        closingBalanceManual.success ? closingBalanceManual.data : closingBalanceDetected;
+
+      // Validación contra el último extracto de la misma cuenta/caja
+      const lastBatch = await storage.getLastFinancialImportBatchForAccount(clientId, bankAccountParsed.data);
+      if (lastBatch?.closingBalance != null && openingBalanceToUse != null) {
+        const prevClose = Number(lastBatch.closingBalance);
+        const currOpen = Number(openingBalanceToUse);
+        const diff = Math.abs(prevClose - currOpen);
+        if (diff > 0.01) {
+          return res.status(409).json({
+            message: "El saldo inicial del extracto no coincide con el cierre del último extracto cargado para esta cuenta/caja.",
+            previousClosingBalance: prevClose,
+            currentOpeningBalance: currOpen,
+            difference: diff,
+          });
+        }
       }
       console.log(`[IMPORT] Parsed: ${parseResult.transactions.length} transactions, ${parseResult.skipped} skipped`);
       
@@ -2097,6 +2267,10 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
             }
           }
         }
+
+        if (localId === undefined && defaultLocalId != null) {
+          localId = defaultLocalId;
+        }
         
         transactionsToInsert.push({
           clientId,
@@ -2105,6 +2279,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
           createdBy: userId ?? undefined,
           transactionDate: tx.date,
           description: tx.description,
+          description2: tx.description2,
+          counterpartyRef: tx.counterpartyRef,
           amount: String(tx.amount),
           type: tx.type,
           source: "import" as const,
@@ -2131,7 +2307,11 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
           bankAccountId: bankAccountParsed.data,
           bankSource: bankId,
           openingBalance:
-            openingBalanceDetected != null ? String(openingBalanceDetected) : undefined,
+            openingBalanceToUse != null ? String(openingBalanceToUse) : undefined,
+          closingBalance:
+            closingBalanceToUse != null ? String(closingBalanceToUse) : undefined,
+          periodStart: periodStartDetected ?? undefined,
+          periodEnd: periodEndDetected ?? undefined,
         } as unknown as InsertFinancialImportBatch);
       }
       
@@ -2142,7 +2322,10 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         skippedReasons: parseResult.skippedReasons.slice(0, 10),
         bankUsed: parser.bankName,
         unmappedBranches: unmappedBranches.length > 0 ? unmappedBranches : undefined,
-        batchOpeningBalance: openingBalanceDetected,
+        batchOpeningBalance: openingBalanceToUse,
+        batchClosingBalance: closingBalanceToUse,
+        batchPeriodStart: periodStartDetected,
+        batchPeriodEnd: periodEndDetected,
       });
     } catch (e: any) {
       res.status(500).json({ message: e.message });
