@@ -1873,7 +1873,7 @@ export class DatabaseStorage implements IStorage {
     console.log(`[BATCH] Starting batch insert of ${transactionsList.length} transactions`);
     console.log(`[BATCH] First transaction sample:`, JSON.stringify(transactionsList[0], null, 2));
     
-    const BATCH_SIZE = 100;
+    const BATCH_SIZE = 500;
     let inserted = 0;
     
     for (let i = 0; i < transactionsList.length; i += BATCH_SIZE) {

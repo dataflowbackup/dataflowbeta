@@ -318,8 +318,9 @@ export default function BankStatementsPage() {
           const error = JSON.parse(text);
           errorMessage = error.message || errorMessage;
         } catch {
-          errorMessage = text.includes("upstream") 
-            ? "Timeout del servidor. El archivo es muy grande o tarda mucho. Intente con menos filas."
+          errorMessage =
+            text.includes("upstream") || text.toLowerCase().includes("timeout")
+              ? "Timeout del servidor importando el extracto. Probá con un período más chico o avisame y lo pasamos a un proceso en segundo plano."
             : text || errorMessage;
         }
         throw new Error(errorMessage);

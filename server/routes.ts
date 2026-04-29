@@ -2292,7 +2292,11 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       console.log(`[IMPORT] Parsed: ${parseResult.transactions.length} transactions, ${parseResult.skipped} skipped`);
       
       const unmappedBranches: string[] = [];
-      const branchAliasCache: Map<string, number | null> = new Map();
+      // Optimización: precargar todos los alias en memoria para evitar consultas por fila
+      const allAliases = await storage.getLocalAliases(clientId);
+      const aliasToLocalId = new Map<string, number | null>(
+        allAliases.map((a) => [String(a.alias || "").trim(), a.localId ?? null]),
+      );
       
       const importBatchId = `${bankId}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
       console.log(`[IMPORT] Batch ID: ${importBatchId}`);
@@ -2303,19 +2307,12 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         let localId: number | undefined = undefined;
         
         if (tx.branchName) {
-          if (branchAliasCache.has(tx.branchName)) {
-            const cached = branchAliasCache.get(tx.branchName);
-            localId = cached ?? undefined;
+          const mapped = aliasToLocalId.get(tx.branchName);
+          if (mapped !== undefined && mapped !== null) {
+            localId = mapped;
           } else {
-            const alias = await storage.getLocalAliasByName(clientId, tx.branchName);
-            if (alias) {
-              localId = alias.localId;
-              branchAliasCache.set(tx.branchName, alias.localId);
-            } else {
-              branchAliasCache.set(tx.branchName, null);
-              if (!unmappedBranches.includes(tx.branchName)) {
-                unmappedBranches.push(tx.branchName);
-              }
+            if (!unmappedBranches.includes(tx.branchName)) {
+              unmappedBranches.push(tx.branchName);
             }
           }
         }
