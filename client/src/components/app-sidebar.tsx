@@ -128,6 +128,7 @@ const menuSections: MenuSection[] = [
     title: "Configuracion",
     defaultOpen: true,
     items: [
+      { title: "Sociedades", url: "/sociedades", icon: Building2 },
       { title: "Equipo", url: "/equipo", icon: UsersRound },
       { title: "Permisos", url: "/permisos", icon: Shield },
       { title: "Notificaciones", url: "/notificaciones", icon: Bell },

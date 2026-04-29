@@ -44,6 +44,7 @@ import PayrollPage from "@/pages/payroll";
 import TeamPage from "@/pages/team";
 import JoinPage from "@/pages/join";
 import AuthPage from "@/pages/auth-page";
+import BusinessNamesPage from "@/pages/business-names";
 
 function AppRouter() {
   return (
@@ -81,6 +82,7 @@ function AppRouter() {
       <Route path="/asistencia" component={AttendancePage} />
       <Route path="/liquidaciones" component={PayrollPage} />
       <Route path="/equipo" component={TeamPage} />
+      <Route path="/sociedades" component={BusinessNamesPage} />
       <Route path="/join/:code?" component={JoinPage} />
       <Route component={NotFound} />
     </Switch>

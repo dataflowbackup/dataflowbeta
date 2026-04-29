@@ -2058,6 +2058,41 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
   });
 
+  app.patch("/api/business-names/:id", isAuthenticated, async (req, res) => {
+    try {
+      const clientId = await getClientId(req);
+      const id = parseInt(req.params.id, 10);
+      if (Number.isNaN(id)) return res.status(400).json({ message: "ID invalido" });
+      const parsed = z
+        .object({ name: z.string().min(1).max(255).optional(), cuit: z.string().max(13).optional(), active: z.boolean().optional() })
+        .strict()
+        .safeParse(req.body);
+      if (!parsed.success) return res.status(400).json({ message: "Datos invalidos", errors: parsed.error.errors });
+      const row = await (storage as any).updateBusinessName(clientId, id, {
+        ...(parsed.data.name !== undefined ? { name: parsed.data.name.trim() } : {}),
+        ...(parsed.data.cuit !== undefined ? { cuit: parsed.data.cuit?.trim() || null } : {}),
+        ...(parsed.data.active !== undefined ? { active: parsed.data.active } : {}),
+      });
+      if (!row) return res.status(404).json({ message: "Sociedad no encontrada" });
+      res.json(row);
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
+  app.delete("/api/business-names/:id", isAuthenticated, async (req, res) => {
+    try {
+      const clientId = await getClientId(req);
+      const id = parseInt(req.params.id, 10);
+      if (Number.isNaN(id)) return res.status(400).json({ message: "ID invalido" });
+      const ok = await (storage as any).deleteBusinessName(clientId, id);
+      if (!ok) return res.status(404).json({ message: "Sociedad no encontrada" });
+      res.json({ success: true });
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
   // =========================
   // Agenda de destinatarios
   // =========================
