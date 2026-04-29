@@ -185,6 +185,7 @@ class GaliciaParser implements BankParser {
     let creditIdx = headers.findIndex(h => 
       h.includes("credito") || h === "haber" || h.includes("ingreso")
     );
+    const saldoIdx = headers.findIndex((h) => h === "saldo" || h.includes("saldo"));
     
     if (dateIdx === -1) {
       for (let i = 0; i < Math.min(headers.length, 5); i++) {
@@ -237,6 +238,8 @@ class GaliciaParser implements BankParser {
       
       const debitVal = debitIdx !== -1 ? parseArgentineNumber(row[debitIdx]) : 0;
       const creditVal = creditIdx !== -1 ? parseArgentineNumber(row[creditIdx]) : 0;
+      const saldoVal =
+        saldoIdx !== -1 && row[saldoIdx] != null ? parseArgentineNumber(row[saldoIdx]) : 0;
       
       let amount = 0;
       let type: "income" | "expense" = "expense";
@@ -252,6 +255,16 @@ class GaliciaParser implements BankParser {
         skippedReasons.push(`Fila ${i + 1}: Sin monto (débito: ${row[debitIdx]}, crédito: ${row[creditIdx]})`);
         continue;
       }
+
+      // Si el archivo tiene columna "Saldo", deducimos el saldo inicial desde el primer movimiento
+      // saldo_despues = saldo_antes - debito + credito
+      // => saldo_antes = saldo_despues + debito - credito
+      if (openingBalance === null && saldoVal !== 0) {
+        openingBalance = saldoVal + debitVal - creditVal;
+      }
+      if (saldoVal !== 0) {
+        closingBalance = saldoVal;
+      }
       
       transactions.push({
         date: dateValue,
@@ -260,7 +273,7 @@ class GaliciaParser implements BankParser {
         counterpartyRef: extractCounterpartyRef(description2) ?? undefined,
         amount,
         type,
-        rawData: { rowIndex: i, debit: debitVal, credit: creditVal }
+        rawData: { rowIndex: i, debit: debitVal, credit: creditVal, saldo: saldoVal }
       });
     }
     
@@ -273,7 +286,16 @@ class GaliciaParser implements BankParser {
         ? transactions.reduce((max, t) => (t.date > max ? t.date : max), transactions[0].date)
         : null;
 
-    return { transactions, skipped, skippedReasons, total, periodStart, periodEnd };
+    return {
+      transactions,
+      skipped,
+      skippedReasons,
+      total,
+      openingBalance,
+      closingBalance,
+      periodStart,
+      periodEnd,
+    };
   }
 }
 
