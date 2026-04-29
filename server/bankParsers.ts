@@ -766,11 +766,121 @@ class MercadoPagoParser implements BankParser {
   }
 }
 
+class FrancesParser implements BankParser {
+  bankId = "frances";
+  bankName = "Banco Francés";
+
+  parse(rawData: any[][]): ParseResult {
+    const transactions: ParsedTransaction[] = [];
+    const skippedReasons: string[] = [];
+    let skipped = 0;
+
+    if (rawData.length < 2) {
+      return { transactions, skipped: 0, skippedReasons: ["Archivo vacío"], total: 0 };
+    }
+
+    const headers = (rawData[0] as string[]).map((h) =>
+      String(h || "")
+        .toLowerCase()
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .trim(),
+    );
+
+    let dateIdx = headers.findIndex((h) => h === "fecha" || h.includes("fecha"));
+    let descIdx = headers.findIndex((h) => h.includes("descripcion") || h.includes("concepto") || h.includes("detalle"));
+    let debitIdx = headers.findIndex((h) => h.includes("debito") || h === "debitos" || h.includes("debe") || h.includes("egreso"));
+    let creditIdx = headers.findIndex((h) => h.includes("credito") || h === "creditos" || h.includes("haber") || h.includes("ingreso"));
+    const saldoIdx = headers.findIndex((h) => h === "saldo" || h.includes("saldo"));
+
+    // Fallbacks por posición típicas en extractos simples
+    if (dateIdx === -1) dateIdx = 0;
+    if (descIdx === -1) descIdx = 1;
+
+    const total = rawData.length - 1;
+    let openingBalance: number | null = null;
+    let closingBalance: number | null = null;
+
+    for (let i = 1; i < rawData.length; i++) {
+      const row = rawData[i];
+      if (!row || row.length === 0) {
+        skipped++;
+        skippedReasons.push(`Fila ${i + 1}: Fila vacía`);
+        continue;
+      }
+
+      const dateValue = parseExcelDate(row[dateIdx]);
+      const description = String(row[descIdx] || "").trim();
+
+      if (!dateValue) {
+        skipped++;
+        skippedReasons.push(`Fila ${i + 1}: Fecha inválida "${row[dateIdx]}"`);
+        continue;
+      }
+      if (!description) {
+        skipped++;
+        skippedReasons.push(`Fila ${i + 1}: Sin descripción`);
+        continue;
+      }
+
+      const debitVal = debitIdx !== -1 ? parseArgentineNumber(row[debitIdx]) : 0;
+      const creditVal = creditIdx !== -1 ? parseArgentineNumber(row[creditIdx]) : 0;
+      const saldoVal =
+        saldoIdx !== -1 && row[saldoIdx] != null ? parseArgentineNumber(row[saldoIdx]) : 0;
+
+      let amount = 0;
+      let type: "income" | "expense" = "expense";
+
+      if (creditVal > 0) {
+        amount = creditVal;
+        type = "income";
+      } else if (debitVal > 0) {
+        amount = debitVal;
+        type = "expense";
+      } else {
+        skipped++;
+        skippedReasons.push(`Fila ${i + 1}: Sin monto (débito/crédito vacíos)`);
+        continue;
+      }
+
+      // Si el archivo tiene columna "Saldo", deducimos el saldo inicial desde el primer movimiento
+      // saldo_despues = saldo_antes - debito + credito
+      // => saldo_antes = saldo_despues + debito - credito
+      if (openingBalance === null && saldoVal !== 0) {
+        openingBalance = saldoVal + debitVal - creditVal;
+      }
+      if (saldoVal !== 0) {
+        closingBalance = saldoVal;
+      }
+
+      transactions.push({
+        date: dateValue,
+        description,
+        amount,
+        type,
+        rawData: { rowIndex: i, debit: debitVal, credit: creditVal, saldo: saldoVal },
+      });
+    }
+
+    const periodStart =
+      transactions.length > 0
+        ? transactions.reduce((min, t) => (t.date < min ? t.date : min), transactions[0].date)
+        : null;
+    const periodEnd =
+      transactions.length > 0
+        ? transactions.reduce((max, t) => (t.date > max ? t.date : max), transactions[0].date)
+        : null;
+
+    return { transactions, skipped, skippedReasons, total, openingBalance, closingBalance, periodStart, periodEnd };
+  }
+}
+
 const parsers: Map<string, BankParser> = new Map();
 
 parsers.set("galicia", new GaliciaParser());
 parsers.set("mercadopago", new MercadoPagoParser());
 parsers.set("bbva", new BbvaParser());
+parsers.set("frances", new FrancesParser());
 parsers.set("santander", Object.assign(new GenericParser(), { bankId: "santander", bankName: "Santander Rio" }));
 parsers.set("provincia", Object.assign(new GenericParser(), { bankId: "provincia", bankName: "Banco Provincia" }));
 parsers.set("nacion", Object.assign(new GenericParser(), { bankId: "nacion", bankName: "Banco Nacion" }));

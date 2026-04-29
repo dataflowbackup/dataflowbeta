@@ -78,7 +78,7 @@ interface BranchMapping {
 type FilterTab = "all" | "uncategorized" | "categorized";
 
 /** Pestañas de banco siempre visibles (orden fijo), aunque el contador sea 0. */
-const PINNED_BANK_TAB_IDS = ["galicia", "mercadopago", "bbva"];
+const PINNED_BANK_TAB_IDS = ["galicia", "mercadopago", "frances", "bbva"];
 
 interface AvailableBank {
   id: string;
