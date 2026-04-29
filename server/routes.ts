@@ -53,6 +53,7 @@ const createBankAccountBodySchema = z.object({
   accountType: z.string().max(20).optional(),
   accountNumber: z.string().max(100).optional(),
   localId: z.union([z.coerce.number().int().positive(), z.null()]).optional(),
+    bankId: z.string().max(50).optional(),
   clientBankId: z.union([z.coerce.number().int().positive(), z.null()]).optional(),
   businessNameId: z.union([z.coerce.number().int().positive(), z.null()]).optional(),
   openingBalance: z.union([z.coerce.number(), z.null()]).optional(),
@@ -66,6 +67,7 @@ const patchBankAccountBodySchema = z
     accountType: z.string().max(20).optional(),
     accountNumber: z.string().max(100).optional(),
     localId: z.union([z.coerce.number().int().positive(), z.null()]).optional(),
+      bankId: z.string().max(50).optional(),
     clientBankId: z.union([z.coerce.number().int().positive(), z.null()]).optional(),
     businessNameId: z.union([z.coerce.number().int().positive(), z.null()]).optional(),
     openingBalance: z.union([z.coerce.number(), z.null()]).optional(),
@@ -1872,7 +1874,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       if (!parsed.success) {
         return res.status(400).json({ message: "Datos invalidos", errors: parsed.error.errors });
       }
-      const { name, type, accountType, accountNumber, localId, clientBankId, businessNameId, openingBalance, active } = parsed.data;
+      const { name, type, accountType, accountNumber, localId, bankId, clientBankId, businessNameId, openingBalance, active } = parsed.data;
       if (localId != null) {
         const locs = await storage.getLocals(clientId);
         if (!locs.some((l) => l.id === localId)) {
@@ -1885,6 +1887,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         type: type ?? "bank",
         accountType: accountType ?? undefined,
         accountNumber: accountNumber ?? undefined,
+        bankId: bankId ?? undefined,
         ...(clientBankId !== undefined ? { clientBankId } : {}),
         ...(businessNameId !== undefined ? { businessNameId } : {}),
         ...(openingBalance !== undefined ? { openingBalance: openingBalance == null ? null : String(openingBalance) } : {}),
@@ -2043,13 +2046,19 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     try {
       const clientId = await getClientId(req);
       const parsed = z
-        .object({ name: z.string().min(1).max(255), cuit: z.string().max(13).optional(), active: z.boolean().optional() })
+        .object({
+          name: z.string().min(1).max(255),
+          cuit: z.string().max(13).optional(),
+          ivaCondition: z.string().max(50).optional(),
+          active: z.boolean().optional(),
+        })
         .safeParse(req.body);
       if (!parsed.success) return res.status(400).json({ message: "Datos invalidos", errors: parsed.error.errors });
       const row = await (storage as any).createBusinessName({
         clientId,
         name: parsed.data.name.trim(),
         cuit: parsed.data.cuit?.trim() ?? undefined,
+        ivaCondition: parsed.data.ivaCondition ?? "responsable_inscripto",
         active: parsed.data.active ?? true,
       } as unknown as InsertBusinessName);
       res.status(201).json(row);
@@ -2064,13 +2073,19 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const id = parseInt(req.params.id, 10);
       if (Number.isNaN(id)) return res.status(400).json({ message: "ID invalido" });
       const parsed = z
-        .object({ name: z.string().min(1).max(255).optional(), cuit: z.string().max(13).optional(), active: z.boolean().optional() })
+        .object({
+          name: z.string().min(1).max(255).optional(),
+          cuit: z.string().max(13).optional(),
+          ivaCondition: z.string().max(50).optional(),
+          active: z.boolean().optional(),
+        })
         .strict()
         .safeParse(req.body);
       if (!parsed.success) return res.status(400).json({ message: "Datos invalidos", errors: parsed.error.errors });
       const row = await (storage as any).updateBusinessName(clientId, id, {
         ...(parsed.data.name !== undefined ? { name: parsed.data.name.trim() } : {}),
         ...(parsed.data.cuit !== undefined ? { cuit: parsed.data.cuit?.trim() || null } : {}),
+        ...(parsed.data.ivaCondition !== undefined ? { ivaCondition: parsed.data.ivaCondition } : {}),
         ...(parsed.data.active !== undefined ? { active: parsed.data.active } : {}),
       });
       if (!row) return res.status(404).json({ message: "Sociedad no encontrada" });
@@ -2174,7 +2189,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const clientId = await getClientId(req);
       const session = req.session as any;
       const userId = session?.userId || (req.user as any)?.claims?.sub;
-      const bankId = req.body.bankId || "generic";
+      // El banco/parser se desprende de la cuenta/caja seleccionada.
+      const bankIdFromBody = req.body.bankId || "generic";
 
       const defaultLocalParsed = z
         .union([z.coerce.number().int().positive(), z.null(), z.literal(""), z.literal("none")])
@@ -2200,6 +2216,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       if (!bankAccountRow) {
         return res.status(400).json({ message: "La cuenta seleccionada no existe o no pertenece a su empresa" });
       }
+      const bankId = (bankAccountRow as any).bankId || bankIdFromBody || "generic";
       
       console.log(`[IMPORT] Client: ${clientId}, Bank: ${bankId}, File size: ${req.file?.size || 0} bytes`);
       

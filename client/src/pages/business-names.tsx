@@ -26,10 +26,18 @@ import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { Building2, Edit, Trash2 } from "lucide-react";
 import type { BusinessName } from "@shared/schema";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 
 const formSchema = z.object({
   name: z.string().min(1, "La razón social es requerida"),
   cuit: z.string().max(13).optional(),
+  ivaCondition: z.string().min(1),
 });
 
 type FormData = z.infer<typeof formSchema>;
@@ -46,7 +54,7 @@ export default function BusinessNamesPage() {
 
   const form = useForm<FormData>({
     resolver: zodResolver(formSchema),
-    defaultValues: { name: "", cuit: "" },
+    defaultValues: { name: "", cuit: "", ivaCondition: "responsable_inscripto" },
   });
 
   const createMutation = useMutation({
@@ -95,13 +103,13 @@ export default function BusinessNamesPage() {
 
   const openCreate = () => {
     setEditing(null);
-    form.reset({ name: "", cuit: "" });
+    form.reset({ name: "", cuit: "", ivaCondition: "responsable_inscripto" });
     setIsDialogOpen(true);
   };
 
   const openEdit = (row: BusinessName) => {
     setEditing(row);
-    form.reset({ name: row.name, cuit: row.cuit || "" });
+    form.reset({ name: row.name, cuit: row.cuit || "", ivaCondition: (row as any).ivaCondition || "responsable_inscripto" });
     setIsDialogOpen(true);
   };
 
@@ -194,6 +202,30 @@ export default function BusinessNamesPage() {
                     <FormLabel>CUIT (opcional)</FormLabel>
                     <FormControl>
                       <Input {...field} placeholder="Ej: 30-12345678-9" />
+                    </FormControl>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+              <FormField
+                control={form.control}
+                name="ivaCondition"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>Condición frente al IVA</FormLabel>
+                    <FormControl>
+                      <Select value={field.value} onValueChange={field.onChange}>
+                        <SelectTrigger>
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="responsable_inscripto">Responsable Inscripto</SelectItem>
+                          <SelectItem value="monotributo">Monotributo</SelectItem>
+                          <SelectItem value="exento">Exento</SelectItem>
+                          <SelectItem value="consumidor_final">Consumidor Final</SelectItem>
+                          <SelectItem value="no_responsable">No Responsable</SelectItem>
+                        </SelectContent>
+                      </Select>
                     </FormControl>
                     <FormMessage />
                   </FormItem>

@@ -172,6 +172,7 @@ export const businessNames = pgTable(
     clientId: integer("client_id").notNull().references(() => clients.id, { onDelete: "cascade" }),
     name: varchar("name", { length: 255 }).notNull(),
     cuit: varchar("cuit", { length: 13 }),
+    ivaCondition: varchar("iva_condition", { length: 50 }).default("responsable_inscripto"),
     active: boolean("active").default(true),
     createdAt: timestamp("created_at").defaultNow(),
   },
@@ -636,6 +637,7 @@ export const bankAccounts = pgTable("bank_accounts", {
   clientId: integer("client_id").notNull().references(() => clients.id, { onDelete: "cascade" }),
   localId: integer("local_id").references(() => locals.id),
   clientBankId: integer("client_bank_id").references(() => clientBanks.id),
+  bankId: varchar("bank_id", { length: 50 }), // id del parser (galicia, mercadopago, bbva, ...)
   businessNameId: integer("business_name_id").references(() => businessNames.id),
   name: varchar("name", { length: 255 }).notNull(),
   type: varchar("type", { length: 50 }).default("bank"), // bank | wallet | cashbox

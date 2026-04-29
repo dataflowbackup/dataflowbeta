@@ -55,6 +55,7 @@ import type {
   LocalAlias,
   FinancialSavedView,
 } from "@shared/schema";
+import type { BusinessName } from "@shared/schema";
 
 interface TransactionWithRelations extends Transaction {
   bankAccount?: BankAccount | null;
@@ -156,6 +157,9 @@ export default function BankStatementsPage() {
   const [isAccountsDialogOpen, setIsAccountsDialogOpen] = useState(false);
   const [newAccountName, setNewAccountName] = useState("");
   const [newAccountLocalId, setNewAccountLocalId] = useState<string>("none");
+  const [newAccountNumber, setNewAccountNumber] = useState("");
+  const [newAccountBusinessNameId, setNewAccountBusinessNameId] = useState<string>("none");
+  const [newAccountBankId, setNewAccountBankId] = useState<string>("none");
   const [isSaveViewDialogOpen, setIsSaveViewDialogOpen] = useState(false);
   const [saveViewName, setSaveViewName] = useState("");
 
@@ -178,6 +182,10 @@ export default function BankStatementsPage() {
 
   const { data: availableBanks = [] } = useQuery<AvailableBank[]>({
     queryKey: ["/api/available-banks"],
+  });
+
+  const { data: businessNames = [] } = useQuery<BusinessName[]>({
+    queryKey: ["/api/business-names"],
   });
 
   const { data: locals = [] } = useQuery<Local[]>({
@@ -230,7 +238,13 @@ export default function BankStatementsPage() {
   });
 
   const createBankAccountMutation = useMutation({
-    mutationFn: async (payload: { name: string; localId?: number | null }) => {
+    mutationFn: async (payload: {
+      name: string;
+      accountNumber?: string;
+      bankId?: string;
+      businessNameId?: number | null;
+      localId?: number | null;
+    }) => {
       const res = await apiRequest("POST", "/api/bank-accounts", payload);
       return res.json();
     },
@@ -239,6 +253,9 @@ export default function BankStatementsPage() {
       toast({ title: "Cuenta creada" });
       setNewAccountName("");
       setNewAccountLocalId("none");
+      setNewAccountNumber("");
+      setNewAccountBusinessNameId("none");
+      setNewAccountBankId("none");
     },
     onError: (error: Error) => {
       toast({ title: "Error al crear cuenta", description: error.message, variant: "destructive" });
@@ -411,10 +428,6 @@ export default function BankStatementsPage() {
       toast({ title: "Seleccione un archivo", variant: "destructive" });
       return;
     }
-    if (!selectedBankId) {
-      toast({ title: "Seleccione un banco", variant: "destructive" });
-      return;
-    }
     if (!uploadBankAccountId) {
       toast({
         title: "Seleccione una cuenta",
@@ -425,7 +438,6 @@ export default function BankStatementsPage() {
     }
     const formData = new FormData();
     formData.append("file", file);
-    formData.append("bankId", selectedBankId);
     formData.append("bankAccountId", uploadBankAccountId);
     if (uploadDefaultLocalId && uploadDefaultLocalId !== "none") {
       formData.append("defaultLocalId", uploadDefaultLocalId);
@@ -462,8 +474,23 @@ export default function BankStatementsPage() {
       toast({ title: "Indique el nombre de la cuenta", variant: "destructive" });
       return;
     }
+    if (!newAccountNumber.trim()) {
+      toast({ title: "Indique el número de la cuenta/caja", variant: "destructive" });
+      return;
+    }
+    if (!newAccountBankId || newAccountBankId === "none") {
+      toast({ title: "Seleccione la entidad bancaria", variant: "destructive" });
+      return;
+    }
+    if (!newAccountBusinessNameId || newAccountBusinessNameId === "none") {
+      toast({ title: "Seleccione la razón social", variant: "destructive" });
+      return;
+    }
     createBankAccountMutation.mutate({
       name: newAccountName.trim(),
+      accountNumber: newAccountNumber.trim(),
+      bankId: newAccountBankId,
+      businessNameId: parseInt(newAccountBusinessNameId, 10),
       localId: newAccountLocalId === "none" ? null : parseInt(newAccountLocalId, 10),
     });
   };
@@ -1421,21 +1448,9 @@ export default function BankStatementsPage() {
               </Select>
             </div>
             <div className="space-y-2">
-              <Label>Banco</Label>
-              <Select value={selectedBankId} onValueChange={setSelectedBankId}>
-                <SelectTrigger data-testid="select-bank">
-                  <SelectValue placeholder="Seleccionar banco..." />
-                </SelectTrigger>
-                <SelectContent>
-                  {availableBanks.map(bank => (
-                    <SelectItem key={bank.id} value={bank.id}>
-                      {bank.name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              <p className="text-xs text-muted-foreground">
-                Cada banco tiene un formato de extracto diferente. Selecciona el banco para una importacion precisa.
+              <Label>Entidad bancaria (automática)</Label>
+              <p className="text-sm text-muted-foreground">
+                Se toma desde la caja/cuenta seleccionada. Si necesitás cambiarla, editá la cuenta en “Cuentas y cajas”.
               </p>
             </div>
             <div className="space-y-2">
@@ -1496,7 +1511,6 @@ export default function BankStatementsPage() {
                 onClick={handleUpload}
                 disabled={
                   !file ||
-                  !selectedBankId ||
                   !uploadBankAccountId ||
                   bankAccounts.length === 0 ||
                   uploadMutation.isPending
@@ -1557,6 +1571,41 @@ export default function BankStatementsPage() {
                 onChange={(e) => setNewAccountName(e.target.value)}
                 data-testid="input-new-account-name"
               />
+              <Label className="text-xs text-muted-foreground">Número de cuenta / caja *</Label>
+              <Input
+                placeholder="Ej: 123-456789/0 o CVU/CBU"
+                value={newAccountNumber}
+                onChange={(e) => setNewAccountNumber(e.target.value)}
+                data-testid="input-new-account-number"
+              />
+              <Label className="text-xs text-muted-foreground">Razón social *</Label>
+              <Select value={newAccountBusinessNameId} onValueChange={setNewAccountBusinessNameId}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Seleccionar razón social..." />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="none">Seleccionar...</SelectItem>
+                  {businessNames.map((b) => (
+                    <SelectItem key={b.id} value={String(b.id)}>
+                      {b.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <Label className="text-xs text-muted-foreground">Entidad bancaria *</Label>
+              <Select value={newAccountBankId} onValueChange={setNewAccountBankId}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Seleccionar entidad..." />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="none">Seleccionar...</SelectItem>
+                  {availableBanks.map((bank) => (
+                    <SelectItem key={bank.id} value={bank.id}>
+                      {bank.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
               <Label className="text-xs text-muted-foreground">Local (opcional)</Label>
               <Select value={newAccountLocalId} onValueChange={setNewAccountLocalId}>
                 <SelectTrigger>
