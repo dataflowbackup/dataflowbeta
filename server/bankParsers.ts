@@ -640,7 +640,9 @@ class MercadoPagoParser implements BankParser {
     }
     
     const total = rawData.length - 1;
-    
+    let openingBalance: number | null = null;
+    let closingBalance: number | null = null;
+
     const summaryDescriptions = [
       "dinero disponible del período anterior",
       "dinero disponible del periodo anterior",
