@@ -602,48 +602,95 @@ export function parseBbvaWorkbook(workbook: XLSX.WorkBook): BbvaWorkbookParseRes
   };
 }
 
-/** Formato numérico típico columnas Mercado Pago (punto decimal). */
+/**
+ * Montos en extractos MP: a veces internacional (1234.56), a veces AR en filas de totales (4.365.492,34).
+ */
 export function parseMercadoPagoExcelNumber(value: any): number {
-  if (typeof value === "number") return value;
-  if (!value) return 0;
+  if (typeof value === "number" && !Number.isNaN(value)) return value;
+  if (value === null || value === undefined) return 0;
   const str = String(value).trim();
   if (!str) return 0;
-  const cleaned = str.replace(/\$/g, "").replace(/\s/g, "");
-  const num = parseFloat(cleaned);
-  return isNaN(num) ? 0 : num;
+  const s = str.replace(/\$/g, "").replace(/\s/g, "");
+
+  const lastComma = s.lastIndexOf(",");
+  const lastDot = s.lastIndexOf(".");
+  // Coma como decimal (formato AR u otros): la coma va después de los puntos de miles
+  if (lastComma > lastDot && lastComma !== -1) {
+    const normalized = s.replace(/\./g, "").replace(",", ".");
+    const n = parseFloat(normalized);
+    return isNaN(n) ? 0 : n;
+  }
+
+  const n = parseFloat(s);
+  return isNaN(n) ? 0 : n;
+}
+
+function normalizeMpRowText(row: any[]): string {
+  return row
+    .map((c) =>
+      String(c || "")
+        .toLowerCase()
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, ""),
+    )
+    .join(" ");
 }
 
 /**
- * Busca fila de totales «Saldo disponible total» en el extracto MP.
+ * Determina si la fila corresponde al total de saldo disponible (variantes MP / reportes release).
+ */
+function rowMatchesMpSaldoDisponibleTotalLabel(joined: string): boolean {
+  if (!joined.trim()) return false;
+  // Español (varias redacciones)
+  if (joined.includes("saldo disponible total")) return true;
+  if (joined.includes("saldo total disponible")) return true;
+  if (joined.includes("total saldo disponible")) return true;
+  if (joined.includes("dinero disponible total")) return true;
+  if (joined.includes("saldo disponible") && joined.includes("total")) return true;
+  if (joined.includes("dinero disponible") && joined.includes("total")) return true;
+  // Reportes tipo "release" / panel en inglés
+  if (joined.includes("total available balance")) return true;
+  if (joined.includes("available balance total")) return true;
+  if (joined.includes("available balance") && joined.includes("total")) return true;
+  if (joined.includes("current available balance")) return true;
+  if (joined.includes("total disponible")) return true;
+  if (joined.includes("balance") && joined.includes("total") && joined.includes("available")) return true;
+  // Abreviaturas poco frecuentes
+  if (joined.includes("saldo") && joined.includes("disp") && joined.includes("total")) return true;
+  return false;
+}
+
+/**
+ * Busca fila de totales «Saldo disponible total» en el extracto MP (incl. formato numérico AR en la celda).
  */
 export function extractMpSaldoDisponibleTotal(rawData: any[][], grossIdx: number): number | null {
   let lastMatch: number | null = null;
+
+  const tryRowValue = (row: any[]): number => {
+    let val = parseMercadoPagoExcelNumber(row[grossIdx]);
+    if (Math.abs(val) > 1e-9) return val;
+    for (let c = 0; c < row.length; c++) {
+      const tryVal = parseMercadoPagoExcelNumber(row[c]);
+      if (Math.abs(tryVal) > 1e-9) return tryVal;
+    }
+    return 0;
+  };
+
   for (let r = 0; r < rawData.length; r++) {
     const row = rawData[r];
     if (!row?.length) continue;
-    const normalized = row
-      .map((c) =>
-        String(c || "")
-          .toLowerCase()
-          .normalize("NFD")
-          .replace(/[\u0300-\u036f]/g, ""),
-      )
-      .join(" ");
-    if (!normalized.includes("saldo disponible")) continue;
-    if (!normalized.includes("total")) continue;
+    const joined = normalizeMpRowText(row);
+    if (!rowMatchesMpSaldoDisponibleTotalLabel(joined)) continue;
 
-    let val = parseMercadoPagoExcelNumber(row[grossIdx]);
-    if (Math.abs(val) < 1e-9) {
-      for (let c = 0; c < row.length; c++) {
-        const tryVal = parseMercadoPagoExcelNumber(row[c]);
-        if (Math.abs(tryVal) > 1e-9) {
-          val = tryVal;
-          break;
-        }
-      }
+    let val = tryRowValue(row);
+    const labelRowHasAnyNumber = row.some((c) => Math.abs(parseMercadoPagoExcelNumber(c)) > 1e-9);
+    // Etiqueta sola y monto en la fila siguiente (algunos layouts)
+    if (Math.abs(val) < 1e-9 && !labelRowHasAnyNumber && r + 1 < rawData.length) {
+      val = tryRowValue(rawData[r + 1]);
     }
     if (Math.abs(val) > 1e-9) lastMatch = val;
   }
+
   return lastMatch;
 }
 
