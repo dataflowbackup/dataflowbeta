@@ -12,6 +12,8 @@ export interface ParsedTransaction {
   commission?: number;
   taxWithholding?: number;
   branchName?: string;
+  /** Fila Excel (1-based) para conciliación / overrides Mercado Pago */
+  excelRow?: number;
 }
 
 export interface ParseResult {
@@ -23,6 +25,10 @@ export interface ParseResult {
   closingBalance?: number | null;
   periodStart?: string | null;
   periodEnd?: string | null;
+  /** Mercado Pago: valor «Saldo disponible total» detectado en el archivo */
+  saldoDisponibleTotal?: number | null;
+  /** Mercado Pago: suma algebraica de MONTO BRUTO de cada movimiento importable */
+  sumGrossImportable?: number;
 }
 
 /** Resultado de `parseBbvaWorkbook` (incluye saldo inicial leído del encabezado del Excel). */
@@ -38,10 +44,15 @@ function pushSkipReason(reasons: string[], message: string) {
   }
 }
 
+export interface ParserOptions {
+  /** Mercado Pago: override de MONTO BRUTO por número de fila Excel (string del entero, ej. "234") */
+  grossOverridesByExcelRow?: Record<string, number>;
+}
+
 export interface BankParser {
   bankId: string;
   bankName: string;
-  parse(rawData: any[][]): ParseResult;
+  parse(rawData: any[][], options?: ParserOptions): ParseResult;
 }
 
 function parseArgentineNumber(value: any): number {
@@ -166,7 +177,7 @@ class GaliciaParser implements BankParser {
   bankId = "galicia";
   bankName = "Banco Galicia";
   
-  parse(rawData: any[][]): ParseResult {
+  parse(rawData: any[][], _options?: ParserOptions): ParseResult {
     const transactions: ParsedTransaction[] = [];
     const skippedReasons: string[] = [];
     let skipped = 0;
@@ -311,7 +322,7 @@ class GenericParser implements BankParser {
   bankId = "generic";
   bankName = "Genérico (Auto-detectar)";
   
-  parse(rawData: any[][]): ParseResult {
+  parse(rawData: any[][], _options?: ParserOptions): ParseResult {
     const transactions: ParsedTransaction[] = [];
     const skippedReasons: string[] = [];
     let skipped = 0;
@@ -414,7 +425,7 @@ class BbvaParser implements BankParser {
   bankId = "bbva";
   bankName = "Banco BBVA";
 
-  parse(rawData: any[][]): ParseResult {
+  parse(rawData: any[][], _options?: ParserOptions): ParseResult {
     const transactions: ParsedTransaction[] = [];
     const skippedReasons: string[] = [];
     let skipped = 0;
@@ -591,14 +602,96 @@ export function parseBbvaWorkbook(workbook: XLSX.WorkBook): BbvaWorkbookParseRes
   };
 }
 
+/** Formato numérico típico columnas Mercado Pago (punto decimal). */
+export function parseMercadoPagoExcelNumber(value: any): number {
+  if (typeof value === "number") return value;
+  if (!value) return 0;
+  const str = String(value).trim();
+  if (!str) return 0;
+  const cleaned = str.replace(/\$/g, "").replace(/\s/g, "");
+  const num = parseFloat(cleaned);
+  return isNaN(num) ? 0 : num;
+}
+
+/**
+ * Busca fila de totales «Saldo disponible total» en el extracto MP.
+ */
+export function extractMpSaldoDisponibleTotal(rawData: any[][], grossIdx: number): number | null {
+  let lastMatch: number | null = null;
+  for (let r = 0; r < rawData.length; r++) {
+    const row = rawData[r];
+    if (!row?.length) continue;
+    const normalized = row
+      .map((c) =>
+        String(c || "")
+          .toLowerCase()
+          .normalize("NFD")
+          .replace(/[\u0300-\u036f]/g, ""),
+      )
+      .join(" ");
+    if (!normalized.includes("saldo disponible")) continue;
+    if (!normalized.includes("total")) continue;
+
+    let val = parseMercadoPagoExcelNumber(row[grossIdx]);
+    if (Math.abs(val) < 1e-9) {
+      for (let c = 0; c < row.length; c++) {
+        const tryVal = parseMercadoPagoExcelNumber(row[c]);
+        if (Math.abs(tryVal) > 1e-9) {
+          val = tryVal;
+          break;
+        }
+      }
+    }
+    if (Math.abs(val) > 1e-9) lastMatch = val;
+  }
+  return lastMatch;
+}
+
+/** Comparación exacta al centavo (evita ruido float). */
+export function mpAmountsMatchCent(a: number, b: number): boolean {
+  return Math.round(a * 100) === Math.round(b * 100);
+}
+
+/**
+ * Hasta `max` filas candidatas a corrección manual: primero brutos ~0 con descripción,
+ * luego las de mayor |bruto|.
+ */
+export function pickMercadoPagoReconciliationCandidates(
+  transactions: ParsedTransaction[],
+  max = 10,
+): ParsedTransaction[] {
+  const suspicious = transactions.filter(
+    (t) =>
+      Math.abs(t.grossAmount ?? 0) < 1e-8 &&
+      String(t.description || "").trim().length > 1 &&
+      !String(t.description || "")
+        .toLowerCase()
+        .includes("saldo inicial"),
+  );
+  const bySize = [...transactions].sort(
+    (a, b) => Math.abs(b.grossAmount ?? 0) - Math.abs(a.grossAmount ?? 0),
+  );
+  const seen = new Set<number>();
+  const out: ParsedTransaction[] = [];
+  for (const t of [...suspicious, ...bySize]) {
+    const er = t.excelRow ?? -1;
+    if (er < 0 || seen.has(er)) continue;
+    seen.add(er);
+    out.push(t);
+    if (out.length >= max) break;
+  }
+  return out;
+}
+
 class MercadoPagoParser implements BankParser {
   bankId = "mercadopago";
   bankName = "Mercado Pago";
   
-  parse(rawData: any[][]): ParseResult {
+  parse(rawData: any[][], options?: ParserOptions): ParseResult {
     const transactions: ParsedTransaction[] = [];
     const skippedReasons: string[] = [];
     let skipped = 0;
+    const grossOverrides = options?.grossOverridesByExcelRow ?? {};
     
     if (rawData.length < 2) {
       return { transactions, skipped: 0, skippedReasons: ["Archivo vacío"], total: 0 };
@@ -642,6 +735,8 @@ class MercadoPagoParser implements BankParser {
         total: rawData.length - 1 
       };
     }
+
+    const saldoDisponibleTotal = extractMpSaldoDisponibleTotal(rawData, grossIdx);
     
     const total = rawData.length - 1;
     let openingBalance: number | null = null;
@@ -665,6 +760,8 @@ class MercadoPagoParser implements BankParser {
         pushSkipReason(skippedReasons, `Fila ${i + 1}: Fila vacía`);
         continue;
       }
+
+      const excelRow = i + 1;
       
       const description = descIdx !== -1 ? String(row[descIdx] || "").trim() : "";
       const description2 = String(row[desc2Idx] || "").trim();
@@ -689,8 +786,10 @@ class MercadoPagoParser implements BankParser {
         pushSkipReason(skippedReasons, `Fila ${i + 1}: Fecha inválida "${row[dateIdx]}"`);
         continue;
       }
-      
-      const grossAmount = this.parseNumber(row[grossIdx]);
+
+      const ov = grossOverrides[String(excelRow)];
+      let grossAmount =
+        ov !== undefined && Number.isFinite(Number(ov)) ? Number(ov) : this.parseNumber(row[grossIdx]);
       if (grossAmount === 0) {
         skipped++;
         pushSkipReason(skippedReasons, `Fila ${i + 1}: Monto bruto cero o inválido`);
@@ -718,10 +817,24 @@ class MercadoPagoParser implements BankParser {
         commission,
         taxWithholding,
         branchName: branchName || undefined,
+        excelRow,
       });
     }
 
-    return { transactions, skipped, skippedReasons, total, openingBalance, closingBalance, periodStart, periodEnd };
+    const sumGrossImportable = transactions.reduce((sum, t) => sum + (t.grossAmount ?? 0), 0);
+
+    return {
+      transactions,
+      skipped,
+      skippedReasons,
+      total,
+      openingBalance,
+      closingBalance,
+      periodStart,
+      periodEnd,
+      saldoDisponibleTotal,
+      sumGrossImportable,
+    };
   }
   
   private parseISODate(value: any): string | null {
@@ -744,20 +857,7 @@ class MercadoPagoParser implements BankParser {
   }
   
   private parseNumber(value: any): number {
-    if (typeof value === "number") return value;
-    if (!value) return 0;
-    
-    const str = String(value).trim();
-    if (!str) return 0;
-    
-    // Mercado Pago uses international format (1234.56) not Argentine (1.234,56)
-    // Just remove $ and spaces, keep the decimal point
-    const cleaned = str
-      .replace(/\$/g, "")
-      .replace(/\s/g, "");
-    
-    const num = parseFloat(cleaned);
-    return isNaN(num) ? 0 : num;
+    return parseMercadoPagoExcelNumber(value);
   }
 }
 
@@ -765,7 +865,7 @@ class FrancesParser implements BankParser {
   bankId = "frances";
   bankName = "Banco Francés";
 
-  parse(rawData: any[][]): ParseResult {
+  parse(rawData: any[][], _options?: ParserOptions): ParseResult {
     const transactions: ParsedTransaction[] = [];
     const skippedReasons: string[] = [];
     let skipped = 0;

@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect } from "react";
+import { useState, useMemo, useEffect, useRef } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { PageHeader } from "@/components/page-header";
 import { DataTable, Column } from "@/components/data-table";
@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import {
   Dialog,
   DialogContent,
+  DialogFooter,
   DialogHeader,
   DialogTitle,
   DialogDescription,
@@ -25,6 +26,7 @@ import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Progress } from "@/components/ui/progress";
+import { ScrollArea } from "@/components/ui/scroll-area";
 import { Checkbox } from "@/components/ui/checkbox";
 import { 
   Select,
@@ -112,6 +114,26 @@ type BankAccountWithLocal = BankAccount & {
   local?: { id: number; name: string } | null;
 };
 
+interface MpReconciliationPayload {
+  message: string;
+  saldoDisponibleTotal: number;
+  sumGrossImportable: number;
+  delta: number;
+  rows: Array<{ excelRow: number; description: string; montoBrutoActual: number }>;
+}
+
+/** Parseo flexible de monto (coma/punto) para overrides brutos MP. */
+function parseMpMoneyInput(s: string): number | null {
+  const t = s.trim().replace(/\s/g, "").replace(/\$/g, "");
+  if (!t) return null;
+  if (t.includes(",")) {
+    const n = parseFloat(t.replace(/\./g, "").replace(",", "."));
+    return Number.isFinite(n) ? n : null;
+  }
+  const n = parseFloat(t);
+  return Number.isFinite(n) ? n : null;
+}
+
 function parseSavedViewFilters(raw: unknown): {
   bankFilter: string;
   accountContextFilter: string;
@@ -166,6 +188,12 @@ export default function BankStatementsPage() {
   const [uploadOpeningBalance, setUploadOpeningBalance] = useState<string>("");
   const [uploadClosingBalance, setUploadClosingBalance] = useState<string>("");
   const [uploadSkipContinuityCheck, setUploadSkipContinuityCheck] = useState(false);
+  const [mpReconciliationOpen, setMpReconciliationOpen] = useState(false);
+  const [mpReconciliation, setMpReconciliation] = useState<MpReconciliationPayload | null>(null);
+  const [mpGrossDrafts, setMpGrossDrafts] = useState<Record<number, string>>({});
+  /** Evita toast de “suspendido” al cerrar el panel tras import OK. */
+  const mpSilentDismissRef = useRef(false);
+  const mpPanelWasOpenRef = useRef(false);
   const [isAccountsDialogOpen, setIsAccountsDialogOpen] = useState(false);
   const [purgeAccountTarget, setPurgeAccountTarget] = useState<BankAccountWithLocal | null>(null);
   const [newAccountName, setNewAccountName] = useState("");
@@ -430,10 +458,18 @@ export default function BankStatementsPage() {
   });
 
   const uploadMutation = useMutation({
-    mutationFn: async (payload: { formData: FormData; queryString: string }) => {
+    mutationFn: async (payload: {
+      formData: FormData;
+      queryString: string;
+      mpGrossOverrides?: Record<string, number>;
+    }) => {
+      const fd = payload.formData;
+      if (payload.mpGrossOverrides && Object.keys(payload.mpGrossOverrides).length > 0) {
+        fd.append("mpGrossOverrides", JSON.stringify(payload.mpGrossOverrides));
+      }
       const res = await fetch(`/api/transactions/import${payload.queryString}`, {
         method: "POST",
-        body: payload.formData,
+        body: fd,
         credentials: "include",
       });
       if (!res.ok) {
@@ -453,6 +489,7 @@ export default function BankStatementsPage() {
       return res.json();
     },
     onSuccess: (data: {
+      reconciliationRequired?: boolean;
       skipped?: number;
       imported?: number;
       total?: number;
@@ -461,7 +498,39 @@ export default function BankStatementsPage() {
       skippedReasons?: string[];
       batchOpeningBalance?: unknown;
       batchClosingBalance?: unknown;
+      message?: string;
+      saldoDisponibleTotal?: number;
+      sumGrossImportable?: number;
+      delta?: number;
+      rows?: MpReconciliationPayload["rows"];
+      unmappedBranches?: string[];
     }) => {
+      if (data.reconciliationRequired && data.rows && data.message != null) {
+        setMpReconciliation({
+          message: data.message,
+          saldoDisponibleTotal: Number(data.saldoDisponibleTotal ?? 0),
+          sumGrossImportable: Number(data.sumGrossImportable ?? 0),
+          delta: Number(data.delta ?? 0),
+          rows: data.rows,
+        });
+        const drafts: Record<number, string> = {};
+        for (const r of data.rows) {
+          drafts[r.excelRow] = String(r.montoBrutoActual);
+        }
+        setMpGrossDrafts(drafts);
+        mpPanelWasOpenRef.current = true;
+        setMpReconciliationOpen(true);
+        return;
+      }
+
+      if (mpPanelWasOpenRef.current) {
+        mpSilentDismissRef.current = true;
+        mpPanelWasOpenRef.current = false;
+      }
+      setMpReconciliationOpen(false);
+      setMpReconciliation(null);
+      setMpGrossDrafts({});
+
       if (data.bankSourceId) {
         setBankFilter(data.bankSourceId);
       } else {
@@ -578,19 +647,8 @@ export default function BankStatementsPage() {
     },
   });
 
-  const handleUpload = () => {
-    if (!file) {
-      toast({ title: "Seleccione un archivo", variant: "destructive" });
-      return;
-    }
-    if (!uploadBankAccountId) {
-      toast({
-        title: "Seleccione una cuenta",
-        description: "Cada importe debe asociarse a una cuenta o caja registrada.",
-        variant: "destructive",
-      });
-      return;
-    }
+  const buildUploadPayload = (): { formData: FormData; queryString: string } | null => {
+    if (!file || !uploadBankAccountId) return null;
     const formData = new FormData();
     formData.append("file", file);
     formData.append("bankAccountId", uploadBankAccountId);
@@ -621,8 +679,73 @@ export default function BankStatementsPage() {
       formData.append("skipContinuityCheck", "1");
       qs.set("skipContinuityCheck", "1");
     }
-    uploadMutation.mutate({ formData, queryString: `?${qs.toString()}` });
+    return { formData, queryString: `?${qs.toString()}` };
   };
+
+  const handleUpload = () => {
+    if (!file) {
+      toast({ title: "Seleccione un archivo", variant: "destructive" });
+      return;
+    }
+    if (!uploadBankAccountId) {
+      toast({
+        title: "Seleccione una cuenta",
+        description: "Cada importe debe asociarse a una cuenta o caja registrada.",
+        variant: "destructive",
+      });
+      return;
+    }
+    const payload = buildUploadPayload();
+    if (!payload) return;
+    uploadMutation.mutate(payload);
+  };
+
+  const handleSuspendMpReconciliation = () => {
+    mpPanelWasOpenRef.current = false;
+    const silent = mpSilentDismissRef.current;
+    mpSilentDismissRef.current = false;
+    setMpReconciliationOpen(false);
+    setMpReconciliation(null);
+    setMpGrossDrafts({});
+    if (!silent) {
+      toast({
+        title: "Importacion suspendida",
+        description: "No se guardo ningun movimiento del extracto.",
+        duration: 8000,
+      });
+    }
+  };
+
+  const handleFinalizeMpReconciliation = () => {
+    if (!mpReconciliation || !file || !uploadBankAccountId) return;
+    const overrides: Record<string, number> = {};
+    for (const r of mpReconciliation.rows) {
+      const n = parseMpMoneyInput(mpGrossDrafts[r.excelRow] ?? "");
+      if (n === null) {
+        toast({
+          title: "Montos invalidos",
+          description: `Revisá el monto bruto de la fila ${r.excelRow} del Excel.`,
+          variant: "destructive",
+        });
+        return;
+      }
+      overrides[String(r.excelRow)] = n;
+    }
+    const payload = buildUploadPayload();
+    if (!payload) return;
+    uploadMutation.mutate({ ...payload, mpGrossOverrides: overrides });
+  };
+
+  const mpEstimatedSumGross = useMemo(() => {
+    if (!mpReconciliation) return null;
+    let s = mpReconciliation.sumGrossImportable;
+    for (const r of mpReconciliation.rows) {
+      const oldv = r.montoBrutoActual;
+      const newv = parseMpMoneyInput(mpGrossDrafts[r.excelRow] ?? "");
+      if (newv !== null) s += newv - oldv;
+    }
+    return s;
+  }, [mpReconciliation, mpGrossDrafts]);
 
   useEffect(() => {
     if (!isUploadOpen || bankAccounts.length === 0) return;
@@ -1794,6 +1917,110 @@ export default function BankStatementsPage() {
               </Button>
             </div>
           </div>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={mpReconciliationOpen}
+        onOpenChange={(open) => {
+          if (!open) handleSuspendMpReconciliation();
+        }}
+      >
+        <DialogContent className="max-w-3xl max-h-[90vh] flex flex-col gap-3">
+          <DialogHeader>
+            <DialogTitle>Conciliar extracto Mercado Pago</DialogTitle>
+            <DialogDescription>
+              La suma de los montos brutos de los movimientos no coincide con el «Saldo disponible total» del archivo.
+              Corregí el MONTO BRUTO en las filas indicadas (según tu Excel) y finalizá la importación, o suspendé para
+              volver más tarde.
+            </DialogDescription>
+          </DialogHeader>
+          {mpReconciliation && (
+            <>
+              <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-sm space-y-1">
+                <p className="font-medium text-foreground">{mpReconciliation.message}</p>
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 font-mono text-xs sm:text-sm mt-2">
+                  <div>
+                    <span className="text-muted-foreground">Saldo disponible total (archivo)</span>
+                    <div className="font-semibold">{formatCurrency(mpReconciliation.saldoDisponibleTotal)}</div>
+                  </div>
+                  <div>
+                    <span className="text-muted-foreground">Suma brutos importables</span>
+                    <div className="font-semibold">{formatCurrency(mpReconciliation.sumGrossImportable)}</div>
+                  </div>
+                  <div>
+                    <span className="text-muted-foreground">Diferencia</span>
+                    <div className="font-semibold text-amber-800 dark:text-amber-200">
+                      {formatCurrency(mpReconciliation.delta)}
+                    </div>
+                  </div>
+                </div>
+                {mpEstimatedSumGross != null && (
+                  <p className="text-xs text-muted-foreground pt-1 border-t border-amber-500/20 mt-2">
+                    Tras tus cambios en esta tabla, suma brutos estimada:{" "}
+                    <span className="font-mono font-medium text-foreground">
+                      {formatCurrency(mpEstimatedSumGross)}
+                    </span>
+                    {Math.round(mpEstimatedSumGross * 100) ===
+                    Math.round(mpReconciliation.saldoDisponibleTotal * 100) ? (
+                      <span className="text-green-600 ml-2">— coincide con el archivo</span>
+                    ) : null}
+                  </p>
+                )}
+              </div>
+              <p className="text-xs text-muted-foreground">
+                Hasta 10 filas candidatas. Los montos deben ser los del Excel en MONTO BRUTO (columna del extracto MP).
+              </p>
+              <ScrollArea className="max-h-[min(50vh,420px)] border rounded-md">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="border-b bg-muted/50 text-left">
+                      <th className="p-2 font-medium">Fila Excel</th>
+                      <th className="p-2 font-medium">Descripción</th>
+                      <th className="p-2 font-medium text-right">Bruto actual</th>
+                      <th className="p-2 font-medium">Bruto corregido</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {mpReconciliation.rows.map((row) => (
+                      <tr key={row.excelRow} className="border-b border-border/60">
+                        <td className="p-2 font-mono">{row.excelRow}</td>
+                        <td className="p-2 max-w-[200px] truncate" title={row.description}>
+                          {row.description || "—"}
+                        </td>
+                        <td className="p-2 text-right font-mono">{formatCurrency(row.montoBrutoActual)}</td>
+                        <td className="p-2 w-[140px]">
+                          <Input
+                            className="font-mono h-9"
+                            inputMode="decimal"
+                            value={mpGrossDrafts[row.excelRow] ?? ""}
+                            onChange={(e) =>
+                              setMpGrossDrafts((prev) => ({
+                                ...prev,
+                                [row.excelRow]: e.target.value,
+                              }))
+                            }
+                          />
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </ScrollArea>
+            </>
+          )}
+          <DialogFooter className="gap-2 sm:gap-0 flex-col sm:flex-row sm:justify-end">
+            <Button type="button" variant="outline" onClick={handleSuspendMpReconciliation}>
+              Suspender importación
+            </Button>
+            <Button
+              type="button"
+              onClick={handleFinalizeMpReconciliation}
+              disabled={uploadMutation.isPending || !mpReconciliation}
+            >
+              {uploadMutation.isPending ? "Importando..." : "Finalizar importación"}
+            </Button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
 

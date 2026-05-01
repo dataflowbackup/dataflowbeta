@@ -7,7 +7,14 @@ import { setupLocalAuth, isAuthenticatedLocal } from "./auth";
 import multer from "multer";
 import * as XLSX from "xlsx";
 import { z } from "zod";
-import { getAvailableBanks, getBankParser, parseBbvaWorkbook, type ParseResult } from "./bankParsers";
+import {
+  getAvailableBanks,
+  getBankParser,
+  parseBbvaWorkbook,
+  pickMercadoPagoReconciliationCandidates,
+  mpAmountsMatchCent,
+  type ParseResult,
+} from "./bankParsers";
 import { seedFinancialDataForClient } from "./seedFinancialData";
 import path from "path";
 import type {
@@ -36,6 +43,23 @@ function pickMultipartOrQueryString(req: any, key: string): string | undefined {
   if (q === undefined || q === null) return undefined;
   if (Array.isArray(q)) return q[0] != null ? String(q[0]) : undefined;
   return String(q);
+}
+
+/** Overrides JSON en multipart: `{ "234": 5352.48 }` montos brutos por fila Excel (Mercado Pago). */
+function parseMpGrossOverridesFromRequest(req: any): Record<string, number> {
+  const raw = pickMultipartOrQueryString(req, "mpGrossOverrides");
+  if (!raw?.trim()) return {};
+  try {
+    const o = JSON.parse(raw) as Record<string, unknown>;
+    const out: Record<string, number> = {};
+    for (const [k, v] of Object.entries(o)) {
+      const n = typeof v === "number" ? v : parseFloat(String(v).replace(",", "."));
+      if (Number.isFinite(n)) out[String(k)] = n;
+    }
+    return out;
+  } catch {
+    return {};
+  }
 }
 
 /** Si la cuenta no tiene bank_id en BD, deducimos el parser por el nombre (evita bankSource "generic" y pestaña MP vacía). */
@@ -2355,12 +2379,51 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
           return res.status(400).json({ message: "El archivo esta vacio o no tiene datos" });
         }
 
-        parseResult = parser.parse(rawData);
+        const mpOverrides = parseMpGrossOverridesFromRequest(req);
+        if (bankId === "mercadopago") {
+          parseResult = getBankParser("mercadopago").parse(rawData, {
+            grossOverridesByExcelRow: mpOverrides,
+          });
+        } else {
+          parseResult = parser.parse(rawData);
+        }
         openingBalanceDetected = parseResult.openingBalance ?? null;
         closingBalanceDetected = parseResult.closingBalance ?? null;
         periodStartDetected = parseResult.periodStart ?? null;
         periodEndDetected = parseResult.periodEnd ?? null;
       }
+
+      if (bankId === "mercadopago") {
+        const ref = parseResult.saldoDisponibleTotal;
+        const sum = parseResult.sumGrossImportable ?? 0;
+        if (ref == null || Number.isNaN(Number(ref))) {
+          return res.status(400).json({
+            message:
+              "No se encontró en el archivo el valor «Saldo disponible total» necesario para conciliar el extracto de Mercado Pago.",
+          });
+        }
+        if (!mpAmountsMatchCent(sum, Number(ref))) {
+          const candidates = pickMercadoPagoReconciliationCandidates(parseResult.transactions, 10);
+          return res.json({
+            imported: 0,
+            reconciliationRequired: true,
+            code: "MP_RECONCILIATION_REQUIRED",
+            message: `La suma de montos brutos de los movimientos a importar (${sum.toFixed(2)}) no coincide con el Saldo disponible total del archivo (${Number(ref).toFixed(2)}). Revisá los montos brutos en las filas indicadas o suspendé la importación.`,
+            saldoDisponibleTotal: ref,
+            sumGrossImportable: sum,
+            delta: sum - ref,
+            rows: candidates.map((t) => ({
+              excelRow: t.excelRow ?? 0,
+              description: (t.description || "").slice(0, 200),
+              montoBrutoActual: t.grossAmount ?? 0,
+            })),
+            skipped: parseResult.skipped,
+            total: parseResult.total,
+            bankUsed: parser.bankName,
+          });
+        }
+      }
+
       const openingBalanceManual = z.coerce.number().safeParse(pickMultipartOrQueryString(req, "openingBalance"));
       const closingBalanceManual = z.coerce.number().safeParse(pickMultipartOrQueryString(req, "closingBalance"));
       const openingBalanceToUse =
