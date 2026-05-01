@@ -176,17 +176,25 @@ export default function BankStatementsPage() {
   const [isSaveViewDialogOpen, setIsSaveViewDialogOpen] = useState(false);
   const [saveViewName, setSaveViewName] = useState("");
 
-  const TRANSACTIONS_FETCH_LIMIT = 25000;
-
-  const { data: transactions = [], isLoading } = useQuery<TransactionWithRelations[]>({
-    queryKey: ["/api/transactions", TRANSACTIONS_FETCH_LIMIT],
+  const {
+    data: transactions = [],
+    isLoading,
+    isError: isTransactionsError,
+    error: transactionsError,
+    refetch: refetchTransactions,
+  } = useQuery<TransactionWithRelations[]>({
+    queryKey: ["/api/transactions"],
     queryFn: async () => {
-      const res = await fetch(`/api/transactions?limit=${TRANSACTIONS_FETCH_LIMIT}`, {
+      const res = await fetch("/api/transactions", {
         credentials: "include",
       });
       if (!res.ok) {
         const text = await res.text();
-        throw new Error(text || res.statusText);
+        throw new Error(
+          res.status === 502 || text.toLowerCase().includes("upstream")
+            ? `502: El servidor no pudo devolver la lista de movimientos (respuesta muy grande o tiempo agotado). Probá recargar la página; si sigue, avisá para paginar la consulta.`
+            : `${res.status}: ${text || res.statusText}`,
+        );
       }
       return res.json();
     },
@@ -1052,6 +1060,25 @@ export default function BankStatementsPage() {
           </div>
         }
       />
+
+      {isTransactionsError && (
+        <Card className="border-destructive/50 bg-destructive/5">
+          <CardContent className="flex flex-wrap items-center justify-between gap-3 py-4">
+            <div className="flex gap-2 items-start min-w-0">
+              <AlertCircle className="h-5 w-5 shrink-0 text-destructive mt-0.5" />
+              <div className="min-w-0">
+                <p className="font-medium text-destructive">No se pudieron cargar los movimientos</p>
+                <p className="text-sm text-muted-foreground break-words">
+                  {transactionsError instanceof Error ? transactionsError.message : "Error desconocido"}
+                </p>
+              </div>
+            </div>
+            <Button type="button" variant="outline" size="sm" onClick={() => refetchTransactions()}>
+              Reintentar
+            </Button>
+          </CardContent>
+        </Card>
+      )}
 
       <div className="grid gap-4 md:grid-cols-5">
         <Card>

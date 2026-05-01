@@ -1930,16 +1930,17 @@ export class DatabaseStorage implements IStorage {
   }
 
   async getTransactions(clientId: number, options?: { limit?: number }): Promise<Transaction[]> {
-    const base = db
+    const lim = options?.limit;
+    const qb = db
       .select()
       .from(transactions)
       .where(eq(transactions.clientId, clientId))
       .orderBy(desc(transactions.transactionDate));
-    const lim = options?.limit;
+
     if (lim != null && lim > 0) {
-      return base.limit(lim);
+      return await qb.limit(lim);
     }
-    return base;
+    return await qb;
   }
 
   async createTransaction(transaction: InsertTransaction): Promise<Transaction> {
