@@ -277,6 +277,7 @@ export interface IStorage {
   deleteBankAccount(clientId: number, id: number): Promise<boolean>;
   createFinancialImportBatch(row: InsertFinancialImportBatch): Promise<FinancialImportBatch>;
   getLastFinancialImportBatchForAccount(clientId: number, bankAccountId: number): Promise<FinancialImportBatch | undefined>;
+  getTransactionCountForBankAccount(clientId: number, bankAccountId: number): Promise<number>;
   getFinancialSavedViews(clientId: number, userId: string): Promise<FinancialSavedView[]>;
   createFinancialSavedView(row: InsertFinancialSavedView): Promise<FinancialSavedView>;
   deleteFinancialSavedView(clientId: number, userId: string, id: number): Promise<boolean>;
@@ -1829,6 +1830,16 @@ export class DatabaseStorage implements IStorage {
       .orderBy(desc(financialImportBatches.createdAt))
       .limit(1);
     return row;
+  }
+
+  async getTransactionCountForBankAccount(clientId: number, bankAccountId: number): Promise<number> {
+    const [row] = await db
+      .select({ c: sql<number>`count(*)` })
+      .from(transactions)
+      .where(
+        and(eq(transactions.clientId, clientId), eq(transactions.bankAccountId, bankAccountId)),
+      );
+    return Number(row?.c ?? 0);
   }
 
   async getFinancialSavedViews(clientId: number, userId: string): Promise<FinancialSavedView[]> {

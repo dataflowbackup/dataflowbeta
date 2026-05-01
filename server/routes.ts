@@ -2291,9 +2291,17 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const closingBalanceToUse =
         closingBalanceManual.success ? closingBalanceManual.data : closingBalanceDetected;
 
-      // Validación contra el último extracto de la misma cuenta/caja
+      // Continuidad de saldos solo si aún hay movimientos para esa cuenta (evita bloqueo por metadatos huérfanos)
+      const txCountForAccount = await storage.getTransactionCountForBankAccount(
+        clientId,
+        bankAccountParsed.data,
+      );
       const lastBatch = await storage.getLastFinancialImportBatchForAccount(clientId, bankAccountParsed.data);
-      if (lastBatch?.closingBalance != null && openingBalanceToUse != null) {
+      if (
+        txCountForAccount > 0 &&
+        lastBatch?.closingBalance != null &&
+        openingBalanceToUse != null
+      ) {
         const prevClose = Number(lastBatch.closingBalance);
         const currOpen = Number(openingBalanceToUse);
         const diff = Math.abs(prevClose - currOpen);
