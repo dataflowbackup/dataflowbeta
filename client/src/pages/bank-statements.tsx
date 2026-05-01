@@ -215,7 +215,7 @@ export default function BankStatementsPage() {
     queryFn: async () => {
       const PAGE_SIZE = 800;
       const MAX_PAGES = 250;
-      const merged: TransactionWithRelations[] = [];
+      const mergedById = new Map<number, TransactionWithRelations>();
       let page = 0;
       let total = 0;
 
@@ -242,15 +242,25 @@ export default function BankStatementsPage() {
         if (page === 0) {
           total = body.total;
         }
-        merged.push(...body.items);
+        for (const item of body.items) {
+          mergedById.set(item.id, item);
+        }
 
-        if (merged.length >= total || body.items.length === 0 || body.items.length < PAGE_SIZE) {
+        if (
+          mergedById.size >= total ||
+          body.items.length === 0 ||
+          body.items.length < PAGE_SIZE
+        ) {
           break;
         }
         page += 1;
       }
 
-      return merged;
+      return Array.from(mergedById.values()).sort((a, b) => {
+        const da = String(a.transactionDate ?? "").localeCompare(String(b.transactionDate ?? ""));
+        if (da !== 0) return -da;
+        return (b.id ?? 0) - (a.id ?? 0);
+      });
     },
   });
 

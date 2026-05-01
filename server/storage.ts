@@ -1943,11 +1943,12 @@ export class DatabaseStorage implements IStorage {
   async getTransactions(clientId: number, options?: { limit?: number; offset?: number }): Promise<Transaction[]> {
     const lim = options?.limit;
     const off = options?.offset ?? 0;
+    // Mismo día en miles de filas (p. ej. import MP) sin tie-break → OFFSET pagina mal y “desaparecen” movimientos.
     let qb = db
       .select()
       .from(transactions)
       .where(eq(transactions.clientId, clientId))
-      .orderBy(desc(transactions.transactionDate));
+      .orderBy(desc(transactions.transactionDate), desc(transactions.id));
 
     if (off > 0) {
       qb = qb.offset(off);
