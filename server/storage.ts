@@ -1,5 +1,5 @@
 import { db } from "./db";
-import { eq, and, desc, asc, gte, lte, sql, isNull, isNotNull, inArray } from "drizzle-orm";
+import { eq, and, desc, asc, gte, lte, sql, isNull, isNotNull, inArray, or } from "drizzle-orm";
 import {
   users,
   clients,
@@ -275,6 +275,10 @@ export interface IStorage {
   createBankAccount(account: InsertBankAccount): Promise<BankAccount>;
   updateBankAccount(clientId: number, id: number, account: Partial<InsertBankAccount>): Promise<BankAccount | undefined>;
   deleteBankAccount(clientId: number, id: number): Promise<boolean>;
+  purgeBankAccountImportedData(
+    clientId: number,
+    bankAccountId: number,
+  ): Promise<{ deletedTransactions: number; deletedBatches: number }>;
   createFinancialImportBatch(row: InsertFinancialImportBatch): Promise<FinancialImportBatch>;
   getLastFinancialImportBatchForAccount(clientId: number, bankAccountId: number): Promise<FinancialImportBatch | undefined>;
   getTransactionCountForBankAccount(clientId: number, bankAccountId: number): Promise<number>;
@@ -1807,6 +1811,62 @@ export class DatabaseStorage implements IStorage {
       .where(and(eq(bankAccounts.id, id), eq(bankAccounts.clientId, clientId)))
       .returning({ id: bankAccounts.id });
     return deleted.length > 0;
+  }
+
+  async purgeBankAccountImportedData(
+    clientId: number,
+    bankAccountId: number,
+  ): Promise<{ deletedTransactions: number; deletedBatches: number }> {
+    const acc = await this.getBankAccount(clientId, bankAccountId);
+    if (!acc) {
+      throw new Error("Cuenta no encontrada");
+    }
+
+    const importedParents = await db
+      .select({ id: transactions.id })
+      .from(transactions)
+      .where(
+        and(
+          eq(transactions.clientId, clientId),
+          eq(transactions.bankAccountId, bankAccountId),
+          or(eq(transactions.source, "import"), isNotNull(transactions.importBatchId)),
+        ),
+      );
+
+    const parentIds = importedParents.map((r) => r.id);
+    if (parentIds.length > 0) {
+      await db
+        .delete(transactions)
+        .where(
+          and(eq(transactions.clientId, clientId), inArray(transactions.parentTransactionId, parentIds)),
+        );
+    }
+
+    const delTx = await db
+      .delete(transactions)
+      .where(
+        and(
+          eq(transactions.clientId, clientId),
+          eq(transactions.bankAccountId, bankAccountId),
+          or(eq(transactions.source, "import"), isNotNull(transactions.importBatchId)),
+        ),
+      )
+      .returning({ id: transactions.id });
+
+    const delBatches = await db
+      .delete(financialImportBatches)
+      .where(
+        and(
+          eq(financialImportBatches.clientId, clientId),
+          eq(financialImportBatches.bankAccountId, bankAccountId),
+        ),
+      )
+      .returning({ id: financialImportBatches.id });
+
+    return {
+      deletedTransactions: delTx.length,
+      deletedBatches: delBatches.length,
+    };
   }
 
   async createFinancialImportBatch(row: InsertFinancialImportBatch): Promise<FinancialImportBatch> {

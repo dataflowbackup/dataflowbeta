@@ -1957,6 +1957,25 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
   });
 
+  app.post("/api/bank-accounts/:id/purge-imports", isAuthenticated, async (req, res) => {
+    try {
+      const clientId = await getClientId(req);
+      const id = parseInt(req.params.id, 10);
+      if (Number.isNaN(id)) return res.status(400).json({ message: "ID invalido" });
+      const parsed = z.object({ confirm: z.literal(true) }).safeParse(req.body);
+      if (!parsed.success) {
+        return res.status(400).json({ message: "Envie confirm: true para confirmar el borrado" });
+      }
+      const result = await storage.purgeBankAccountImportedData(clientId, id);
+      res.json({ success: true, ...result });
+    } catch (e: any) {
+      if (e.message === "Cuenta no encontrada") {
+        return res.status(404).json({ message: e.message });
+      }
+      res.status(500).json({ message: e.message });
+    }
+  });
+
   app.get("/api/financial-saved-views", isAuthenticated, async (req, res) => {
     try {
       const clientId = await getClientId(req);

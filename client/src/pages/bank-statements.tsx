@@ -10,6 +10,15 @@ import {
   DialogTitle,
   DialogDescription,
 } from "@/components/ui/dialog";
+import {
+  AlertDialog,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
@@ -46,6 +55,7 @@ import {
   Trash2,
   Bookmark,
   Landmark,
+  Eraser,
 } from "lucide-react";
 import type {
   Transaction,
@@ -157,6 +167,7 @@ export default function BankStatementsPage() {
   const [uploadClosingBalance, setUploadClosingBalance] = useState<string>("");
   const [uploadSkipContinuityCheck, setUploadSkipContinuityCheck] = useState(false);
   const [isAccountsDialogOpen, setIsAccountsDialogOpen] = useState(false);
+  const [purgeAccountTarget, setPurgeAccountTarget] = useState<BankAccountWithLocal | null>(null);
   const [newAccountName, setNewAccountName] = useState("");
   const [newAccountLocalId, setNewAccountLocalId] = useState<string>("none");
   const [newAccountNumber, setNewAccountNumber] = useState("");
@@ -328,6 +339,30 @@ export default function BankStatementsPage() {
     },
     onError: (error: Error) => {
       toast({ title: "Error al eliminar cuenta", description: error.message, variant: "destructive" });
+    },
+  });
+
+  const purgeBankImportsMutation = useMutation({
+    mutationFn: async (id: number) => {
+      const res = await apiRequest("POST", `/api/bank-accounts/${id}/purge-imports`, { confirm: true });
+      return res.json() as Promise<{
+        success: boolean;
+        deletedTransactions: number;
+        deletedBatches: number;
+      }>;
+    },
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/bank-accounts"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/transactions"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/transactions/import-batches"] });
+      setPurgeAccountTarget(null);
+      toast({
+        title: "Extractos vaciados",
+        description: `Se eliminaron ${data.deletedTransactions} movimientos importados y ${data.deletedBatches} registros de lotes.`,
+      });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Error al vaciar extractos", description: error.message, variant: "destructive" });
     },
   });
 
@@ -1700,25 +1735,39 @@ export default function BankStatementsPage() {
                 {bankAccounts.map((a) => (
                   <li
                     key={a.id}
-                    className="flex items-center justify-between gap-2 rounded-md border p-2 text-sm"
+                    className="flex flex-wrap items-center justify-between gap-2 rounded-md border p-2 text-sm"
                   >
-                    <div>
+                    <div className="min-w-0 flex-1">
                       <span className="font-medium">{a.name}</span>
                       {a.local?.name && (
                         <span className="text-muted-foreground"> · {a.local.name}</span>
                       )}
                     </div>
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="icon"
-                      className="shrink-0 text-muted-foreground hover:text-destructive"
-                      title="Eliminar cuenta"
-                      onClick={() => deleteBankAccountMutation.mutate(a.id)}
-                      disabled={deleteBankAccountMutation.isPending}
-                    >
-                      <Trash2 className="h-4 w-4" />
-                    </Button>
+                    <div className="flex shrink-0 items-center gap-1">
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        className="h-8 gap-1 text-xs"
+                        title="Borrar solo movimientos de extractos Excel y metadatos de import"
+                        onClick={() => setPurgeAccountTarget(a)}
+                        disabled={purgeBankImportsMutation.isPending}
+                      >
+                        <Eraser className="h-3.5 w-3.5" />
+                        Vaciar extractos
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon"
+                        className="text-muted-foreground hover:text-destructive"
+                        title="Eliminar cuenta"
+                        onClick={() => deleteBankAccountMutation.mutate(a.id)}
+                        disabled={deleteBankAccountMutation.isPending}
+                      >
+                        <Trash2 className="h-4 w-4" />
+                      </Button>
+                    </div>
                   </li>
                 ))}
               </ul>
@@ -1792,6 +1841,44 @@ export default function BankStatementsPage() {
           </div>
         </DialogContent>
       </Dialog>
+
+      <AlertDialog
+        open={purgeAccountTarget != null}
+        onOpenChange={(open) => {
+          if (!open) setPurgeAccountTarget(null);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Vaciar movimientos de extractos</AlertDialogTitle>
+            <AlertDialogDescription asChild>
+              <div className="text-sm text-muted-foreground space-y-2">
+                <p>
+                  Se borrarán de la base solo los movimientos <strong>importados desde Excel</strong> de la cuenta{" "}
+                  <strong>{purgeAccountTarget?.name}</strong>, y los <strong>metadatos de lotes de import</strong>{" "}
+                  (saldos encadenados). Así podés volver a cargar un extracto sin el error de saldo inicial.
+                </p>
+                <p>
+                  No se eliminan movimientos manuales ni la definición de la cuenta.
+                </p>
+              </div>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel type="button">Cancelar</AlertDialogCancel>
+            <Button
+              type="button"
+              variant="destructive"
+              disabled={purgeBankImportsMutation.isPending || !purgeAccountTarget}
+              onClick={() => {
+                if (purgeAccountTarget) purgeBankImportsMutation.mutate(purgeAccountTarget.id);
+              }}
+            >
+              {purgeBankImportsMutation.isPending ? "Borrando..." : "Confirmar vaciado"}
+            </Button>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       <Dialog open={isSaveViewDialogOpen} onOpenChange={setIsSaveViewDialogOpen}>
         <DialogContent>
