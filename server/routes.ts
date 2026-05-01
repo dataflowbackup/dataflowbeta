@@ -38,6 +38,18 @@ function pickMultipartOrQueryString(req: any, key: string): string | undefined {
   return String(q);
 }
 
+/** Si la cuenta no tiene bank_id en BD, deducimos el parser por el nombre (evita bankSource "generic" y pestaña MP vacía). */
+function inferBankIdFromAccountName(name: string | null | undefined): string | undefined {
+  if (!name || typeof name !== "string") return undefined;
+  const n = name.toLowerCase();
+  if (n.includes("mercado pago") || n.includes("mercadopago")) return "mercadopago";
+  if (n.includes("galicia")) return "galicia";
+  if (n.includes("bbva")) return "bbva";
+  if (n.includes("francés") || n.includes("frances")) return "frances";
+  if (n.includes("santander")) return "santander";
+  return undefined;
+}
+
 const updateTransactionSchema = z.object({
   categoryId: z.union([
     z.coerce.number().int().positive(),
@@ -2257,7 +2269,13 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const session = req.session as any;
       const userId = session?.userId || (req.user as any)?.claims?.sub;
       // El banco/parser se desprende de la cuenta/caja seleccionada.
-      const bankIdFromBody = pickMultipartOrQueryString(req, "bankId") || "generic";
+      const bankIdFromMultipart = pickMultipartOrQueryString(req, "bankId");
+      const bankIdOverride =
+        bankIdFromMultipart != null &&
+        String(bankIdFromMultipart).trim() !== "" &&
+        String(bankIdFromMultipart).trim() !== "generic"
+          ? String(bankIdFromMultipart).trim()
+          : undefined;
 
       const defaultLocalParsed = z
         .union([z.coerce.number().int().positive(), z.null(), z.literal(""), z.literal("none")])
@@ -2287,8 +2305,13 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       if (!bankAccountRow) {
         return res.status(400).json({ message: "La cuenta seleccionada no existe o no pertenece a su empresa" });
       }
-      const bankId = (bankAccountRow as any).bankId || bankIdFromBody || "generic";
-      
+      const bankIdFromAccount = String((bankAccountRow as any).bankId ?? "").trim();
+      const bankId =
+        bankIdOverride ||
+        bankIdFromAccount ||
+        inferBankIdFromAccountName((bankAccountRow as any).name) ||
+        "generic";
+
       console.log(`[IMPORT] Client: ${clientId}, Bank: ${bankId}, File size: ${req.file?.size || 0} bytes`);
       
       if (!req.file) {

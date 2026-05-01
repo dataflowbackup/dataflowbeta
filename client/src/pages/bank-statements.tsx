@@ -594,6 +594,10 @@ export default function BankStatementsPage() {
     const formData = new FormData();
     formData.append("file", file);
     formData.append("bankAccountId", uploadBankAccountId);
+    const uploadAccount = bankAccounts.find((a) => String(a.id) === uploadBankAccountId);
+    if (uploadAccount?.bankId && String(uploadAccount.bankId).trim() !== "") {
+      formData.append("bankId", String(uploadAccount.bankId).trim());
+    }
     if (uploadDefaultLocalId && uploadDefaultLocalId !== "none") {
       formData.append("defaultLocalId", uploadDefaultLocalId);
     }
@@ -605,6 +609,9 @@ export default function BankStatementsPage() {
     }
     const qs = new URLSearchParams();
     qs.set("bankAccountId", uploadBankAccountId);
+    if (uploadAccount?.bankId && String(uploadAccount.bankId).trim() !== "") {
+      qs.set("bankId", String(uploadAccount.bankId).trim());
+    }
     if (uploadDefaultLocalId && uploadDefaultLocalId !== "none") {
       qs.set("defaultLocalId", uploadDefaultLocalId);
     }

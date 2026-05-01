@@ -1823,36 +1823,38 @@ export class DatabaseStorage implements IStorage {
       throw new Error("Cuenta no encontrada");
     }
 
-    const importedParents = await db
-      .select({ id: transactions.id })
-      .from(transactions)
-      .where(
-        and(
-          eq(transactions.clientId, clientId),
-          eq(transactions.bankAccountId, bankAccountId),
-          or(eq(transactions.source, "import"), isNotNull(transactions.importBatchId)),
-        ),
-      );
+    const importedRowFilter = and(
+      eq(transactions.clientId, clientId),
+      eq(transactions.bankAccountId, bankAccountId),
+      or(eq(transactions.source, "import"), isNotNull(transactions.importBatchId)),
+    );
 
-    const parentIds = importedParents.map((r) => r.id);
-    if (parentIds.length > 0) {
+    const CHUNK = 400;
+    let deletedTransactions = 0;
+
+    // Borrado por lotes para no bloquear la conexión HTTP/proxy (evita 504 en cuentas con miles de filas).
+    for (;;) {
+      const batch = await db
+        .select({ id: transactions.id })
+        .from(transactions)
+        .where(importedRowFilter)
+        .limit(CHUNK);
+
+      if (batch.length === 0) break;
+
+      const ids = batch.map((r) => r.id);
+
       await db
         .delete(transactions)
-        .where(
-          and(eq(transactions.clientId, clientId), inArray(transactions.parentTransactionId, parentIds)),
-        );
-    }
+        .where(and(eq(transactions.clientId, clientId), inArray(transactions.parentTransactionId, ids)));
 
-    const delTx = await db
-      .delete(transactions)
-      .where(
-        and(
-          eq(transactions.clientId, clientId),
-          eq(transactions.bankAccountId, bankAccountId),
-          or(eq(transactions.source, "import"), isNotNull(transactions.importBatchId)),
-        ),
-      )
-      .returning({ id: transactions.id });
+      const del = await db
+        .delete(transactions)
+        .where(and(eq(transactions.clientId, clientId), inArray(transactions.id, ids)))
+        .returning({ id: transactions.id });
+
+      deletedTransactions += del.length;
+    }
 
     const delBatches = await db
       .delete(financialImportBatches)
@@ -1865,7 +1867,7 @@ export class DatabaseStorage implements IStorage {
       .returning({ id: financialImportBatches.id });
 
     return {
-      deletedTransactions: delTx.length,
+      deletedTransactions,
       deletedBatches: delBatches.length,
     };
   }
