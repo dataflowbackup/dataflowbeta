@@ -348,10 +348,10 @@ export default function BankStatementsPage() {
   });
 
   const uploadMutation = useMutation({
-    mutationFn: async (formData: FormData) => {
-      const res = await fetch("/api/transactions/import", {
+    mutationFn: async (payload: { formData: FormData; queryString: string }) => {
+      const res = await fetch(`/api/transactions/import${payload.queryString}`, {
         method: "POST",
-        body: formData,
+        body: payload.formData,
         credentials: "include",
       });
       if (!res.ok) {
@@ -505,7 +505,14 @@ export default function BankStatementsPage() {
     if (uploadClosingBalance.trim()) {
       formData.append("closingBalance", uploadClosingBalance.trim());
     }
-    uploadMutation.mutate(formData);
+    const qs = new URLSearchParams();
+    qs.set("bankAccountId", uploadBankAccountId);
+    if (uploadDefaultLocalId && uploadDefaultLocalId !== "none") {
+      qs.set("defaultLocalId", uploadDefaultLocalId);
+    }
+    if (uploadOpeningBalance.trim()) qs.set("openingBalance", uploadOpeningBalance.trim());
+    if (uploadClosingBalance.trim()) qs.set("closingBalance", uploadClosingBalance.trim());
+    uploadMutation.mutate({ formData, queryString: `?${qs.toString()}` });
   };
 
   useEffect(() => {

@@ -1801,8 +1801,11 @@ export class DatabaseStorage implements IStorage {
       .where(and(eq(financialImportBatches.clientId, clientId), eq(financialImportBatches.bankAccountId, id)))
       .limit(1);
     if (batchRef) return false;
-    const result = await db.delete(bankAccounts).where(and(eq(bankAccounts.id, id), eq(bankAccounts.clientId, clientId)));
-    return (result.rowCount ?? 0) > 0;
+    const deleted = await db
+      .delete(bankAccounts)
+      .where(and(eq(bankAccounts.id, id), eq(bankAccounts.clientId, clientId)))
+      .returning({ id: bankAccounts.id });
+    return deleted.length > 0;
   }
 
   async createFinancialImportBatch(row: InsertFinancialImportBatch): Promise<FinancialImportBatch> {

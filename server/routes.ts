@@ -25,6 +25,19 @@ const upload = multer({
   limits: { fileSize: 50 * 1024 * 1024 }
 });
 
+/** Campos de multipart + fallback query (Netlify/serverless a veces no rellena req.body igual que en Node local). */
+function pickMultipartOrQueryString(req: any, key: string): string | undefined {
+  const fromBody = req.body?.[key];
+  if (fromBody !== undefined && fromBody !== null) {
+    if (Array.isArray(fromBody)) return fromBody[0] != null ? String(fromBody[0]) : undefined;
+    return String(fromBody);
+  }
+  const q = req.query?.[key];
+  if (q === undefined || q === null) return undefined;
+  if (Array.isArray(q)) return q[0] != null ? String(q[0]) : undefined;
+  return String(q);
+}
+
 const updateTransactionSchema = z.object({
   categoryId: z.union([
     z.coerce.number().int().positive(),
@@ -2190,11 +2203,11 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const session = req.session as any;
       const userId = session?.userId || (req.user as any)?.claims?.sub;
       // El banco/parser se desprende de la cuenta/caja seleccionada.
-      const bankIdFromBody = req.body.bankId || "generic";
+      const bankIdFromBody = pickMultipartOrQueryString(req, "bankId") || "generic";
 
       const defaultLocalParsed = z
         .union([z.coerce.number().int().positive(), z.null(), z.literal(""), z.literal("none")])
-        .safeParse(req.body.defaultLocalId);
+        .safeParse(pickMultipartOrQueryString(req, "defaultLocalId"));
       const defaultLocalId =
         defaultLocalParsed.success && typeof defaultLocalParsed.data === "number"
           ? defaultLocalParsed.data
@@ -2206,7 +2219,11 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         }
       }
 
-      const bankAccountParsed = z.coerce.number().int().positive().safeParse(req.body.bankAccountId);
+      const bankAccountParsed = z.coerce
+        .number()
+        .int()
+        .positive()
+        .safeParse(pickMultipartOrQueryString(req, "bankAccountId"));
       if (!bankAccountParsed.success) {
         return res.status(400).json({
           message: "Debe seleccionar una cuenta bancaria o caja para importar el extracto",
@@ -2267,8 +2284,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         periodStartDetected = parseResult.periodStart ?? null;
         periodEndDetected = parseResult.periodEnd ?? null;
       }
-      const openingBalanceManual = z.coerce.number().safeParse(req.body.openingBalance);
-      const closingBalanceManual = z.coerce.number().safeParse(req.body.closingBalance);
+      const openingBalanceManual = z.coerce.number().safeParse(pickMultipartOrQueryString(req, "openingBalance"));
+      const closingBalanceManual = z.coerce.number().safeParse(pickMultipartOrQueryString(req, "closingBalance"));
       const openingBalanceToUse =
         openingBalanceManual.success ? openingBalanceManual.data : openingBalanceDetected;
       const closingBalanceToUse =
