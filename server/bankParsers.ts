@@ -30,6 +30,14 @@ export interface BbvaWorkbookParseResult extends ParseResult {
   openingBalance: number | null;
 }
 
+const MAX_SKIP_REASONS_DETAIL = 80;
+
+function pushSkipReason(reasons: string[], message: string) {
+  if (reasons.length < MAX_SKIP_REASONS_DETAIL) {
+    reasons.push(message);
+  }
+}
+
 export interface BankParser {
   bankId: string;
   bankName: string;
@@ -600,8 +608,6 @@ class MercadoPagoParser implements BankParser {
       String(h || "").toUpperCase().trim()
     );
     
-    console.log("[MP Parser] Headers found:", headers.slice(0, 10));
-    
     const dateIdx = headers.findIndex(h => h.includes("FECHA DE LIBERACIÓN") || h.includes("FECHA DE LIBERACION"));
     const descIdx = headers.findIndex(h => h === "DESCRIPCIÓN" || h === "DESCRIPCION");
     const desc2Idx =
@@ -627,8 +633,6 @@ class MercadoPagoParser implements BankParser {
     const taxIdx = headers.findIndex(h => h.includes("RETENCIONES IIBB"));
     const branchIdx = headers.findIndex(h => h.includes("NOMBRE DE LA SUCURSAL"));
     
-    console.log("[MP Parser] Column indices - date:", dateIdx, "desc:", descIdx, "gross:", grossIdx);
-    
     if (dateIdx === -1 || grossIdx === -1) {
       console.log("[MP Parser] Missing required columns! All headers:", headers);
       return { 
@@ -642,6 +646,8 @@ class MercadoPagoParser implements BankParser {
     const total = rawData.length - 1;
     let openingBalance: number | null = null;
     let closingBalance: number | null = null;
+    let periodStart: string | null = null;
+    let periodEnd: string | null = null;
 
     const summaryDescriptions = [
       "dinero disponible del período anterior",
@@ -656,7 +662,7 @@ class MercadoPagoParser implements BankParser {
       const row = rawData[i];
       if (!row || row.length === 0) {
         skipped++;
-        skippedReasons.push(`Fila ${i + 1}: Fila vacía`);
+        pushSkipReason(skippedReasons, `Fila ${i + 1}: Fila vacía`);
         continue;
       }
       
@@ -673,21 +679,21 @@ class MercadoPagoParser implements BankParser {
           if (n !== 0) closingBalance = n;
         }
         skipped++;
-        skippedReasons.push(`Fila ${i + 1}: Fila de resumen/saldo (${description})`);
+        pushSkipReason(skippedReasons, `Fila ${i + 1}: Fila de resumen/saldo (${description})`);
         continue;
       }
       
       const dateValue = this.parseISODate(row[dateIdx]);
       if (!dateValue) {
         skipped++;
-        skippedReasons.push(`Fila ${i + 1}: Fecha inválida "${row[dateIdx]}"`);
+        pushSkipReason(skippedReasons, `Fila ${i + 1}: Fecha inválida "${row[dateIdx]}"`);
         continue;
       }
       
       const grossAmount = this.parseNumber(row[grossIdx]);
       if (grossAmount === 0) {
         skipped++;
-        skippedReasons.push(`Fila ${i + 1}: Monto bruto cero o inválido`);
+        pushSkipReason(skippedReasons, `Fila ${i + 1}: Monto bruto cero o inválido`);
         continue;
       }
       
@@ -697,6 +703,9 @@ class MercadoPagoParser implements BankParser {
       
       const netAmount = grossAmount - commission - taxWithholding;
       const type: "income" | "expense" = netAmount >= 0 ? "income" : "expense";
+
+      if (periodStart === null || dateValue < periodStart) periodStart = dateValue;
+      if (periodEnd === null || dateValue > periodEnd) periodEnd = dateValue;
       
       transactions.push({
         date: dateValue,
@@ -709,24 +718,8 @@ class MercadoPagoParser implements BankParser {
         commission,
         taxWithholding,
         branchName: branchName || undefined,
-        rawData: { 
-          rowIndex: i, 
-          gross: grossAmount, 
-          commission, 
-          tax: taxWithholding,
-          branch: branchName
-        }
       });
     }
-    
-    const periodStart =
-      transactions.length > 0
-        ? transactions.reduce((min, t) => (t.date < min ? t.date : min), transactions[0].date)
-        : null;
-    const periodEnd =
-      transactions.length > 0
-        ? transactions.reduce((max, t) => (t.date > max ? t.date : max), transactions[0].date)
-        : null;
 
     return { transactions, skipped, skippedReasons, total, openingBalance, closingBalance, periodStart, periodEnd };
   }

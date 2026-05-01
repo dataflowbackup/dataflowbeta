@@ -1869,29 +1869,20 @@ export class DatabaseStorage implements IStorage {
 
   async createTransactionsBatch(transactionsList: InsertTransaction[]): Promise<number> {
     if (transactionsList.length === 0) {
-      console.log("[BATCH] No transactions to insert");
       return 0;
     }
-    
-    console.log(`[BATCH] Starting batch insert of ${transactionsList.length} transactions`);
-    console.log(`[BATCH] First transaction sample:`, JSON.stringify(transactionsList[0], null, 2));
-    
-    const BATCH_SIZE = 500;
+
+    const BATCH_SIZE = 800;
     let inserted = 0;
-    
-    for (let i = 0; i < transactionsList.length; i += BATCH_SIZE) {
-      const batch = transactionsList.slice(i, i + BATCH_SIZE);
-      try {
-        await db.insert(transactions).values(batch);
+
+    await db.transaction(async (tx) => {
+      for (let i = 0; i < transactionsList.length; i += BATCH_SIZE) {
+        const batch = transactionsList.slice(i, i + BATCH_SIZE);
+        await tx.insert(transactions).values(batch);
         inserted += batch.length;
-        console.log(`[BATCH] Inserted batch ${i / BATCH_SIZE + 1}: ${batch.length} rows`);
-      } catch (error: any) {
-        console.error(`[BATCH] Error inserting batch ${i / BATCH_SIZE + 1}:`, error.message);
-        throw error;
       }
-    }
-    
-    console.log(`[BATCH] Complete: ${inserted} total inserted`);
+    });
+
     return inserted;
   }
 
