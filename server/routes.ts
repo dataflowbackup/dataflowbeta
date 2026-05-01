@@ -2030,11 +2030,31 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.get("/api/transactions", isAuthenticated, async (req, res) => {
     try {
       const clientId = await getClientId(req);
-      const limitParsed = z.coerce.number().int().positive().max(100000).safeParse(req.query.limit);
-      const data = await storage.getTransactions(
-        clientId,
-        limitParsed.success ? { limit: limitParsed.data } : undefined,
-      );
+      const DEFAULT_PAGE_SIZE = 800;
+      const MAX_PAGE_SIZE = 2000;
+
+      const pageParsed = z.coerce.number().int().min(0).safeParse(req.query.page);
+      const pageSizeParsed = z.coerce.number().int().positive().max(MAX_PAGE_SIZE).safeParse(req.query.pageSize);
+      const legacyLimitParsed = z.coerce.number().int().positive().max(100000).safeParse(req.query.limit);
+
+      const useLegacyFlat =
+        req.query.page === undefined &&
+        req.query.pageSize === undefined &&
+        legacyLimitParsed.success;
+
+      const page = pageParsed.success ? pageParsed.data : 0;
+      const pageSize = pageSizeParsed.success
+        ? Math.min(pageSizeParsed.data, MAX_PAGE_SIZE)
+        : useLegacyFlat
+          ? legacyLimitParsed.data!
+          : DEFAULT_PAGE_SIZE;
+
+      const offset = useLegacyFlat ? 0 : page * pageSize;
+
+      const data = await storage.getTransactions(clientId, {
+        limit: pageSize,
+        ...(useLegacyFlat ? {} : { offset }),
+      });
       const categories = await storage.getTransactionCategories(clientId);
       const allLocals = await storage.getLocals(clientId);
       const bankAccountsList = await storage.getBankAccounts(clientId);
@@ -2050,7 +2070,18 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         bankAccount: t.bankAccountId ? bankMap.get(t.bankAccountId) || null : null,
       }));
 
-      res.json(enriched);
+      if (useLegacyFlat) {
+        res.json(enriched);
+        return;
+      }
+
+      const total = await storage.getTransactionCount(clientId);
+      res.json({
+        items: enriched,
+        total,
+        page,
+        pageSize,
+      });
     } catch (e: any) {
       res.status(500).json({ message: e.message });
     }

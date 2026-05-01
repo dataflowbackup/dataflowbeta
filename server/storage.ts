@@ -286,7 +286,8 @@ export interface IStorage {
   createFinancialSavedView(row: InsertFinancialSavedView): Promise<FinancialSavedView>;
   deleteFinancialSavedView(clientId: number, userId: string, id: number): Promise<boolean>;
   
-  getTransactions(clientId: number, options?: { limit?: number }): Promise<Transaction[]>;
+  getTransactions(clientId: number, options?: { limit?: number; offset?: number }): Promise<Transaction[]>;
+  getTransactionCount(clientId: number): Promise<number>;
   createTransaction(transaction: InsertTransaction): Promise<Transaction>;
   createTransactionsBatch(transactionsList: InsertTransaction[]): Promise<number>;
   updateTransaction(clientId: number, id: number, transaction: Partial<InsertTransaction>): Promise<Transaction | undefined>;
@@ -1929,16 +1930,28 @@ export class DatabaseStorage implements IStorage {
     return del.length > 0;
   }
 
-  async getTransactions(clientId: number, options?: { limit?: number }): Promise<Transaction[]> {
+  async getTransactionCount(clientId: number): Promise<number> {
+    const [row] = await db
+      .select({ c: sql<number>`count(*)` })
+      .from(transactions)
+      .where(eq(transactions.clientId, clientId));
+    return Number(row?.c ?? 0);
+  }
+
+  async getTransactions(clientId: number, options?: { limit?: number; offset?: number }): Promise<Transaction[]> {
     const lim = options?.limit;
-    const qb = db
+    const off = options?.offset ?? 0;
+    let qb = db
       .select()
       .from(transactions)
       .where(eq(transactions.clientId, clientId))
       .orderBy(desc(transactions.transactionDate));
 
+    if (off > 0) {
+      qb = qb.offset(off);
+    }
     if (lim != null && lim > 0) {
-      return await qb.limit(lim);
+      qb = qb.limit(lim);
     }
     return await qb;
   }

@@ -185,18 +185,44 @@ export default function BankStatementsPage() {
   } = useQuery<TransactionWithRelations[]>({
     queryKey: ["/api/transactions"],
     queryFn: async () => {
-      const res = await fetch("/api/transactions", {
-        credentials: "include",
-      });
-      if (!res.ok) {
-        const text = await res.text();
-        throw new Error(
-          res.status === 502 || text.toLowerCase().includes("upstream")
-            ? `502: El servidor no pudo devolver la lista de movimientos (respuesta muy grande o tiempo agotado). Probá recargar la página; si sigue, avisá para paginar la consulta.`
-            : `${res.status}: ${text || res.statusText}`,
-        );
+      const PAGE_SIZE = 800;
+      const MAX_PAGES = 250;
+      const merged: TransactionWithRelations[] = [];
+      let page = 0;
+      let total = 0;
+
+      while (page < MAX_PAGES) {
+        const res = await fetch(`/api/transactions?page=${page}&pageSize=${PAGE_SIZE}`, {
+          credentials: "include",
+        });
+        if (!res.ok) {
+          const text = await res.text();
+          throw new Error(
+            res.status === 502 || text.toLowerCase().includes("upstream")
+              ? `502: Fallo al cargar una pagina de movimientos. Reintentá; si persiste, puede ser un fallo puntual de Netlify/Turso.`
+              : `${res.status}: ${text || res.statusText}`,
+          );
+        }
+        const body = (await res.json()) as
+          | TransactionWithRelations[]
+          | { items: TransactionWithRelations[]; total: number; page: number; pageSize: number };
+
+        if (Array.isArray(body)) {
+          return body;
+        }
+
+        if (page === 0) {
+          total = body.total;
+        }
+        merged.push(...body.items);
+
+        if (merged.length >= total || body.items.length === 0 || body.items.length < PAGE_SIZE) {
+          break;
+        }
+        page += 1;
       }
-      return res.json();
+
+      return merged;
     },
   });
 
