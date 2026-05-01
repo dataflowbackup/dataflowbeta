@@ -2453,7 +2453,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.post("/api/transactions/batch-categorize", isAuthenticated, async (req, res) => {
     try {
       const clientId = await getClientId(req);
-      const { transactionIds, categoryId, localId, dateFrom, dateTo, description } = req.body;
+      const { transactionIds, categoryId, localId, dateFrom, dateTo, description, description2 } = req.body;
 
       if (!categoryId && categoryId !== null) {
         return res.status(400).json({ message: "Se requiere categoryId" });
@@ -2461,6 +2461,20 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
       const allTransactions = await storage.getTransactions(clientId);
       const tenantTxIds = new Set(allTransactions.map(t => t.id));
+
+      const matchesDateRange = (t: (typeof allTransactions)[0]) => {
+        if (!dateFrom || !dateTo) return true;
+        const txDate = new Date(t.transactionDate);
+        const from = new Date(dateFrom);
+        const to = new Date(dateTo);
+        to.setHours(23, 59, 59, 999);
+        return txDate >= from && txDate <= to;
+      };
+
+      const descFilter =
+        typeof description === "string" && description.trim().length > 0 ? description.trim() : null;
+      const desc2Filter =
+        typeof description2 === "string" && description2.trim().length > 0 ? description2.trim() : null;
       
       let idsToUpdate: number[] = [];
       
@@ -2473,9 +2487,15 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
             message: "Algunas transacciones no pertenecen a este cliente" 
           });
         }
-      } else if (description && typeof description === "string") {
+      } else if (descFilter !== null || desc2Filter !== null) {
         idsToUpdate = allTransactions
-          .filter(t => t.description === description && !t.categoryId)
+          .filter(t => {
+            if (t.categoryId) return false;
+            if (!matchesDateRange(t)) return false;
+            if (descFilter !== null && t.description !== descFilter) return false;
+            if (desc2Filter !== null && t.description2 !== desc2Filter) return false;
+            return true;
+          })
           .map(t => t.id);
       } else if (dateFrom && dateTo) {
         const from = new Date(dateFrom);
