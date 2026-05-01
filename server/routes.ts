@@ -2425,6 +2425,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         skipped: parseResult.skipped,
         skippedReasons: parseResult.skippedReasons.slice(0, 10),
         bankUsed: parser.bankName,
+        /** Id del parser (galicia, mercadopago, …) para alinear filtros del cliente tras importar */
+        bankSourceId: bankId,
         unmappedBranches: unmappedBranches.length > 0 ? unmappedBranches : undefined,
         batchOpeningBalance: openingBalanceToUse,
         batchClosingBalance: closingBalanceToUse,

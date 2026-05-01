@@ -418,7 +418,23 @@ export default function BankStatementsPage() {
       }
       return res.json();
     },
-    onSuccess: (data) => {
+    onSuccess: (data: {
+      skipped?: number;
+      imported?: number;
+      total?: number;
+      bankUsed?: string;
+      bankSourceId?: string;
+      skippedReasons?: string[];
+      batchOpeningBalance?: unknown;
+      batchClosingBalance?: unknown;
+    }) => {
+      if (data.bankSourceId) {
+        setBankFilter(data.bankSourceId);
+      } else {
+        setBankFilter("all");
+      }
+      setAccountContextFilter("all");
+
       queryClient.invalidateQueries({ queryKey: ["/api/transactions"] });
       queryClient.invalidateQueries({ queryKey: ["/api/transactions/import-batches"] });
       let description = data.skipped > 0 
@@ -1255,7 +1271,9 @@ export default function BankStatementsPage() {
         </TabsList>
 
         {/* Bank-specific content for "all" and each bank */}
-        {(bankFilter === "all" || banksForTabs.includes(bankFilter)) && (
+        {(bankFilter === "all" ||
+          banksForTabs.includes(bankFilter) ||
+          PINNED_BANK_TAB_IDS.includes(bankFilter)) && (
           <div className="space-y-4">
             {/* Bank-specific stats */}
             <div className="grid gap-4 md:grid-cols-4">
