@@ -155,6 +155,7 @@ export default function BankStatementsPage() {
   const [uploadDefaultLocalId, setUploadDefaultLocalId] = useState<string>("none");
   const [uploadOpeningBalance, setUploadOpeningBalance] = useState<string>("");
   const [uploadClosingBalance, setUploadClosingBalance] = useState<string>("");
+  const [uploadSkipContinuityCheck, setUploadSkipContinuityCheck] = useState(false);
   const [isAccountsDialogOpen, setIsAccountsDialogOpen] = useState(false);
   const [newAccountName, setNewAccountName] = useState("");
   const [newAccountLocalId, setNewAccountLocalId] = useState<string>("none");
@@ -164,8 +165,20 @@ export default function BankStatementsPage() {
   const [isSaveViewDialogOpen, setIsSaveViewDialogOpen] = useState(false);
   const [saveViewName, setSaveViewName] = useState("");
 
+  const TRANSACTIONS_FETCH_LIMIT = 25000;
+
   const { data: transactions = [], isLoading } = useQuery<TransactionWithRelations[]>({
-    queryKey: ["/api/transactions"],
+    queryKey: ["/api/transactions", TRANSACTIONS_FETCH_LIMIT],
+    queryFn: async () => {
+      const res = await fetch(`/api/transactions?limit=${TRANSACTIONS_FETCH_LIMIT}`, {
+        credentials: "include",
+      });
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error(text || res.statusText);
+      }
+      return res.json();
+    },
   });
 
   const { data: bankAccounts = [] } = useQuery<BankAccountWithLocal[]>({
@@ -512,6 +525,10 @@ export default function BankStatementsPage() {
     }
     if (uploadOpeningBalance.trim()) qs.set("openingBalance", uploadOpeningBalance.trim());
     if (uploadClosingBalance.trim()) qs.set("closingBalance", uploadClosingBalance.trim());
+    if (uploadSkipContinuityCheck) {
+      formData.append("skipContinuityCheck", "1");
+      qs.set("skipContinuityCheck", "1");
+    }
     uploadMutation.mutate({ formData, queryString: `?${qs.toString()}` });
   };
 
@@ -1539,7 +1556,10 @@ export default function BankStatementsPage() {
         open={isUploadOpen}
         onOpenChange={(open) => {
           setIsUploadOpen(open);
-          if (!open) setUploadBankAccountId("");
+          if (!open) {
+            setUploadBankAccountId("");
+            setUploadSkipContinuityCheck(false);
+          }
         }}
       >
         <DialogContent>
@@ -1594,6 +1614,23 @@ export default function BankStatementsPage() {
               <p className="text-xs text-muted-foreground">
                 Si lo elegís, los movimientos sin sucursal/alias se importan con ese local.
               </p>
+            </div>
+            <div className="flex items-start gap-3 rounded-lg border border-amber-500/30 bg-amber-500/5 p-3">
+              <Checkbox
+                id="skip-continuity"
+                checked={uploadSkipContinuityCheck}
+                onCheckedChange={(v) => setUploadSkipContinuityCheck(v === true)}
+                data-testid="checkbox-skip-continuity"
+              />
+              <div className="space-y-1">
+                <Label htmlFor="skip-continuity" className="cursor-pointer font-normal leading-snug">
+                  Omitir validacion de encadenamiento de saldos
+                </Label>
+                <p className="text-xs text-muted-foreground">
+                  Activá solo si el sistema rechaza el import por saldos y necesitás recuperar la carga (p. ej. extracciones
+                  huérfanas o datos inconsistentes). No uses esto en condiciones normales.
+                </p>
+              </div>
             </div>
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <div className="space-y-2">

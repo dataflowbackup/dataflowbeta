@@ -2011,7 +2011,11 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.get("/api/transactions", isAuthenticated, async (req, res) => {
     try {
       const clientId = await getClientId(req);
-      const data = await storage.getTransactions(clientId);
+      const limitParsed = z.coerce.number().int().positive().max(100000).safeParse(req.query.limit);
+      const data = await storage.getTransactions(
+        clientId,
+        limitParsed.success ? { limit: limitParsed.data } : undefined,
+      );
       const categories = await storage.getTransactionCategories(clientId);
       const allLocals = await storage.getLocals(clientId);
       const bankAccountsList = await storage.getBankAccounts(clientId);
@@ -2292,12 +2296,19 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         closingBalanceManual.success ? closingBalanceManual.data : closingBalanceDetected;
 
       // Continuidad de saldos solo si aún hay movimientos para esa cuenta (evita bloqueo por metadatos huérfanos)
+      const skipContinuityRaw = pickMultipartOrQueryString(req, "skipContinuityCheck");
+      const skipContinuity =
+        skipContinuityRaw === "1" ||
+        skipContinuityRaw?.toLowerCase() === "true" ||
+        skipContinuityRaw?.toLowerCase() === "on";
+
       const txCountForAccount = await storage.getTransactionCountForBankAccount(
         clientId,
         bankAccountParsed.data,
       );
       const lastBatch = await storage.getLastFinancialImportBatchForAccount(clientId, bankAccountParsed.data);
       if (
+        !skipContinuity &&
         txCountForAccount > 0 &&
         lastBatch?.closingBalance != null &&
         openingBalanceToUse != null

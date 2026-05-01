@@ -282,7 +282,7 @@ export interface IStorage {
   createFinancialSavedView(row: InsertFinancialSavedView): Promise<FinancialSavedView>;
   deleteFinancialSavedView(clientId: number, userId: string, id: number): Promise<boolean>;
   
-  getTransactions(clientId: number): Promise<Transaction[]>;
+  getTransactions(clientId: number, options?: { limit?: number }): Promise<Transaction[]>;
   createTransaction(transaction: InsertTransaction): Promise<Transaction>;
   createTransactionsBatch(transactionsList: InsertTransaction[]): Promise<number>;
   updateTransaction(clientId: number, id: number, transaction: Partial<InsertTransaction>): Promise<Transaction | undefined>;
@@ -1869,8 +1869,17 @@ export class DatabaseStorage implements IStorage {
     return del.length > 0;
   }
 
-  async getTransactions(clientId: number): Promise<Transaction[]> {
-    return db.select().from(transactions).where(eq(transactions.clientId, clientId)).orderBy(desc(transactions.transactionDate));
+  async getTransactions(clientId: number, options?: { limit?: number }): Promise<Transaction[]> {
+    const base = db
+      .select()
+      .from(transactions)
+      .where(eq(transactions.clientId, clientId))
+      .orderBy(desc(transactions.transactionDate));
+    const lim = options?.limit;
+    if (lim != null && lim > 0) {
+      return base.limit(lim);
+    }
+    return base;
   }
 
   async createTransaction(transaction: InsertTransaction): Promise<Transaction> {
