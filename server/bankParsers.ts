@@ -855,7 +855,10 @@ class MercadoPagoParser implements BankParser {
       if (grossAmount === 0) {
         // Fila con bruto vacío en el Excel: si tiene descripción real, la exponemos como
         // candidata a conciliación manual (en lugar de borrarla en silencio).
-        if (description.trim().length > 1) {
+        // Excepción: si el usuario ya envió un override explícito para esta fila
+        // (aunque sea 0 = "ignorar"), respetamos su decisión y no la re-listamos.
+        const userDecidedOverride = ov !== undefined && Number.isFinite(Number(ov));
+        if (!userDecidedOverride && description.trim().length > 1) {
           mpZeroGrossSkippedRows.push({
             date: dateValue,
             description: description || "Movimiento Mercado Pago",

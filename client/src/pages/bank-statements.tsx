@@ -125,10 +125,12 @@ interface MpReconciliationRow {
 
 interface MpReconciliationPayload {
   message: string;
-  saldoDisponibleTotal: number;
+  saldoDisponibleTotal: number | null;
   sumGrossImportable: number;
-  delta: number;
+  delta: number | null;
   zeroGrossSkippedCount?: number;
+  /** "sum_mismatch" | "zero_gross_suspects" — motivo por el que se abre el panel. */
+  reason?: "sum_mismatch" | "zero_gross_suspects";
   rows: MpReconciliationRow[];
 }
 
@@ -519,20 +521,29 @@ export default function BankStatementsPage() {
       batchOpeningBalance?: unknown;
       batchClosingBalance?: unknown;
       message?: string;
-      saldoDisponibleTotal?: number;
+      saldoDisponibleTotal?: number | null;
       sumGrossImportable?: number;
-      delta?: number;
+      delta?: number | null;
       zeroGrossSkippedCount?: number;
+      reason?: "sum_mismatch" | "zero_gross_suspects";
       rows?: MpReconciliationPayload["rows"];
       unmappedBranches?: string[];
+      mpDiagnostics?: {
+        saldoDisponibleTotalArchivo?: number | null;
+        sumGrossImportable?: number;
+        zeroGrossSkippedCount?: number;
+        zeroGrossExcelRows?: number[];
+      };
     }) => {
       if (data.reconciliationRequired && data.rows && data.message != null) {
         setMpReconciliation({
           message: data.message,
-          saldoDisponibleTotal: Number(data.saldoDisponibleTotal ?? 0),
+          saldoDisponibleTotal:
+            data.saldoDisponibleTotal == null ? null : Number(data.saldoDisponibleTotal),
           sumGrossImportable: Number(data.sumGrossImportable ?? 0),
-          delta: Number(data.delta ?? 0),
+          delta: data.delta == null ? null : Number(data.delta),
           zeroGrossSkippedCount: Number(data.zeroGrossSkippedCount ?? 0),
+          reason: data.reason,
           rows: data.rows,
         });
         const drafts: Record<number, string> = {};
@@ -573,7 +584,29 @@ export default function BankStatementsPage() {
       if (data.batchClosingBalance != null && data.batchClosingBalance !== "") {
         description += `. Saldo final: ${formatCurrency(Number(data.batchClosingBalance))}`;
       }
-      
+
+      // Diagnóstico MP (solo aplica si el banco fue Mercado Pago).
+      if (data.mpDiagnostics) {
+        const d = data.mpDiagnostics;
+        const ref =
+          d.saldoDisponibleTotalArchivo != null
+            ? formatCurrency(Number(d.saldoDisponibleTotalArchivo))
+            : "no detectado";
+        const sumGross =
+          d.sumGrossImportable != null ? formatCurrency(Number(d.sumGrossImportable)) : "—";
+        description += `. MP — saldo del archivo: ${ref}; suma de brutos: ${sumGross}`;
+        if (d.zeroGrossSkippedCount && d.zeroGrossSkippedCount > 0) {
+          const rowsList =
+            d.zeroGrossExcelRows && d.zeroGrossExcelRows.length > 0
+              ? ` (filas Excel ${d.zeroGrossExcelRows.slice(0, 5).join(", ")}${
+                  d.zeroGrossExcelRows.length > 5 ? "…" : ""
+                })`
+              : "";
+          description += `; filas con bruto en 0 omitidas: ${d.zeroGrossSkippedCount}${rowsList}`;
+        }
+        console.log("[IMPORT] MP diagnostics:", d);
+      }
+
       if (data.skippedReasons && data.skippedReasons.length > 0 && data.imported === 0) {
         description += `. Razones: ${data.skippedReasons.slice(0, 3).join("; ")}`;
         console.log("[IMPORT] Skip reasons:", data.skippedReasons);
@@ -769,6 +802,19 @@ export default function BankStatementsPage() {
       if (newv !== null) s += newv - oldv;
     }
     return s;
+  }, [mpReconciliation, mpGrossDrafts]);
+
+  /** Para el caso "zero_gross_suspects" sin saldo en archivo: validamos que TODAS las
+   *  filas wasZeroGross tengan un override numérico (incluyendo 0 = ignorar). */
+  const mpZeroGrossPending = useMemo(() => {
+    if (!mpReconciliation) return 0;
+    let pending = 0;
+    for (const r of mpReconciliation.rows) {
+      if (!r.wasZeroGross) continue;
+      const v = parseMpMoneyInput(mpGrossDrafts[r.excelRow] ?? "");
+      if (v === null) pending++;
+    }
+    return pending;
   }, [mpReconciliation, mpGrossDrafts]);
 
   useEffect(() => {
@@ -1954,9 +2000,9 @@ export default function BankStatementsPage() {
           <DialogHeader>
             <DialogTitle>Conciliar extracto Mercado Pago</DialogTitle>
             <DialogDescription>
-              La suma de los montos brutos de los movimientos no coincide con el «Saldo disponible total» del archivo.
-              Corregí el MONTO BRUTO en las filas indicadas (según tu Excel) y finalizá la importación, o suspendé para
-              volver más tarde.
+              {mpReconciliation?.reason === "zero_gross_suspects"
+                ? "Hay movimientos en el Excel con MONTO BRUTO en 0. Completalos con el monto real para que se importen, o ingresá 0 para descartarlos. Suspendé si querés revisar más tarde."
+                : "La suma de los montos brutos no coincide con el «Saldo disponible total» del archivo. Corregí el MONTO BRUTO en las filas indicadas (según tu Excel) y finalizá la importación, o suspendé para volver más tarde."}
             </DialogDescription>
           </DialogHeader>
           {mpReconciliation && (
@@ -1966,7 +2012,11 @@ export default function BankStatementsPage() {
                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 font-mono text-xs sm:text-sm mt-2">
                   <div>
                     <span className="text-muted-foreground">Saldo disponible total (archivo)</span>
-                    <div className="font-semibold">{formatCurrency(mpReconciliation.saldoDisponibleTotal)}</div>
+                    <div className="font-semibold">
+                      {mpReconciliation.saldoDisponibleTotal != null
+                        ? formatCurrency(mpReconciliation.saldoDisponibleTotal)
+                        : "—"}
+                    </div>
                   </div>
                   <div>
                     <span className="text-muted-foreground">Suma brutos importables</span>
@@ -1975,7 +2025,7 @@ export default function BankStatementsPage() {
                   <div>
                     <span className="text-muted-foreground">Diferencia</span>
                     <div className="font-semibold text-amber-800 dark:text-amber-200">
-                      {formatCurrency(mpReconciliation.delta)}
+                      {mpReconciliation.delta != null ? formatCurrency(mpReconciliation.delta) : "—"}
                     </div>
                   </div>
                 </div>
@@ -1985,10 +2035,16 @@ export default function BankStatementsPage() {
                     <span className="font-mono font-medium text-foreground">
                       {formatCurrency(mpEstimatedSumGross)}
                     </span>
-                    {Math.round(mpEstimatedSumGross * 100) ===
-                    Math.round(mpReconciliation.saldoDisponibleTotal * 100) ? (
+                    {mpReconciliation.saldoDisponibleTotal != null &&
+                    Math.round(mpEstimatedSumGross * 100) ===
+                      Math.round(mpReconciliation.saldoDisponibleTotal * 100) ? (
                       <span className="text-green-600 ml-2">— coincide con el archivo</span>
                     ) : null}
+                  </p>
+                )}
+                {mpReconciliation.reason === "zero_gross_suspects" && mpZeroGrossPending > 0 && (
+                  <p className="text-xs text-amber-800 dark:text-amber-200 pt-1">
+                    Faltan {mpZeroGrossPending} fila(s) con bruto en 0 sin completar (ingresá 0 para descartarlas).
                   </p>
                 )}
               </div>

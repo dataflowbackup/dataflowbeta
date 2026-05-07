@@ -2393,17 +2393,31 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         periodEndDetected = parseResult.periodEnd ?? null;
       }
 
+      // Diagnóstico MP: queda disponible para incluir en respuestas exitosas o erróneas.
+      const mpZeroGrossRowsForReco = bankId === "mercadopago" ? (parseResult.mpZeroGrossSkippedRows ?? []) : [];
+      const mpSumForReco = bankId === "mercadopago" ? (parseResult.sumGrossImportable ?? 0) : 0;
+      const mpRefForReco = bankId === "mercadopago" ? parseResult.saldoDisponibleTotal ?? null : null;
+
       if (bankId === "mercadopago") {
-        const ref = parseResult.saldoDisponibleTotal;
-        const sum = parseResult.sumGrossImportable ?? 0;
+        const ref = mpRefForReco;
+        const sum = mpSumForReco;
+        const zeroGrossRows = mpZeroGrossRowsForReco;
+        const sumDoesNotMatch =
+          ref != null && !Number.isNaN(Number(ref)) && !mpAmountsMatchCent(sum, Number(ref));
+        const hasZeroGrossSuspects = zeroGrossRows.length > 0;
+
         if (ref == null || Number.isNaN(Number(ref))) {
-          return res.status(400).json({
-            message:
-              "No se encontró en el archivo el valor «Saldo disponible total» necesario para conciliar el extracto de Mercado Pago.",
-          });
+          // Sin saldo del archivo no podemos conciliar por suma; igual exponemos el panel
+          // si hay filas con bruto en 0 con descripción válida (mejor que importar parcial sin avisar).
+          if (!hasZeroGrossSuspects) {
+            return res.status(400).json({
+              message:
+                "No se encontró en el archivo el valor «Saldo disponible total» necesario para conciliar el extracto de Mercado Pago.",
+            });
+          }
         }
-        if (!mpAmountsMatchCent(sum, Number(ref))) {
-          const zeroGrossRows = parseResult.mpZeroGrossSkippedRows ?? [];
+
+        if (sumDoesNotMatch || hasZeroGrossSuspects) {
           const candidates = pickMercadoPagoReconciliationCandidates(
             parseResult.transactions,
             10,
@@ -2413,19 +2427,27 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
             zeroGrossRows.map((t) => t.excelRow ?? -1).filter((n) => n > 0),
           );
           const zeroGrossWithDescription = zeroGrossRows.length;
+          const refNumber = ref != null && !Number.isNaN(Number(ref)) ? Number(ref) : null;
+          const reasonCode = sumDoesNotMatch
+            ? "MP_RECONCILIATION_REQUIRED"
+            : "MP_ZERO_GROSS_REVIEW_REQUIRED";
+          const messageMain =
+            sumDoesNotMatch && refNumber != null
+              ? `La suma de montos brutos de los movimientos a importar (${sum.toFixed(2)}) no coincide con el Saldo disponible total del archivo (${refNumber.toFixed(2)}).`
+              : `Se detectaron ${zeroGrossWithDescription} movimiento(s) con MONTO BRUTO vacío en el Excel.`;
           const messageZero =
-            zeroGrossWithDescription > 0
+            zeroGrossWithDescription > 0 && sumDoesNotMatch
               ? ` Hay ${zeroGrossWithDescription} movimiento(s) con MONTO BRUTO vacío en el Excel: completalos abajo y la importación cuadrará.`
               : "";
           return res.json({
             imported: 0,
             reconciliationRequired: true,
-            code: "MP_RECONCILIATION_REQUIRED",
-            message:
-              `La suma de montos brutos de los movimientos a importar (${sum.toFixed(2)}) no coincide con el Saldo disponible total del archivo (${Number(ref).toFixed(2)}).${messageZero} Revisá las filas indicadas o suspendé la importación.`,
-            saldoDisponibleTotal: ref,
+            code: reasonCode,
+            reason: sumDoesNotMatch ? "sum_mismatch" : "zero_gross_suspects",
+            message: `${messageMain}${messageZero} Revisá las filas indicadas, completá los brutos faltantes (o ingresá 0 para descartarlos) y volvé a importar.`,
+            saldoDisponibleTotal: refNumber,
             sumGrossImportable: sum,
-            delta: sum - ref,
+            delta: refNumber != null ? sum - refNumber : null,
             zeroGrossSkippedCount: zeroGrossWithDescription,
             rows: candidates.map((t) => {
               const excelRow = t.excelRow ?? 0;
@@ -2558,8 +2580,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         } as unknown as InsertFinancialImportBatch);
       }
       
-      res.json({ 
-        imported, 
+      res.json({
+        imported,
         total: parseResult.total,
         skipped: parseResult.skipped,
         skippedReasons: parseResult.skippedReasons.slice(0, 10),
@@ -2571,6 +2593,21 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         batchClosingBalance: closingBalanceToUse,
         batchPeriodStart: periodStartDetected,
         batchPeriodEnd: periodEndDetected,
+        // Diagnóstico MP visible al usuario en el toast (saldo del archivo, suma de brutos,
+        // cantidad de filas con bruto vacío que se omitieron). Útil cuando el saldo del
+        // archivo también vino mal y la conciliación no se podía detectar por suma.
+        ...(bankId === "mercadopago"
+          ? {
+              mpDiagnostics: {
+                saldoDisponibleTotalArchivo: mpRefForReco,
+                sumGrossImportable: mpSumForReco,
+                zeroGrossSkippedCount: mpZeroGrossRowsForReco.length,
+                zeroGrossExcelRows: mpZeroGrossRowsForReco
+                  .map((t) => t.excelRow ?? -1)
+                  .filter((n) => n > 0),
+              },
+            }
+          : {}),
       });
     } catch (e: any) {
       res.status(500).json({ message: e.message });
