@@ -9,9 +9,11 @@
 
 ## 1. Cómo usar y mantener este roadmap
 
-- Tras **features o fixes relevantes**: actualizar la sección del **módulo** tocado + §12 “Cambios recientes”.
-- Si aparece un **bug recurrente**: §11 “Riesgos / deuda” con fecha y workaround.
+- Tras **features o fixes relevantes**: actualizar la sección del **módulo** tocado + §8 (historial / cambios recientes).
+- Antes de **cambios riesgosos en base de datos** (Turso prod, migraciones, seeds): seguir **§12.0** (backup completo + tag Git) y anotar en §8 qué archivos generaste.
+- Si aparece un **bug recurrente**: §9 “Fallas” con fecha y workaround.
 - El **histórico de negocio** anterior a lo que el código muestra hoy no está en el repo: no inventar fechas; marcar como *inferido* o *pendiente validar con equipo*.
+- **Turso / backups:** toda la receta (credenciales `env.turso`, dump sin CLI, frecuencia) está en **§12.3**; no depender solo de la memoria del chat.
 
 ---
 
@@ -262,6 +264,7 @@ El backup de Turso se generó con **`script/backup-turso.ts`** (ver §13). Requi
 - **Ventas** (`sales`): tabla existe; revisar flujo UI si aún no hay página dedicada.
 - Ampliar **tests automáticos** en módulos críticos (costos, extractos).
 - Revisar **payroll/attendance** frente a schema real en prod.
+- **Backups Turso / DR:** mantener viva la receta en §12; opcional: automatizar recordatorio o job (CI / calendario) para `script/backup-turso.ts` + copia de `backups/turso_*.sql` a almacenamiento externo acordado con el equipo.
 
 ---
 
@@ -270,13 +273,35 @@ El backup de Turso se generó con **`script/backup-turso.ts`** (ver §13). Requi
 1. Cada nuevo **módulo** o **flujo crítico**: añadir fila en §5 + endpoint en §6 si aplica.
 2. Cada **release**: párrafo en §8 con versión/fecha.
 3. Mantener **una línea** en §9 cuando se cierre un bug grande (mover a "resuelto" con fecha).
-4. Antes de cambios de esquema o "pruebas drásticas": ejecutar el procedimiento de backup §12 y dejar **un git tag** apuntando al commit "punto seguro".
+4. Antes de cambios de esquema o "pruebas drásticas": ejecutar el **checklist §12.0** (incluye Turso + tag Git) y anotar una línea en §8.
 
 ---
 
 ## 12. Procedimiento de backup (DBs + git)
 
-> Última ejecución: **2026-05-07** (ver §8 para el detalle de archivos generados).
+**Este apartado es la referencia única** para no volver a perderse con Turso, credenciales o dónde quedan los archivos. Antes de `db:push:turso`, migraciones manuales, `npm run seed:bootstrap` contra prod, o **cualquier prueba drástica**, seguir el **checklist §12.0**.
+
+> Última ejecución documentada en roadmap: **2026-05-07** (ver §8).
+
+### 12.0 Checklist completo (orden recomendado)
+
+Hacer todo en la **misma sesión**, con el repo limpio (`git status` sin sorpresas salvo lo que vas a tocar):
+
+| Paso | Qué | Dónde / comando |
+|------|-----|------------------|
+| 1 | **Código en punto conocido** | `git pull`, commit de trabajo en curso si aplica |
+| 2 | **Tag de Git** (punto de retorno del código) | §12.4 — `git tag -a "backup-pre-<motivo>-YYYY-MM-DD"` + `git push origin --tags` |
+| 3 | **Postgres local** (si usás `DATABASE_URL=postgresql://...` en `.env`) | §12.1 — `pg_dump` → `backups/dataflow_dev_*.sql` |
+| 4 | **SQLite legacy** (si existe `data/dev.db` y lo usás) | §12.2 — copia física a `backups/` |
+| 5 | **Turso (producción / misma DB que Netlify)** | §12.3 — `env.turso` + `npx tsx script/backup-turso.ts` |
+| 6 | **Registrar en §8** | Fecha, motivo, nombres de archivos generados (1 línea basta) |
+
+**Recordatorios críticos**
+
+- **Turso no requiere Turso CLI** en esta máquina: el dump oficial del proyecto es `script/backup-turso.ts` + `@libsql/client/web`.
+- **`env.turso` no existe en el repo:** hay que crearlo en la raíz copiando valores desde **Netlify** → Site settings → Environment variables (`DATABASE_URL` tipo `libsql://...` y `TURSO_AUTH_TOKEN`). Está en `.gitignore`; **nunca** commitear ese archivo.
+- Los archivos en `backups/*.sql` y `backups/*.dump` están en **`.gitignore`**: quedan solo en tu disco / backup corporativo. Si necesitás guardarlos en otro lado (NAS, OneDrive fuera del repo), copiarlos manualmente después del paso 5.
+- **Opción extra (Turso):** en el panel de Turso se puede crear un **branch / snapshot** de la base como segunda red de seguridad; no sustituye el `.sql` local si querés portabilidad, pero ayuda a restaurar en la misma plataforma.
 
 ### 12.1 Postgres local de desarrollo
 
@@ -296,23 +321,59 @@ $ts = Get-Date -Format "yyyy-MM-dd_HHmmss"
 Copy-Item "data/dev.db" "backups/dev.db.backup-$ts.db"
 ```
 
-### 12.3 Turso (producción)
+### 12.3 Turso (producción) — backup SQL local
 
-Requiere `env.turso` en la raíz del repo (no commiteado, está en `.gitignore`):
+**Objetivo:** tener un archivo `.sql` reproducible con DDL + datos, misma base que usa **Netlify en prod** (no un branch de prueba).
+
+#### 12.3.1 Preparar credenciales (una vez por máquina / cuando roten el token)
+
+1. Netlify → tu sitio → **Site configuration** → **Environment variables**.
+2. Copiar **tal cual** (sin espacios al final):
+   - `DATABASE_URL` → debe empezar con `libsql://`
+   - `TURSO_AUTH_TOKEN` → token JWT largo
+3. En la **raíz del repo** crear el archivo **`env.turso`** (sin punto; ya está en `.gitignore`):
 
 ```env
-DATABASE_URL=libsql://<host>.turso.io
-TURSO_AUTH_TOKEN=<token>
+DATABASE_URL=libsql://<host-exacto-de-netlify>.turso.io
+TURSO_AUTH_TOKEN=<token-exacto-de-netlify>
 DB_PROVIDER=turso
 ```
 
-Las credenciales se sacan de Netlify → Site settings → Environment variables. Después:
+4. **Validar** (opcional): `npm run turso:diag` — debe conectar a la URL remota, no a `file:./data/dev.db`. Si el diagnóstico muestra SQLite local, **no** llegaste a Turso: revisá que `drizzle.config.turso.ts` cargue `env.turso` (ya está cableado en el proyecto).
+
+#### 12.3.2 Ejecutar el dump
+
+Desde la raíz del proyecto:
 
 ```bash
 npx tsx script/backup-turso.ts
 ```
 
-Genera `backups/turso_<YYYY-MM-DD_HHmmss>.sql` con DDL completa (CREATE TABLE/INDEX desde `sqlite_master`) + INSERTs de todas las filas, en una transacción. Usa `@libsql/client/web` (sin necesidad de Turso CLI).
+Salida esperada: `backups/turso_<YYYY-MM-DD_HHmmss>.sql` (varios MB si hay muchas transacciones). El script imprime conteo de tablas y filas.
+
+#### 12.3.3 Qué contiene el archivo
+
+- `PRAGMA` + `BEGIN/COMMIT`
+- `CREATE TABLE` / `CREATE INDEX` leídos de `sqlite_master` (DDL alineado a la base real)
+- `INSERT INTO ...` por cada fila (paginado internamente en lotes de 1000)
+
+**Restauración:** no está automatizada en repo; en un incidente se puede crear una base nueva en Turso / LibSQL y ejecutar el SQL con un cliente compatible, o adaptar un script one-off. Guardar el `.sql` en medio confiable (fuera del repo si la política lo exige).
+
+#### 12.3.4 Problemas frecuentes
+
+| Síntoma | Causa probable | Qué hacer |
+|---------|----------------|-----------|
+| `401` / conexión rechazada | Token viejo o URL de **otra** base | Regenerar token en Turso para **esa** DB; pegar de nuevo en `env.turso` y Netlify si hace falta |
+| Dump vacío o pocas tablas | Apuntás a un branch distinto a prod | Verificar en Netlify qué `DATABASE_URL` usa el sitio en producción y que `env.turso` coincida |
+| Script no encuentra credenciales | Falta `env.turso` o está mal nombrado | Debe llamarse exactamente `env.turso` en la raíz (no solo `.env`) |
+
+#### 12.3.5 Frecuencia sugerida (agenda)
+
+| Momento | Acción |
+|---------|--------|
+| Antes de `db:push:turso`, migraciones manuales o seeds en prod | Dump Turso (§12.3.2) + tag Git (§12.4) |
+| Antes de releases grandes / refactors BD | Igual |
+| Rutina (opcional) | Semanal o mensual — según criterio del equipo — y copiar `backups/turso_*.sql` a almacenamiento externo si hace falta |
 
 ### 12.4 Git tag de seguridad
 
