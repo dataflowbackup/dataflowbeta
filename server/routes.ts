@@ -2403,20 +2403,42 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
           });
         }
         if (!mpAmountsMatchCent(sum, Number(ref))) {
-          const candidates = pickMercadoPagoReconciliationCandidates(parseResult.transactions, 10);
+          const zeroGrossRows = parseResult.mpZeroGrossSkippedRows ?? [];
+          const candidates = pickMercadoPagoReconciliationCandidates(
+            parseResult.transactions,
+            10,
+            zeroGrossRows,
+          );
+          const zeroGrossExcelRows = new Set<number>(
+            zeroGrossRows.map((t) => t.excelRow ?? -1).filter((n) => n > 0),
+          );
+          const zeroGrossWithDescription = zeroGrossRows.length;
+          const messageZero =
+            zeroGrossWithDescription > 0
+              ? ` Hay ${zeroGrossWithDescription} movimiento(s) con MONTO BRUTO vacío en el Excel: completalos abajo y la importación cuadrará.`
+              : "";
           return res.json({
             imported: 0,
             reconciliationRequired: true,
             code: "MP_RECONCILIATION_REQUIRED",
-            message: `La suma de montos brutos de los movimientos a importar (${sum.toFixed(2)}) no coincide con el Saldo disponible total del archivo (${Number(ref).toFixed(2)}). Revisá los montos brutos en las filas indicadas o suspendé la importación.`,
+            message:
+              `La suma de montos brutos de los movimientos a importar (${sum.toFixed(2)}) no coincide con el Saldo disponible total del archivo (${Number(ref).toFixed(2)}).${messageZero} Revisá las filas indicadas o suspendé la importación.`,
             saldoDisponibleTotal: ref,
             sumGrossImportable: sum,
             delta: sum - ref,
-            rows: candidates.map((t) => ({
-              excelRow: t.excelRow ?? 0,
-              description: (t.description || "").slice(0, 200),
-              montoBrutoActual: t.grossAmount ?? 0,
-            })),
+            zeroGrossSkippedCount: zeroGrossWithDescription,
+            rows: candidates.map((t) => {
+              const excelRow = t.excelRow ?? 0;
+              const wasZeroGross = excelRow > 0 && zeroGrossExcelRows.has(excelRow);
+              return {
+                excelRow,
+                description: (t.description || "").slice(0, 200),
+                description2: (t.description2 || "").slice(0, 200),
+                date: t.date ?? null,
+                montoBrutoActual: t.grossAmount ?? 0,
+                wasZeroGross,
+              };
+            }),
             skipped: parseResult.skipped,
             total: parseResult.total,
             bankUsed: parser.bankName,

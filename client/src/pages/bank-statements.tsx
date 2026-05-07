@@ -114,12 +114,22 @@ type BankAccountWithLocal = BankAccount & {
   local?: { id: number; name: string } | null;
 };
 
+interface MpReconciliationRow {
+  excelRow: number;
+  description: string;
+  description2?: string;
+  date?: string | null;
+  montoBrutoActual: number;
+  wasZeroGross?: boolean;
+}
+
 interface MpReconciliationPayload {
   message: string;
   saldoDisponibleTotal: number;
   sumGrossImportable: number;
   delta: number;
-  rows: Array<{ excelRow: number; description: string; montoBrutoActual: number }>;
+  zeroGrossSkippedCount?: number;
+  rows: MpReconciliationRow[];
 }
 
 /** Parseo flexible de monto (coma/punto) para overrides brutos MP. */
@@ -512,6 +522,7 @@ export default function BankStatementsPage() {
       saldoDisponibleTotal?: number;
       sumGrossImportable?: number;
       delta?: number;
+      zeroGrossSkippedCount?: number;
       rows?: MpReconciliationPayload["rows"];
       unmappedBranches?: string[];
     }) => {
@@ -521,11 +532,14 @@ export default function BankStatementsPage() {
           saldoDisponibleTotal: Number(data.saldoDisponibleTotal ?? 0),
           sumGrossImportable: Number(data.sumGrossImportable ?? 0),
           delta: Number(data.delta ?? 0),
+          zeroGrossSkippedCount: Number(data.zeroGrossSkippedCount ?? 0),
           rows: data.rows,
         });
         const drafts: Record<number, string> = {};
         for (const r of data.rows) {
-          drafts[r.excelRow] = String(r.montoBrutoActual);
+          // Para filas omitidas con bruto 0 dejamos el input vacío para que el usuario
+          // tipee el monto real desde cero (en vez de "0").
+          drafts[r.excelRow] = r.wasZeroGross ? "" : String(r.montoBrutoActual);
         }
         setMpGrossDrafts(drafts);
         mpPanelWasOpenRef.current = true;
@@ -1980,40 +1994,84 @@ export default function BankStatementsPage() {
               </div>
               <p className="text-xs text-muted-foreground">
                 Hasta 10 filas candidatas. Los montos deben ser los del Excel en MONTO BRUTO (columna del extracto MP).
+                {mpReconciliation.zeroGrossSkippedCount && mpReconciliation.zeroGrossSkippedCount > 0 ? (
+                  <>
+                    {" "}
+                    Las filas marcadas{" "}
+                    <span className="inline-block rounded bg-amber-500/20 px-1.5 py-0.5 text-[10px] font-semibold text-amber-900 dark:text-amber-200 align-middle">
+                      Bruto en 0
+                    </span>{" "}
+                    venían vacías en el Excel y no se importan hasta que las completes acá.
+                  </>
+                ) : null}
               </p>
               <ScrollArea className="max-h-[min(50vh,420px)] border rounded-md">
                 <table className="w-full text-sm">
                   <thead>
                     <tr className="border-b bg-muted/50 text-left">
                       <th className="p-2 font-medium">Fila Excel</th>
+                      <th className="p-2 font-medium">Fecha</th>
                       <th className="p-2 font-medium">Descripción</th>
                       <th className="p-2 font-medium text-right">Bruto actual</th>
                       <th className="p-2 font-medium">Bruto corregido</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {mpReconciliation.rows.map((row) => (
-                      <tr key={row.excelRow} className="border-b border-border/60">
-                        <td className="p-2 font-mono">{row.excelRow}</td>
-                        <td className="p-2 max-w-[200px] truncate" title={row.description}>
-                          {row.description || "—"}
-                        </td>
-                        <td className="p-2 text-right font-mono">{formatCurrency(row.montoBrutoActual)}</td>
-                        <td className="p-2 w-[140px]">
-                          <Input
-                            className="font-mono h-9"
-                            inputMode="decimal"
-                            value={mpGrossDrafts[row.excelRow] ?? ""}
-                            onChange={(e) =>
-                              setMpGrossDrafts((prev) => ({
-                                ...prev,
-                                [row.excelRow]: e.target.value,
-                              }))
-                            }
-                          />
-                        </td>
-                      </tr>
-                    ))}
+                    {mpReconciliation.rows.map((row) => {
+                      const isZero = !!row.wasZeroGross;
+                      return (
+                        <tr
+                          key={row.excelRow}
+                          className={
+                            "border-b border-border/60 " +
+                            (isZero ? "bg-amber-500/10" : "")
+                          }
+                        >
+                          <td className="p-2 font-mono align-top">{row.excelRow}</td>
+                          <td className="p-2 font-mono whitespace-nowrap align-top">
+                            {row.date || "—"}
+                          </td>
+                          <td className="p-2 max-w-[220px] align-top">
+                            <div className="truncate" title={row.description}>
+                              {row.description || "—"}
+                            </div>
+                            {row.description2 ? (
+                              <div
+                                className="truncate text-xs text-muted-foreground"
+                                title={row.description2}
+                              >
+                                {row.description2}
+                              </div>
+                            ) : null}
+                            {isZero ? (
+                              <span className="mt-1 inline-block rounded bg-amber-500/25 px-1.5 py-0.5 text-[10px] font-semibold text-amber-900 dark:text-amber-200">
+                                Bruto en 0 — completar manualmente
+                              </span>
+                            ) : null}
+                          </td>
+                          <td className="p-2 text-right font-mono align-top">
+                            {formatCurrency(row.montoBrutoActual)}
+                          </td>
+                          <td className="p-2 w-[150px] align-top">
+                            <Input
+                              className={
+                                "font-mono h-9 " +
+                                (isZero ? "border-amber-500/60 focus-visible:ring-amber-500" : "")
+                              }
+                              inputMode="decimal"
+                              placeholder={isZero ? "Ingresá monto bruto" : ""}
+                              value={mpGrossDrafts[row.excelRow] ?? ""}
+                              onChange={(e) =>
+                                setMpGrossDrafts((prev) => ({
+                                  ...prev,
+                                  [row.excelRow]: e.target.value,
+                                }))
+                              }
+                            />
+                          </td>
+                        </tr>
+                      );
+                    })}
                   </tbody>
                 </table>
               </ScrollArea>

@@ -29,6 +29,12 @@ export interface ParseResult {
   saldoDisponibleTotal?: number | null;
   /** Mercado Pago: suma algebraica de MONTO BRUTO de cada movimiento importable */
   sumGrossImportable?: number;
+  /**
+   * Mercado Pago: filas con MONTO BRUTO = 0 que tienen descripción válida.
+   * No se importan en la pasada actual, pero son candidatas naturales a corrección manual:
+   * el usuario las completa con el bruto real y el override las habilita en la siguiente pasada.
+   */
+  mpZeroGrossSkippedRows?: ParsedTransaction[];
 }
 
 /** Resultado de `parseBbvaWorkbook` (incluye saldo inicial leído del encabezado del Excel). */
@@ -700,12 +706,15 @@ export function mpAmountsMatchCent(a: number, b: number): boolean {
 }
 
 /**
- * Hasta `max` filas candidatas a corrección manual: primero brutos ~0 con descripción,
- * luego las de mayor |bruto|.
+ * Hasta `max` filas candidatas a corrección manual.
+ * Prioridad: 1) filas omitidas con bruto = 0 y descripción válida (caso típico de movimiento
+ * con celda incompleta en el Excel de MP), 2) brutos ~0 dentro de transactions (defensivo),
+ * 3) las de mayor |bruto|.
  */
 export function pickMercadoPagoReconciliationCandidates(
   transactions: ParsedTransaction[],
   max = 10,
+  zeroGrossRows: ParsedTransaction[] = [],
 ): ParsedTransaction[] {
   const suspicious = transactions.filter(
     (t) =>
@@ -720,7 +729,7 @@ export function pickMercadoPagoReconciliationCandidates(
   );
   const seen = new Set<number>();
   const out: ParsedTransaction[] = [];
-  for (const t of [...suspicious, ...bySize]) {
+  for (const t of [...zeroGrossRows, ...suspicious, ...bySize]) {
     const er = t.excelRow ?? -1;
     if (er < 0 || seen.has(er)) continue;
     seen.add(er);
@@ -736,6 +745,7 @@ class MercadoPagoParser implements BankParser {
   
   parse(rawData: any[][], options?: ParserOptions): ParseResult {
     const transactions: ParsedTransaction[] = [];
+    const mpZeroGrossSkippedRows: ParsedTransaction[] = [];
     const skippedReasons: string[] = [];
     let skipped = 0;
     const grossOverrides = options?.grossOverridesByExcelRow ?? {};
@@ -837,15 +847,33 @@ class MercadoPagoParser implements BankParser {
       const ov = grossOverrides[String(excelRow)];
       let grossAmount =
         ov !== undefined && Number.isFinite(Number(ov)) ? Number(ov) : this.parseNumber(row[grossIdx]);
+
+      const commission = commissionIdx !== -1 ? Math.abs(this.parseNumber(row[commissionIdx])) : 0;
+      const taxWithholding = taxIdx !== -1 ? Math.abs(this.parseNumber(row[taxIdx])) : 0;
+      const branchName = branchIdx !== -1 ? String(row[branchIdx] || "").trim() : "";
+
       if (grossAmount === 0) {
+        // Fila con bruto vacío en el Excel: si tiene descripción real, la exponemos como
+        // candidata a conciliación manual (en lugar de borrarla en silencio).
+        if (description.trim().length > 1) {
+          mpZeroGrossSkippedRows.push({
+            date: dateValue,
+            description: description || "Movimiento Mercado Pago",
+            description2: description2 || undefined,
+            counterpartyRef: extractCounterpartyRef(description2) ?? undefined,
+            amount: 0,
+            type: "income",
+            grossAmount: 0,
+            commission,
+            taxWithholding,
+            branchName: branchName || undefined,
+            excelRow,
+          });
+        }
         skipped++;
         pushSkipReason(skippedReasons, `Fila ${i + 1}: Monto bruto cero o inválido`);
         continue;
       }
-      
-      const commission = commissionIdx !== -1 ? Math.abs(this.parseNumber(row[commissionIdx])) : 0;
-      const taxWithholding = taxIdx !== -1 ? Math.abs(this.parseNumber(row[taxIdx])) : 0;
-      const branchName = branchIdx !== -1 ? String(row[branchIdx] || "").trim() : "";
       
       const netAmount = grossAmount - commission - taxWithholding;
       const type: "income" | "expense" = netAmount >= 0 ? "income" : "expense";
@@ -881,6 +909,7 @@ class MercadoPagoParser implements BankParser {
       periodEnd,
       saldoDisponibleTotal,
       sumGrossImportable,
+      mpZeroGrossSkippedRows,
     };
   }
   
