@@ -120,17 +120,13 @@ interface MpReconciliationRow {
   description2?: string;
   date?: string | null;
   montoBrutoActual: number;
-  wasZeroGross?: boolean;
 }
 
 interface MpReconciliationPayload {
   message: string;
-  saldoDisponibleTotal: number | null;
+  saldoDisponibleTotal: number;
   sumGrossImportable: number;
-  delta: number | null;
-  zeroGrossSkippedCount?: number;
-  /** "sum_mismatch" | "zero_gross_suspects" — motivo por el que se abre el panel. */
-  reason?: "sum_mismatch" | "zero_gross_suspects";
+  delta: number;
   rows: MpReconciliationRow[];
 }
 
@@ -521,36 +517,27 @@ export default function BankStatementsPage() {
       batchOpeningBalance?: unknown;
       batchClosingBalance?: unknown;
       message?: string;
-      saldoDisponibleTotal?: number | null;
+      saldoDisponibleTotal?: number;
       sumGrossImportable?: number;
-      delta?: number | null;
-      zeroGrossSkippedCount?: number;
-      reason?: "sum_mismatch" | "zero_gross_suspects";
+      delta?: number;
       rows?: MpReconciliationPayload["rows"];
       unmappedBranches?: string[];
       mpDiagnostics?: {
         saldoDisponibleTotalArchivo?: number | null;
         sumGrossImportable?: number;
-        zeroGrossSkippedCount?: number;
-        zeroGrossExcelRows?: number[];
       };
     }) => {
       if (data.reconciliationRequired && data.rows && data.message != null) {
         setMpReconciliation({
           message: data.message,
-          saldoDisponibleTotal:
-            data.saldoDisponibleTotal == null ? null : Number(data.saldoDisponibleTotal),
+          saldoDisponibleTotal: Number(data.saldoDisponibleTotal ?? 0),
           sumGrossImportable: Number(data.sumGrossImportable ?? 0),
-          delta: data.delta == null ? null : Number(data.delta),
-          zeroGrossSkippedCount: Number(data.zeroGrossSkippedCount ?? 0),
-          reason: data.reason,
+          delta: Number(data.delta ?? 0),
           rows: data.rows,
         });
         const drafts: Record<number, string> = {};
         for (const r of data.rows) {
-          // Para filas omitidas con bruto 0 dejamos el input vacío para que el usuario
-          // tipee el monto real desde cero (en vez de "0").
-          drafts[r.excelRow] = r.wasZeroGross ? "" : String(r.montoBrutoActual);
+          drafts[r.excelRow] = String(r.montoBrutoActual);
         }
         setMpGrossDrafts(drafts);
         mpPanelWasOpenRef.current = true;
@@ -595,15 +582,6 @@ export default function BankStatementsPage() {
         const sumGross =
           d.sumGrossImportable != null ? formatCurrency(Number(d.sumGrossImportable)) : "—";
         description += `. MP — saldo del archivo: ${ref}; suma de brutos: ${sumGross}`;
-        if (d.zeroGrossSkippedCount && d.zeroGrossSkippedCount > 0) {
-          const rowsList =
-            d.zeroGrossExcelRows && d.zeroGrossExcelRows.length > 0
-              ? ` (filas Excel ${d.zeroGrossExcelRows.slice(0, 5).join(", ")}${
-                  d.zeroGrossExcelRows.length > 5 ? "…" : ""
-                })`
-              : "";
-          description += `; filas con bruto en 0 omitidas: ${d.zeroGrossSkippedCount}${rowsList}`;
-        }
         console.log("[IMPORT] MP diagnostics:", d);
       }
 
@@ -802,19 +780,6 @@ export default function BankStatementsPage() {
       if (newv !== null) s += newv - oldv;
     }
     return s;
-  }, [mpReconciliation, mpGrossDrafts]);
-
-  /** Para el caso "zero_gross_suspects" sin saldo en archivo: validamos que TODAS las
-   *  filas wasZeroGross tengan un override numérico (incluyendo 0 = ignorar). */
-  const mpZeroGrossPending = useMemo(() => {
-    if (!mpReconciliation) return 0;
-    let pending = 0;
-    for (const r of mpReconciliation.rows) {
-      if (!r.wasZeroGross) continue;
-      const v = parseMpMoneyInput(mpGrossDrafts[r.excelRow] ?? "");
-      if (v === null) pending++;
-    }
-    return pending;
   }, [mpReconciliation, mpGrossDrafts]);
 
   useEffect(() => {
@@ -2000,9 +1965,7 @@ export default function BankStatementsPage() {
           <DialogHeader>
             <DialogTitle>Conciliar extracto Mercado Pago</DialogTitle>
             <DialogDescription>
-              {mpReconciliation?.reason === "zero_gross_suspects"
-                ? "Hay movimientos en el Excel con MONTO BRUTO en 0. Completalos con el monto real para que se importen, o ingresá 0 para descartarlos. Suspendé si querés revisar más tarde."
-                : "La suma de los montos brutos no coincide con el «Saldo disponible total» del archivo. Corregí el MONTO BRUTO en las filas indicadas (según tu Excel) y finalizá la importación, o suspendé para volver más tarde."}
+              La suma de los montos brutos no coincide con el «Saldo disponible total» del archivo. Corregí el MONTO BRUTO en las filas indicadas (según tu Excel) y finalizá la importación, o suspendé para volver más tarde.
             </DialogDescription>
           </DialogHeader>
           {mpReconciliation && (
@@ -2012,11 +1975,7 @@ export default function BankStatementsPage() {
                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 font-mono text-xs sm:text-sm mt-2">
                   <div>
                     <span className="text-muted-foreground">Saldo disponible total (archivo)</span>
-                    <div className="font-semibold">
-                      {mpReconciliation.saldoDisponibleTotal != null
-                        ? formatCurrency(mpReconciliation.saldoDisponibleTotal)
-                        : "—"}
-                    </div>
+                    <div className="font-semibold">{formatCurrency(mpReconciliation.saldoDisponibleTotal)}</div>
                   </div>
                   <div>
                     <span className="text-muted-foreground">Suma brutos importables</span>
@@ -2025,7 +1984,7 @@ export default function BankStatementsPage() {
                   <div>
                     <span className="text-muted-foreground">Diferencia</span>
                     <div className="font-semibold text-amber-800 dark:text-amber-200">
-                      {mpReconciliation.delta != null ? formatCurrency(mpReconciliation.delta) : "—"}
+                      {formatCurrency(mpReconciliation.delta)}
                     </div>
                   </div>
                 </div>
@@ -2035,31 +1994,15 @@ export default function BankStatementsPage() {
                     <span className="font-mono font-medium text-foreground">
                       {formatCurrency(mpEstimatedSumGross)}
                     </span>
-                    {mpReconciliation.saldoDisponibleTotal != null &&
-                    Math.round(mpEstimatedSumGross * 100) ===
-                      Math.round(mpReconciliation.saldoDisponibleTotal * 100) ? (
+                    {Math.round(mpEstimatedSumGross * 100) ===
+                    Math.round(mpReconciliation.saldoDisponibleTotal * 100) ? (
                       <span className="text-green-600 ml-2">— coincide con el archivo</span>
                     ) : null}
-                  </p>
-                )}
-                {mpReconciliation.reason === "zero_gross_suspects" && mpZeroGrossPending > 0 && (
-                  <p className="text-xs text-amber-800 dark:text-amber-200 pt-1">
-                    Faltan {mpZeroGrossPending} fila(s) con bruto en 0 sin completar (ingresá 0 para descartarlas).
                   </p>
                 )}
               </div>
               <p className="text-xs text-muted-foreground">
                 Hasta 10 filas candidatas. Los montos deben ser los del Excel en MONTO BRUTO (columna del extracto MP).
-                {mpReconciliation.zeroGrossSkippedCount && mpReconciliation.zeroGrossSkippedCount > 0 ? (
-                  <>
-                    {" "}
-                    Las filas marcadas{" "}
-                    <span className="inline-block rounded bg-amber-500/20 px-1.5 py-0.5 text-[10px] font-semibold text-amber-900 dark:text-amber-200 align-middle">
-                      Bruto en 0
-                    </span>{" "}
-                    venían vacías en el Excel y no se importan hasta que las completes acá.
-                  </>
-                ) : null}
               </p>
               <ScrollArea className="max-h-[min(50vh,420px)] border rounded-md">
                 <table className="w-full text-sm">
@@ -2073,61 +2016,43 @@ export default function BankStatementsPage() {
                     </tr>
                   </thead>
                   <tbody>
-                    {mpReconciliation.rows.map((row) => {
-                      const isZero = !!row.wasZeroGross;
-                      return (
-                        <tr
-                          key={row.excelRow}
-                          className={
-                            "border-b border-border/60 " +
-                            (isZero ? "bg-amber-500/10" : "")
-                          }
-                        >
-                          <td className="p-2 font-mono align-top">{row.excelRow}</td>
-                          <td className="p-2 font-mono whitespace-nowrap align-top">
-                            {row.date || "—"}
-                          </td>
-                          <td className="p-2 max-w-[220px] align-top">
-                            <div className="truncate" title={row.description}>
-                              {row.description || "—"}
+                    {mpReconciliation.rows.map((row) => (
+                      <tr key={row.excelRow} className="border-b border-border/60">
+                        <td className="p-2 font-mono align-top">{row.excelRow}</td>
+                        <td className="p-2 font-mono whitespace-nowrap align-top">
+                          {row.date || "—"}
+                        </td>
+                        <td className="p-2 max-w-[220px] align-top">
+                          <div className="truncate" title={row.description}>
+                            {row.description || "—"}
+                          </div>
+                          {row.description2 ? (
+                            <div
+                              className="truncate text-xs text-muted-foreground"
+                              title={row.description2}
+                            >
+                              {row.description2}
                             </div>
-                            {row.description2 ? (
-                              <div
-                                className="truncate text-xs text-muted-foreground"
-                                title={row.description2}
-                              >
-                                {row.description2}
-                              </div>
-                            ) : null}
-                            {isZero ? (
-                              <span className="mt-1 inline-block rounded bg-amber-500/25 px-1.5 py-0.5 text-[10px] font-semibold text-amber-900 dark:text-amber-200">
-                                Bruto en 0 — completar manualmente
-                              </span>
-                            ) : null}
-                          </td>
-                          <td className="p-2 text-right font-mono align-top">
-                            {formatCurrency(row.montoBrutoActual)}
-                          </td>
-                          <td className="p-2 w-[150px] align-top">
-                            <Input
-                              className={
-                                "font-mono h-9 " +
-                                (isZero ? "border-amber-500/60 focus-visible:ring-amber-500" : "")
-                              }
-                              inputMode="decimal"
-                              placeholder={isZero ? "Ingresá monto bruto" : ""}
-                              value={mpGrossDrafts[row.excelRow] ?? ""}
-                              onChange={(e) =>
-                                setMpGrossDrafts((prev) => ({
-                                  ...prev,
-                                  [row.excelRow]: e.target.value,
-                                }))
-                              }
-                            />
-                          </td>
-                        </tr>
-                      );
-                    })}
+                          ) : null}
+                        </td>
+                        <td className="p-2 text-right font-mono align-top">
+                          {formatCurrency(row.montoBrutoActual)}
+                        </td>
+                        <td className="p-2 w-[150px] align-top">
+                          <Input
+                            className="font-mono h-9"
+                            inputMode="decimal"
+                            value={mpGrossDrafts[row.excelRow] ?? ""}
+                            onChange={(e) =>
+                              setMpGrossDrafts((prev) => ({
+                                ...prev,
+                                [row.excelRow]: e.target.value,
+                              }))
+                            }
+                          />
+                        </td>
+                      </tr>
+                    ))}
                   </tbody>
                 </table>
               </ScrollArea>

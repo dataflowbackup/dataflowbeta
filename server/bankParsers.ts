@@ -29,12 +29,6 @@ export interface ParseResult {
   saldoDisponibleTotal?: number | null;
   /** Mercado Pago: suma algebraica de MONTO BRUTO de cada movimiento importable */
   sumGrossImportable?: number;
-  /**
-   * Mercado Pago: filas con MONTO BRUTO = 0 que tienen descripción válida.
-   * No se importan en la pasada actual, pero son candidatas naturales a corrección manual:
-   * el usuario las completa con el bruto real y el override las habilita en la siguiente pasada.
-   */
-  mpZeroGrossSkippedRows?: ParsedTransaction[];
 }
 
 /** Resultado de `parseBbvaWorkbook` (incluye saldo inicial leído del encabezado del Excel). */
@@ -706,15 +700,13 @@ export function mpAmountsMatchCent(a: number, b: number): boolean {
 }
 
 /**
- * Hasta `max` filas candidatas a corrección manual.
- * Prioridad: 1) filas omitidas con bruto = 0 y descripción válida (caso típico de movimiento
- * con celda incompleta en el Excel de MP), 2) brutos ~0 dentro de transactions (defensivo),
- * 3) las de mayor |bruto|.
+ * Hasta `max` filas candidatas a corrección manual cuando la suma de brutos no
+ * coincide con el «Saldo disponible total» del archivo. Prioriza brutos sospechosos
+ * (≈ 0 con descripción real) y luego las de mayor |bruto|.
  */
 export function pickMercadoPagoReconciliationCandidates(
   transactions: ParsedTransaction[],
   max = 10,
-  zeroGrossRows: ParsedTransaction[] = [],
 ): ParsedTransaction[] {
   const suspicious = transactions.filter(
     (t) =>
@@ -729,7 +721,7 @@ export function pickMercadoPagoReconciliationCandidates(
   );
   const seen = new Set<number>();
   const out: ParsedTransaction[] = [];
-  for (const t of [...zeroGrossRows, ...suspicious, ...bySize]) {
+  for (const t of [...suspicious, ...bySize]) {
     const er = t.excelRow ?? -1;
     if (er < 0 || seen.has(er)) continue;
     seen.add(er);
@@ -745,7 +737,6 @@ class MercadoPagoParser implements BankParser {
   
   parse(rawData: any[][], options?: ParserOptions): ParseResult {
     const transactions: ParsedTransaction[] = [];
-    const mpZeroGrossSkippedRows: ParsedTransaction[] = [];
     const skippedReasons: string[] = [];
     let skipped = 0;
     const grossOverrides = options?.grossOverridesByExcelRow ?? {};
@@ -782,6 +773,14 @@ class MercadoPagoParser implements BankParser {
     const commissionIdx = headers.findIndex(h => h.includes("COMISIÓN DE MERCADO PAGO") || h.includes("COMISION DE MERCADO PAGO"));
     const taxIdx = headers.findIndex(h => h.includes("RETENCIONES IIBB"));
     const branchIdx = headers.findIndex(h => h.includes("NOMBRE DE LA SUCURSAL"));
+    // Columnas F/G (Mercado Pago): se usan SOLO como fallback cuando MONTO BRUTO=0
+    // pero la fila representa un movimiento real (p.ej. devoluciones de comisión).
+    const netCreditIdx = headers.findIndex(
+      (h) => h.includes("MONTO NETO ACREDITADO") || h === "MONTO NETO ACREDITADO",
+    );
+    const netDebitIdx = headers.findIndex(
+      (h) => h.includes("MONTO NETO DEBITADO") || h === "MONTO NETO DEBITADO",
+    );
     
     if (dateIdx === -1 || grossIdx === -1) {
       console.log("[MP Parser] Missing required columns! All headers:", headers);
@@ -851,34 +850,24 @@ class MercadoPagoParser implements BankParser {
       const commission = commissionIdx !== -1 ? Math.abs(this.parseNumber(row[commissionIdx])) : 0;
       const taxWithholding = taxIdx !== -1 ? Math.abs(this.parseNumber(row[taxIdx])) : 0;
       const branchName = branchIdx !== -1 ? String(row[branchIdx] || "").trim() : "";
+      const netCredit = netCreditIdx !== -1 ? this.parseNumber(row[netCreditIdx]) : 0;
+      const netDebit = netDebitIdx !== -1 ? this.parseNumber(row[netDebitIdx]) : 0;
 
-      if (grossAmount === 0) {
-        // Fila con bruto vacío en el Excel: si tiene descripción real, la exponemos como
-        // candidata a conciliación manual (en lugar de borrarla en silencio).
-        // Excepción: si el usuario ya envió un override explícito para esta fila
-        // (aunque sea 0 = "ignorar"), respetamos su decisión y no la re-listamos.
-        const userDecidedOverride = ov !== undefined && Number.isFinite(Number(ov));
-        if (!userDecidedOverride && description.trim().length > 1) {
-          mpZeroGrossSkippedRows.push({
-            date: dateValue,
-            description: description || "Movimiento Mercado Pago",
-            description2: description2 || undefined,
-            counterpartyRef: extractCounterpartyRef(description2) ?? undefined,
-            amount: 0,
-            type: "income",
-            grossAmount: 0,
-            commission,
-            taxWithholding,
-            branchName: branchName || undefined,
-            excelRow,
-          });
-        }
+      // Cálculo del impacto neto de la fila sobre el saldo:
+      //  - Caso normal: H ≠ 0  →  net = H − J − M (mantiene desglose Bruto/Comisión/Impuesto).
+      //  - Caso especial: H = 0 pero F o G ≠ 0  →  net = F − G (devoluciones de comisión,
+      //    reservas liberadas, débitos por mediación: MP no llena H pero la fila SÍ mueve saldo).
+      //  - Caso descarte: H = 0 y F = 0 y G = 0  →  no es un movimiento real.
+      let netAmount: number;
+      if (grossAmount !== 0) {
+        netAmount = grossAmount - commission - taxWithholding;
+      } else if (Math.abs(netCredit) > 1e-8 || Math.abs(netDebit) > 1e-8) {
+        netAmount = netCredit - netDebit;
+      } else {
         skipped++;
-        pushSkipReason(skippedReasons, `Fila ${i + 1}: Monto bruto cero o inválido`);
+        pushSkipReason(skippedReasons, `Fila ${i + 1}: Sin importes (bruto/neto en cero)`);
         continue;
       }
-      
-      const netAmount = grossAmount - commission - taxWithholding;
       const type: "income" | "expense" = netAmount >= 0 ? "income" : "expense";
 
       if (periodStart === null || dateValue < periodStart) periodStart = dateValue;
@@ -912,7 +901,6 @@ class MercadoPagoParser implements BankParser {
       periodEnd,
       saldoDisponibleTotal,
       sumGrossImportable,
-      mpZeroGrossSkippedRows,
     };
   }
   
