@@ -19,6 +19,8 @@ data/*.db
 # Copias de seguridad locales (no subir)
 backups/*.db
 backups/*.sqlite
+backups/*.sql
+backups/*.dump
 
 # Logs y IDE
 *.log
