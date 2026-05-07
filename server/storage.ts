@@ -1969,16 +1969,28 @@ export class DatabaseStorage implements IStorage {
       return 0;
     }
 
-    const BATCH_SIZE = 800;
+    // Lotes más grandes + sin una única transacción larga: en Netlify/Turso la transacción
+    // monolítica suele acercarse al timeout (~26s) con imports MP (miles de líneas × varias por fila).
+    // Límite ~32766 placeholders SQLite: ~22 columnas por fila → ~1400 filas teóricas; 1200 es seguro.
+    const BATCH_SIZE = 1200;
     let inserted = 0;
+    const clientId = transactionsList[0]!.clientId;
+    const importBatchId = transactionsList[0]!.importBatchId;
 
-    await db.transaction(async (tx) => {
+    try {
       for (let i = 0; i < transactionsList.length; i += BATCH_SIZE) {
         const batch = transactionsList.slice(i, i + BATCH_SIZE);
-        await tx.insert(transactions).values(batch);
+        await db.insert(transactions).values(batch);
         inserted += batch.length;
       }
-    });
+    } catch (e) {
+      if (importBatchId) {
+        await db
+          .delete(transactions)
+          .where(and(eq(transactions.clientId, clientId), eq(transactions.importBatchId, importBatchId)));
+      }
+      throw e;
+    }
 
     return inserted;
   }

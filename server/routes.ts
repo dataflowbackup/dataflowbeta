@@ -2525,11 +2525,11 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       }
       
       console.log(`[IMPORT] Inserting ${transactionsToInsert.length} transactions in batch...`);
-      
+      const insertStarted = Date.now();
       const imported = await storage.createTransactionsBatch(
         transactionsToInsert as unknown as InsertTransaction[],
       );
-      console.log(`[IMPORT] Complete: ${imported} imported`);
+      console.log(`[IMPORT] Complete: ${imported} imported in ${Date.now() - insertStarted}ms`);
 
       if (imported > 0) {
         await storage.createFinancialImportBatch({
