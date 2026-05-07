@@ -14,6 +14,8 @@ export interface ParsedTransaction {
   branchName?: string;
   /** Fila Excel (1-based) para conciliación / overrides Mercado Pago */
   excelRow?: number;
+  /** Mercado Pago (desglose ×3): componente de la línea emitida */
+  mpLineKind?: "gross" | "commission" | "tax" | "adjustment";
 }
 
 export interface ParseResult {
@@ -25,10 +27,12 @@ export interface ParseResult {
   closingBalance?: number | null;
   periodStart?: string | null;
   periodEnd?: string | null;
-  /** Mercado Pago: valor «Saldo disponible total» detectado en el archivo */
+  /** Mercado Pago: valor «Saldo disponible total» / dinero disponible detectado en el archivo */
   saldoDisponibleTotal?: number | null;
-  /** Mercado Pago: suma algebraica de MONTO BRUTO de cada movimiento importable */
+  /** Mercado Pago: suma de brutos (columna H) por fila importada — sólo informativo */
   sumGrossImportable?: number;
+  /** Mercado Pago: suma algebraica de todas las líneas emitidas (bruto+comisión+impuesto+ajuste); debe coincidir con saldoDisponibleTotal */
+  sumNetImportable?: number;
 }
 
 /** Resultado de `parseBbvaWorkbook` (incluye saldo inicial leído del encabezado del Excel). */
@@ -662,11 +666,21 @@ function rowMatchesMpSaldoDisponibleTotalLabel(joined: string): boolean {
 
 /**
  * Busca fila de totales «Saldo disponible total» en el extracto MP (incl. formato numérico AR en la celda).
+ * Si `netCreditIdx` >= 0, prioriza esa columna (p. ej. F «MONTO NETO ACREDITADO») porque la fila de totales
+ * también trae sumatoria de brutos en H y el primer número no nulo podría ser el bruto total, no el saldo.
  */
-export function extractMpSaldoDisponibleTotal(rawData: any[][], grossIdx: number): number | null {
+export function extractMpSaldoDisponibleTotal(
+  rawData: any[][],
+  grossIdx: number,
+  netCreditIdx: number = -1,
+): number | null {
   let lastMatch: number | null = null;
 
   const tryRowValue = (row: any[]): number => {
+    if (netCreditIdx >= 0 && netCreditIdx < row.length) {
+      const vNet = parseMercadoPagoExcelNumber(row[netCreditIdx]);
+      if (Math.abs(vNet) > 1e-9) return vNet;
+    }
     let val = parseMercadoPagoExcelNumber(row[grossIdx]);
     if (Math.abs(val) > 1e-9) return val;
     for (let c = 0; c < row.length; c++) {
@@ -708,7 +722,8 @@ export function pickMercadoPagoReconciliationCandidates(
   transactions: ParsedTransaction[],
   max = 10,
 ): ParsedTransaction[] {
-  const suspicious = transactions.filter(
+  const gross = transactions.filter((t) => t.mpLineKind === "gross" || t.mpLineKind === undefined);
+  const suspicious = gross.filter(
     (t) =>
       Math.abs(t.grossAmount ?? 0) < 1e-8 &&
       String(t.description || "").trim().length > 1 &&
@@ -716,7 +731,7 @@ export function pickMercadoPagoReconciliationCandidates(
         .toLowerCase()
         .includes("saldo inicial"),
   );
-  const bySize = [...transactions].sort(
+  const bySize = [...gross].sort(
     (a, b) => Math.abs(b.grossAmount ?? 0) - Math.abs(a.grossAmount ?? 0),
   );
   const seen = new Set<number>();
@@ -731,74 +746,60 @@ export function pickMercadoPagoReconciliationCandidates(
   return out;
 }
 
+const MP_FIXED_COMMISSION_DESC = "Comisión Mercado Pago";
+
 class MercadoPagoParser implements BankParser {
   bankId = "mercadopago";
   bankName = "Mercado Pago";
-  
+
   parse(rawData: any[][], options?: ParserOptions): ParseResult {
     const transactions: ParsedTransaction[] = [];
     const skippedReasons: string[] = [];
     let skipped = 0;
     const grossOverrides = options?.grossOverridesByExcelRow ?? {};
-    
+    const EPS = 1e-8;
+
     if (rawData.length < 2) {
       return { transactions, skipped: 0, skippedReasons: ["Archivo vacío"], total: 0 };
     }
-    
-    const headers = (rawData[0] as string[]).map(h => 
-      String(h || "").toUpperCase().trim()
+
+    const headers = (rawData[0] as string[]).map((h) => String(h || "").toUpperCase().trim());
+
+    const dateIdx = headers.findIndex((h) => h.includes("FECHA DE LIBERACIÓN") || h.includes("FECHA DE LIBERACION"));
+    const descIdx = headers.findIndex((h) => h === "DESCRIPCIÓN" || h === "DESCRIPCION");
+    const mediopagoIdx = headers.findIndex((h) => h.includes("MEDIO DE PAGO"));
+    const grossIdx = headers.findIndex((h) => h.includes("MONTO BRUTO"));
+    const commissionIdx = headers.findIndex(
+      (h) => h.includes("COMISIÓN DE MERCADO PAGO") || h.includes("COMISION DE MERCADO PAGO"),
     );
-    
-    const dateIdx = headers.findIndex(h => h.includes("FECHA DE LIBERACIÓN") || h.includes("FECHA DE LIBERACION"));
-    const descIdx = headers.findIndex(h => h === "DESCRIPCIÓN" || h === "DESCRIPCION");
-    const desc2Idx =
-      headers.findIndex((h) =>
-        h.includes("DESCRIPCION 2") ||
-        h.includes("DETALLE") ||
-        h.includes("REFERENCIA") ||
-        h.includes("DESTINAT") ||
-        h.includes("CBU") ||
-        h.includes("CVU"),
-      ) !== -1
-        ? headers.findIndex((h) =>
-            h.includes("DESCRIPCION 2") ||
-            h.includes("DETALLE") ||
-            h.includes("REFERENCIA") ||
-            h.includes("DESTINAT") ||
-            h.includes("CBU") ||
-            h.includes("CVU"),
-          )
-        : 45; // AT
-    const grossIdx = headers.findIndex(h => h.includes("MONTO BRUTO"));
-    const commissionIdx = headers.findIndex(h => h.includes("COMISIÓN DE MERCADO PAGO") || h.includes("COMISION DE MERCADO PAGO"));
-    const taxIdx = headers.findIndex(h => h.includes("RETENCIONES IIBB"));
-    const branchIdx = headers.findIndex(h => h.includes("NOMBRE DE LA SUCURSAL"));
-    // Columnas F/G (Mercado Pago): se usan SOLO como fallback cuando MONTO BRUTO=0
-    // pero la fila representa un movimiento real (p.ej. devoluciones de comisión).
+    const taxIdx = headers.findIndex((h) => h.includes("RETENCIONES IIBB"));
+    const taxDetailIdx = headers.findIndex((h) => h.includes("DETALLE DE IMPUESTOS"));
+    const branchIdx = headers.findIndex((h) => h.includes("NOMBRE DE LA SUCURSAL"));
     const netCreditIdx = headers.findIndex(
       (h) => h.includes("MONTO NETO ACREDITADO") || h === "MONTO NETO ACREDITADO",
     );
     const netDebitIdx = headers.findIndex(
       (h) => h.includes("MONTO NETO DEBITADO") || h === "MONTO NETO DEBITADO",
     );
-    
+
     if (dateIdx === -1 || grossIdx === -1) {
       console.log("[MP Parser] Missing required columns! All headers:", headers);
-      return { 
-        transactions, 
-        skipped: rawData.length - 1, 
-        skippedReasons: [`No se encontraron columnas requeridas. Headers: ${headers.slice(0, 5).join(", ")}...`], 
-        total: rawData.length - 1 
+      return {
+        transactions,
+        skipped: rawData.length - 1,
+        skippedReasons: [`No se encontraron columnas requeridas. Headers: ${headers.slice(0, 5).join(", ")}...`],
+        total: rawData.length - 1,
       };
     }
 
-    const saldoDisponibleTotal = extractMpSaldoDisponibleTotal(rawData, grossIdx);
-    
+    const saldoDisponibleTotal = extractMpSaldoDisponibleTotal(rawData, grossIdx, netCreditIdx);
+
     const total = rawData.length - 1;
     let openingBalance: number | null = null;
     let closingBalance: number | null = null;
     let periodStart: string | null = null;
     let periodEnd: string | null = null;
+    let sumGrossImportable = 0;
 
     const summaryDescriptions = [
       "dinero disponible del período anterior",
@@ -806,9 +807,9 @@ class MercadoPagoParser implements BankParser {
       "saldo inicial",
       "saldo final",
       "total del período",
-      "total del periodo"
+      "total del periodo",
     ];
-    
+
     for (let i = 1; i < rawData.length; i++) {
       const row = rawData[i];
       if (!row || row.length === 0) {
@@ -818,24 +819,25 @@ class MercadoPagoParser implements BankParser {
       }
 
       const excelRow = i + 1;
-      
-      const description = descIdx !== -1 ? String(row[descIdx] || "").trim() : "";
-      const description2 = String(row[desc2Idx] || "").trim();
-      
-      const descLower = description.toLowerCase();
-      if (summaryDescriptions.some(s => descLower.includes(s))) {
+      const descText = descIdx !== -1 ? String(row[descIdx] || "").trim() : "";
+      const descLower = descText.toLowerCase();
+      if (summaryDescriptions.some((s) => descLower.includes(s))) {
         const n = this.parseNumber(row[grossIdx]);
-        if (descLower.includes("saldo inicial") || descLower.includes("periodo anterior") || descLower.includes("período anterior")) {
+        if (
+          descLower.includes("saldo inicial") ||
+          descLower.includes("periodo anterior") ||
+          descLower.includes("período anterior")
+        ) {
           if (n !== 0) openingBalance = n;
         }
         if (descLower.includes("saldo final")) {
           if (n !== 0) closingBalance = n;
         }
         skipped++;
-        pushSkipReason(skippedReasons, `Fila ${i + 1}: Fila de resumen/saldo (${description})`);
+        pushSkipReason(skippedReasons, `Fila ${i + 1}: Fila de resumen/saldo (${descText})`);
         continue;
       }
-      
+
       const dateValue = this.parseISODate(row[dateIdx]);
       if (!dateValue) {
         skipped++;
@@ -844,51 +846,104 @@ class MercadoPagoParser implements BankParser {
       }
 
       const ov = grossOverrides[String(excelRow)];
-      let grossAmount =
+      let grossH =
         ov !== undefined && Number.isFinite(Number(ov)) ? Number(ov) : this.parseNumber(row[grossIdx]);
-
-      const commission = commissionIdx !== -1 ? Math.abs(this.parseNumber(row[commissionIdx])) : 0;
-      const taxWithholding = taxIdx !== -1 ? Math.abs(this.parseNumber(row[taxIdx])) : 0;
-      const branchName = branchIdx !== -1 ? String(row[branchIdx] || "").trim() : "";
+      const jRaw = commissionIdx !== -1 ? this.parseNumber(row[commissionIdx]) : 0;
+      const mRaw = taxIdx !== -1 ? this.parseNumber(row[taxIdx]) : 0;
+      const jAbs = Math.abs(jRaw);
+      const mAbs = Math.abs(mRaw);
       const netCredit = netCreditIdx !== -1 ? this.parseNumber(row[netCreditIdx]) : 0;
       const netDebit = netDebitIdx !== -1 ? this.parseNumber(row[netDebitIdx]) : 0;
+      const netTarget = netCredit - netDebit;
 
-      // Cálculo del impacto neto de la fila sobre el saldo:
-      //  - Caso normal: H ≠ 0  →  net = H − J − M (mantiene desglose Bruto/Comisión/Impuesto).
-      //  - Caso especial: H = 0 pero F o G ≠ 0  →  net = F − G (devoluciones de comisión,
-      //    reservas liberadas, débitos por mediación: MP no llena H pero la fila SÍ mueve saldo).
-      //  - Caso descarte: H = 0 y F = 0 y G = 0  →  no es un movimiento real.
-      let netAmount: number;
-      if (grossAmount !== 0) {
-        netAmount = grossAmount - commission - taxWithholding;
-      } else if (Math.abs(netCredit) > 1e-8 || Math.abs(netDebit) > 1e-8) {
-        netAmount = netCredit - netDebit;
-      } else {
+      if (Math.abs(netTarget) < EPS && Math.abs(grossH) < EPS && jAbs < EPS && mAbs < EPS) {
         skipped++;
-        pushSkipReason(skippedReasons, `Fila ${i + 1}: Sin importes (bruto/neto en cero)`);
+        pushSkipReason(skippedReasons, `Fila ${i + 1}: Sin importes (bruto/comisión/impuesto/neto en cero)`);
         continue;
       }
-      const type: "income" | "expense" = netAmount >= 0 ? "income" : "expense";
+
+      const mediodePago = mediopagoIdx !== -1 ? String(row[mediopagoIdx] || "").trim() : "";
+      const taxDetailRaw = taxDetailIdx !== -1 ? String(row[taxDetailIdx] || "").trim() : "";
+      const branchName = branchIdx !== -1 ? String(row[branchIdx] || "").trim() : "";
+
+      const rowLines: ParsedTransaction[] = [];
+
+      if (Math.abs(grossH) > EPS) {
+        sumGrossImportable += grossH;
+        rowLines.push({
+          date: dateValue,
+          description: descText || "Movimiento Mercado Pago",
+          description2: mediodePago || undefined,
+          counterpartyRef: extractCounterpartyRef(mediodePago) ?? undefined,
+          amount: Math.abs(grossH),
+          type: grossH >= 0 ? "income" : "expense",
+          grossAmount: grossH,
+          commission: 0,
+          taxWithholding: 0,
+          branchName: branchName || undefined,
+          excelRow,
+          mpLineKind: "gross",
+        });
+      }
+
+      if (jAbs > EPS) {
+        rowLines.push({
+          date: dateValue,
+          description: MP_FIXED_COMMISSION_DESC,
+          amount: jAbs,
+          type: "expense",
+          commission: jAbs,
+          branchName: branchName || undefined,
+          excelRow,
+          mpLineKind: "commission",
+        });
+      }
+
+      if (mAbs > EPS) {
+        rowLines.push({
+          date: dateValue,
+          description: taxDetailRaw || "Retención IIBB",
+          amount: mAbs,
+          type: "expense",
+          taxWithholding: mAbs,
+          branchName: branchName || undefined,
+          excelRow,
+          mpLineKind: "tax",
+        });
+      }
+
+      let lineSum = 0;
+      if (Math.abs(grossH) > EPS) lineSum += grossH;
+      if (jAbs > EPS) lineSum -= jAbs;
+      if (mAbs > EPS) lineSum -= mAbs;
+      const adjustment = netTarget - lineSum;
+
+      if (Math.abs(adjustment) > 0.005) {
+        rowLines.push({
+          date: dateValue,
+          description:
+            `Ajuste neto Mercado Pago` +
+            (descText ? ` (${descText.slice(0, 120)}${descText.length > 120 ? "…" : ""})` : ""),
+          amount: Math.abs(adjustment),
+          type: adjustment >= 0 ? "income" : "expense",
+          branchName: branchName || undefined,
+          excelRow,
+          mpLineKind: "adjustment",
+        });
+      }
+
+      for (const tl of rowLines) {
+        transactions.push(tl);
+      }
 
       if (periodStart === null || dateValue < periodStart) periodStart = dateValue;
       if (periodEnd === null || dateValue > periodEnd) periodEnd = dateValue;
-      
-      transactions.push({
-        date: dateValue,
-        description: description || "Movimiento Mercado Pago",
-        description2: description2 || undefined,
-        counterpartyRef: extractCounterpartyRef(description2) ?? undefined,
-        amount: Math.abs(netAmount),
-        type,
-        grossAmount,
-        commission,
-        taxWithholding,
-        branchName: branchName || undefined,
-        excelRow,
-      });
     }
 
-    const sumGrossImportable = transactions.reduce((sum, t) => sum + (t.grossAmount ?? 0), 0);
+    const sumNetImportable = transactions.reduce(
+      (s, t) => s + (t.type === "income" ? t.amount : -t.amount),
+      0,
+    );
 
     return {
       transactions,
@@ -901,9 +956,10 @@ class MercadoPagoParser implements BankParser {
       periodEnd,
       saldoDisponibleTotal,
       sumGrossImportable,
+      sumNetImportable,
     };
   }
-  
+
   private parseISODate(value: any): string | null {
     if (!value) return null;
     

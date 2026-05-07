@@ -135,11 +135,9 @@ Rutas definidas en `client/src/App.tsx`. Menú lateral en `client/src/components
 - Import **`POST /api/transactions/import`**: parsers Galicia, Mercado Pago, BBVA, Francés, genérico (`server/bankParsers.ts`).
 - Multipart + fallback query (`pickMultipartOrQueryString`).
 - Resolución **`bankId`**: override → cuenta → inferencia nombre cuenta → generic.
-- **Mercado Pago — fórmula del net por fila** (`MercadoPagoParser.parse`):
-  - Caso normal (H ≠ 0): `net = H − J − M` (**MONTO BRUTO − Comisión MP − Retenciones IIBB**), preservando el desglose contable que se guarda en `grossAmount`, `commission`, `taxWithholding`.
-  - Caso especial (H = 0 y F o G ≠ 0): **fallback `net = F − G`** (**MONTO NETO ACREDITADO − MONTO NETO DEBITADO**). Cubre filas tipo "Devolución de dinero" / "reserve_for_dispute" / débitos por mediación donde MP no llena el bruto pero la fila SÍ mueve saldo. H, J, M se siguen guardando tal cual el Excel.
-  - Caso descarte: H = F = G = 0 → fila omitida (no es un movimiento real).
-- **Mercado Pago — conciliación por suma:** "Saldo disponible total" del Excel vs suma de **MONTO BRUTO** de filas importables; si no cuadra → respuesta `reconciliationRequired` + hasta **10 filas** para corregir brutos (`mpGrossOverrides`) sin persistir hasta cuadrar. La respuesta exitosa MP incluye también `mpDiagnostics` (saldo del archivo + suma de brutos) que se imprime en el toast.
+- **Mercado Pago — líneas por fila Excel** (`MercadoPagoParser.parse`): hasta **tres** líneas contables por fila cuando los importes son distintos de cero: (1) **bruto** columna **H** (descripción **E**, segunda línea **P** medio de pago, fecha **A**, sucursal **X** si aplica); (2) **comisión** columna **J** como egreso con descripción fija **«Comisión Mercado Pago»**; (3) **retención IIBB** columna **M** con texto de **Q** (detalle impuestos). Si la suma algebraica de esas líneas no cierra al neto de la fila (**F − G**, acreditado menos debitado), se agrega una cuarta línea de **ajuste** para cuadrar al centavo. Los importes se omiten si el monto correspondiente es 0.
+- **Mercado Pago — conciliación antes de persistir:** se compara el **«Saldo disponible total»** leído del pie del Excel con **`sumNetImportable`** (suma algebraica de ingresos y egresos de todas las líneas generadas, incluidos ajustes). Si no cuadra → respuesta `reconciliationRequired` con `sumNetImportable`, `sumGrossImportable` (sólo suma de **H** en filas con línea bruta, informativo) y hasta **10 filas** candidatas para inspección. El diálogo en `bank-statements.tsx` es **referencial** (sin overrides que cambien la suma neta: corregir el archivo y reimportar). La respuesta exitosa incluye `mpDiagnostics` (saldo del archivo, suma neta y suma de brutos) en el toast.
+- **Mercado Pago — pie («Dinero disponible total»):** la lectura del total prioriza la celda de **neto acreditado (F)** cuando está disponible, para no confundir la fila de totales con el **bruto (H)**.
 - Detección de saldo en archivo: texto ES/EN, números formato AR, fila siguiente si la de etiqueta no trae monto.
 - Continuidad de saldos entre extractos misma cuenta (omitible con flag).
 - Listados paginados **`GET /api/transactions`** con orden estable **`fecha DESC, id DESC`** (fix movimientos "invisibles" con miles de fechas iguales).
@@ -216,10 +214,10 @@ Tablas representativas (no lista completa): `sessions`, `users`, `user_credentia
 
 | Periodo / tema | Qué se hizo |
 |----------------|-------------|
-| **2026-05-07 — Parser MP fallback F−G** | Fix definitivo del descuadre de extractos `reserve-release`: cuando H (MONTO BRUTO) = 0 y F/G aportan importes, se usa `net = F − G` para no perder filas tipo "Devolución de dinero". H, J, M se guardan tal cual. Eliminado el panel intermedio "Bruto en 0" (ya no necesario). Verificado al centavo contra Excel real (3.566 movimientos, saldo $4.365.492,34). Commit: `aa82ca3`. Tag de seguridad creado: `backup-pre-pruebas-drasticas-2026-05-07`. |
+| **2026-05-07 — MP desglose ×3 + comisión fija + conciliación neta** | Parser: hasta líneas bruto (**H**), comisión (**J**, descripción fija «Comisión Mercado Pago»), IIBB (**M**/**Q**), más **ajuste** si no cierra a **F−G**. Import: conciliación `sumNetImportable` vs «Saldo disponible total»; `mpDiagnostics` con neto y brutos; panel UI referencial (sin overrides que alteren la suma neta). |
 | 2026-05-07 — Iteraciones previas MP bruto en 0 | Commits `f6f833a` y `2288fe4`: primero se expusieron filas con bruto = 0 como candidatas en el panel de conciliación, luego se forzó el panel siempre que hubiera filas sospechosas y se agregó diagnóstico `mpDiagnostics` en respuesta exitosa. Reemplazados por el fallback F−G. |
 | Extractos MP/Galicia | Parsers, multipart, purge por lotes, paginación GET, orden estable `fecha+id`, dedupe cliente |
-| MP conciliación por suma | Saldo disponible total vs suma brutos; UI pausa; overrides por fila Excel; parse AR; etiquetas ES/EN |
+| MP conciliación por suma | «Saldo disponible total» vs **suma neta** de líneas importables (± ajustes); UI referencial; `mpDiagnostics` con neto y brutos |
 | Identidad movimientos | `bankId` cuenta + inferencia nombre + envío desde cliente |
 
 ### Backups y red de seguridad (2026-05-07)
@@ -250,7 +248,7 @@ El backup de Turso se generó con **`script/backup-turso.ts`** (ver §13). Requi
 | Área | Problema |
 |------|-----------|
 | Conciliación MP | Si el Excel no trae fila reconocible para "saldo disponible total", import 400 |
-| Conciliación MP | Descuadre por filas fuera de las 10 candidatas puede exigir segunda iteración manual |
+| Conciliación MP | Overrides de bruto vía multipart ya no resuelven descuadre neto (el ajuste por fila absorbe H); usar archivo corregido o investigar omisiones/duplicados |
 | Sidebar | Sección Operaciones oculta por flag hasta activar |
 | Tooling | Posibles errores TypeScript globales no resueltos |
 | Docs legacy | Otros `.md` pueden contradecir el código actual |

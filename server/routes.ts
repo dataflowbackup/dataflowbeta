@@ -2393,14 +2393,15 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         periodEndDetected = parseResult.periodEnd ?? null;
       }
 
-      // Diagnóstico MP (saldo del archivo + suma de brutos): se incluye también
+      // Diagnóstico MP (saldo del archivo + sumas): se incluye también
       // en respuestas exitosas para auditar lo que leyó el sistema.
-      const mpSumForReco = bankId === "mercadopago" ? (parseResult.sumGrossImportable ?? 0) : 0;
+      const mpSumNetForReco = bankId === "mercadopago" ? (parseResult.sumNetImportable ?? 0) : 0;
+      const mpSumGrossForReco = bankId === "mercadopago" ? (parseResult.sumGrossImportable ?? 0) : 0;
       const mpRefForReco = bankId === "mercadopago" ? parseResult.saldoDisponibleTotal ?? null : null;
 
       if (bankId === "mercadopago") {
         const ref = mpRefForReco;
-        const sum = mpSumForReco;
+        const sum = mpSumNetForReco;
         if (ref == null || Number.isNaN(Number(ref))) {
           return res.status(400).json({
             message:
@@ -2414,9 +2415,10 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
             reconciliationRequired: true,
             code: "MP_RECONCILIATION_REQUIRED",
             reason: "sum_mismatch",
-            message: `La suma de montos brutos de los movimientos a importar (${sum.toFixed(2)}) no coincide con el Saldo disponible total del archivo (${Number(ref).toFixed(2)}). Revisá los montos brutos en las filas indicadas o suspendé la importación.`,
+            message: `La suma algebraica de los movimientos a importar (${sum.toFixed(2)}, bruto + comisión + impuesto ± ajuste por fila) no coincide con el «Saldo disponible total» del archivo (${Number(ref).toFixed(2)}). Revisá filas omitidas, duplicados en sistema, o el pie del Excel; las filas mostradas son solo referencia.`,
             saldoDisponibleTotal: ref,
-            sumGrossImportable: sum,
+            sumGrossImportable: mpSumGrossForReco,
+            sumNetImportable: sum,
             delta: sum - Number(ref),
             rows: candidates.map((t) => ({
               excelRow: t.excelRow ?? 0,
@@ -2557,12 +2559,13 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         batchClosingBalance: closingBalanceToUse,
         batchPeriodStart: periodStartDetected,
         batchPeriodEnd: periodEndDetected,
-        // Diagnóstico MP visible en el toast (saldo del archivo + suma de brutos).
+        // Diagnóstico MP visible en el toast (saldo del archivo + suma neta + brutos informativos).
         ...(bankId === "mercadopago"
           ? {
               mpDiagnostics: {
                 saldoDisponibleTotalArchivo: mpRefForReco,
-                sumGrossImportable: mpSumForReco,
+                sumNetImportable: mpSumNetForReco,
+                sumGrossImportable: mpSumGrossForReco,
               },
             }
           : {}),
