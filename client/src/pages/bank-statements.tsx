@@ -221,7 +221,6 @@ export default function BankStatementsPage() {
       const MAX_PAGES = 250;
       const mergedById = new Map<number, TransactionWithRelations>();
       let page = 0;
-      let total = 0;
 
       while (page < MAX_PAGES) {
         const res = await fetch(`/api/transactions?page=${page}&pageSize=${PAGE_SIZE}`, {
@@ -243,18 +242,15 @@ export default function BankStatementsPage() {
           return body;
         }
 
-        if (page === 0) {
-          total = body.total;
-        }
+        const prevSize = mergedById.size;
         for (const item of body.items) {
           mergedById.set(item.id, item);
         }
 
-        if (
-          mergedById.size >= total ||
-          body.items.length === 0 ||
-          body.items.length < PAGE_SIZE
-        ) {
+        // No usar solo mergedById.size >= total: si total viene bajo (carrera tras import, réplicas, etc.)
+        // se dejan de pedir páginas y faltan movimientos → filtros por banco pueden quedar vacíos.
+        const noNewIds = body.items.length > 0 && mergedById.size === prevSize;
+        if (body.items.length === 0 || body.items.length < PAGE_SIZE || noNewIds) {
           break;
         }
         page += 1;
