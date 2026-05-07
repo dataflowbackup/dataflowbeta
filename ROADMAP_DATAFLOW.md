@@ -1,6 +1,6 @@
 # Roadmap y mapa del sistema Data Flow
 
-**Última actualización:** 2026-05-07  
+**Última actualización:** 2026-05-07 (sesión extractos MP: async import, paginación cliente, **502 en listado movimientos — abierto**)  
 **Alcance:** producto completo según código en repo (`client/`, `server/`, `shared/schema.ts`). Este archivo sustituye la versión que cubría solo extractos; conviene **mantenerlo al día** tras cambios de alcance.
 
 **Otros documentos del repo:** `ANALISIS_EXHAUSTIVO_DATA_FLOW.md`, `PLAN_DE_ACCION_DATA_FLOW.md`, `AVANCES_PARA_SOCIOS.md`, `docs/NETLIFY-TURSO.md`, `docs/WORKFLOW.md` (complementarios; pueden quedar desfasados respecto al código).
@@ -130,19 +130,58 @@ Rutas definidas en `client/src/App.tsx`. Menú lateral en `client/src/components
 
 ### 5.6 Extractos bancarios (detalle de evolución reciente)
 
-> Trabajo intensivo en sesiones recientes; funcionalidad crítica para conciliación.
+> Trabajo intensivo en sesiones recientes; funcionalidad crítica para conciliación. **Estado al 2026-05-07:** import MP grande operativo vía cola + background; **listado global de movimientos** puede fallar con **502** al avanzar páginas (§5.6.4 y §9).
 
-- Import **`POST /api/transactions/import`**: parsers Galicia, Mercado Pago, BBVA, Francés, genérico (`server/bankParsers.ts`).
-- Multipart + fallback query (`pickMultipartOrQueryString`).
-- Resolución **`bankId`**: override → cuenta → inferencia nombre cuenta → generic.
-- **Mercado Pago — líneas por fila Excel** (`MercadoPagoParser.parse`): hasta **tres** líneas contables por fila cuando los importes son distintos de cero: (1) **bruto** columna **H** (descripción **E**, segunda línea **P** medio de pago, fecha **A**, sucursal **X** si aplica); (2) **comisión** columna **J** como egreso con descripción fija **«Comisión Mercado Pago»**; (3) **retención IIBB** columna **M** con texto de **Q** (detalle impuestos). Si la suma algebraica de esas líneas no cierra al neto de la fila (**F − G**, acreditado menos debitado), se agrega una cuarta línea de **ajuste** para cuadrar al centavo. Los importes se omiten si el monto correspondiente es 0.
-- **Mercado Pago — conciliación antes de persistir:** se compara el **«Saldo disponible total»** leído del pie del Excel con **`sumNetImportable`** (suma algebraica de ingresos y egresos de todas las líneas generadas, incluidos ajustes). Si no cuadra → respuesta `reconciliationRequired` con `sumNetImportable`, `sumGrossImportable` (sólo suma de **H** en filas con línea bruta, informativo) y hasta **10 filas** candidatas para inspección. El diálogo en `bank-statements.tsx` es **referencial** (sin overrides que cambien la suma neta: corregir el archivo y reimportar). La respuesta exitosa incluye `mpDiagnostics` (saldo del archivo, suma neta y suma de brutos) en el toast.
-- **Mercado Pago — pie («Dinero disponible total»):** la lectura del total prioriza la celda de **neto acreditado (F)** cuando está disponible, para no confundir la fila de totales con el **bruto (H)**.
-- Detección de saldo en archivo: texto ES/EN, números formato AR, fila siguiente si la de etiqueta no trae monto.
-- Continuidad de saldos entre extractos misma cuenta (omitible con flag).
-- Listados paginados **`GET /api/transactions`** con orden estable **`fecha DESC, id DESC`** (fix movimientos "invisibles" con miles de fechas iguales).
-- Purge por cuenta en lotes anti-504.
-- UI: `bank-statements.tsx` — tabs banco, filtros, categorización masiva, diálogo conciliación MP.
+#### 5.6.0 Núcleo de import (todos los bancos; MP además puede encolar)
+
+- **`POST /api/transactions/import`** (`server/routes.ts`): multipart (`multer` memoria, tope 50 MB); parsers Galicia, Mercado Pago, BBVA, Francés, genérico (`server/bankParsers.ts`).
+- **`pickMultipartOrQueryString`**: lectura de campos tolerante a Netlify (body vs query).
+- Resolución **`bankId`**: override multipart `bankId` → `bank_accounts.bankId` → `inferBankIdFromAccountName` (nombre cuenta) → `generic`.
+- Overrides MP opcionales: `mpGrossOverrides` JSON en multipart (`parseMpGrossOverridesFromRequest`).
+- La lógica de parse + persistencia + conciliación vive en **`server/bankStatementImport.ts`** (`runBankStatementImport`), llamada desde la ruta síncrona y desde el **worker** de jobs.
+
+#### 5.6.1 Mercado Pago — líneas por fila Excel y conciliación
+
+- Hasta **tres** líneas cuando el monto ≠ 0: (1) **bruto** **H** (descripción **E**, `description2` **P**, fecha **A**, sucursal **X**); (2) **comisión** **J**, egreso, texto fijo **«Comisión Mercado Pago»**; (3) **IIBB** **M**, texto **Q**. Si no cierra a **F − G**, cuarta línea **ajuste** (`mpLineKind`).
+- Candidatos de conciliación solo sobre líneas **gross** (`pickMercadoPagoReconciliationCandidates`).
+- Pie del archivo: **`extractMpSaldoDisponibleTotal`** prioriza **F** (neto acreditado) cuando existe.
+- Pre-persistencia: **`sumNetImportable`** vs saldo archivo; si descuadre → `reconciliationRequired` + métricas + hasta 10 filas. Panel UI solo referencia. Toast OK: `mpDiagnostics`.
+
+#### 5.6.2 Import MP asíncrono — tabla `financial_import_jobs` + Background Function
+
+**Problema que resuelve:** timeout síncrono Netlify ~**26 s** (`netlify.toml` → `[functions.api] timeout = 26`). Parse + miles de inserts MP excedían → **504 / upstream timeout**.
+
+**Columnas principales** (`financial_import_jobs`): `job_token` (UUID), `trigger_key` (secreto de disparo), `client_id`, `created_by`, `status` (`pending` | `processing` | `done` | `failed`), `file_gzip_base64` (Excel gzip+base64), `params_json` (cuenta, `bankId`, local, apertura/cierre manual, `skipContinuityCheck`, `mpGrossOverridesJson`), `result_json`, `result_http_status`, `error_message`.
+
+**Secuencia resumida:**
+
+1. `POST /api/transactions/import` con MP: se guarda job y responde `{ async: true, jobToken, triggerKey }` sin parsear el Excel en ese request.
+2. Cliente: en prod `POST /.netlify/functions/process-financial-import-background` con `{ jobToken, triggerKey }`; en localhost `POST /api/transactions/import/execute-job` (mismo cuerpo).
+3. **`processFinancialImportJob.ts`**: `claimFinancialImportJobForProcessing` → `gunzip` → `runBankStatementImport` → actualiza job.
+4. Polling **`GET /api/transactions/import-jobs/:jobToken`** (~1,5 s, tope ~14 min); `payload` = cuerpo equivalente al import síncrono.
+
+**Archivos:** `server/routes.ts`, `server/bankStatementImport.ts`, `server/processFinancialImportJob.ts`, `server/storage.ts`, `shared/schema.ts`, `netlify/functions/process-financial-import-background.ts`, `client/src/pages/bank-statements.tsx`.
+
+**Deploy:** el build debe aplicar schema Turso (`db:push:turso`); sin tabla `financial_import_jobs`, el encolado falla.
+
+#### 5.6.3 `createTransactionsBatch` (storage)
+
+- Inserts en serie, **`BATCH_SIZE = 1200`**, sin una única transacción monolítica (menos presión sobre tiempo de lock / remoto).
+- Error a mitad: borrado de filas del mismo `import_batch_id` y relanzamiento.
+
+#### 5.6.4 Frontend — paginación de `GET /api/transactions` en `bank-statements.tsx`
+
+- `queryFn` pide páginas de **800** filas hasta **250** páginas máximo.
+- **Bug histórico (corregido `d0e74db`):** cortar cuando `mergedById.size >= total` si `total` venía bajo dejaba de paginar antes de tiempo → pestaña MP vacía con lote mostrando miles de movimientos.
+- **Lógica actual:** salir si la página viene vacía, si trae menos de 800 ítems, o si **no se agregó ningún id nuevo** (offset duplicado).
+- **Consecuencia:** con ~15k+ movimientos son **muchas** llamadas HTTP secuenciales. Un **502** en una (ej. consola: `api/transactions?page=9&pageSize=800`) **tira abajo toda la query** → la tabla queda sin datos y el resto de KPIs que dependen de `transactions` pueden verse en cero / error.
+
+#### 5.6.5 UI: pestaña “Extractos importados” vs tabla
+
+- `Tabs` usa un solo estado `bankFilter` también para **`extractos`** y **`breakdown`**.
+- La **DataTable** de movimientos solo se muestra si `bankFilter` es `all`, un banco de `banksForTabs`, o está en `PINNED_BANK_TAB_IDS` (`galicia`, `mercadopago`, `frances`, `bbva`). En **`extractos`** no se ve la grilla (solo lotes importados).
+
+**Referencia de commits en esta línea:** `e45feda` (MP parser + conciliación neta + UI), `7c8b12f` (batch insert), `85be022` (async jobs + background), `d0e74db` (paginación cliente).
 
 ### 5.7 Stock
 
@@ -187,7 +226,7 @@ Casi todo el contrato REST está en **`server/routes.ts`** (miles de líneas). L
 - Recetas (export, stats, foto, parent-usages), cost-history, category-groups
 - Financial groups (seed), client-banks, transaction-categories, bank-accounts (purge-imports)
 - Financial saved views
-- Transactions (paginado), import, batch delete, batch-categorize, split…
+- Transactions (paginado **`GET /api/transactions?page=&pageSize=`** — ver §5.6.4), import síncrono y **async MP** (**`POST /api/transactions/import`**, **`GET /api/transactions/import-jobs/:jobToken`**, **`POST /api/transactions/import/execute-job`**), batch delete, batch-categorize, split…
 - Business names, counterparties + identifiers
 - Monthly balances
 - Dashboard stats
@@ -204,7 +243,7 @@ Casi todo el contrato REST está en **`server/routes.ts`** (miles de líneas). L
 
 ## 7. Entidades principales (`shared/schema.ts`)
 
-Tablas representativas (no lista completa): `sessions`, `users`, `user_credentials`, `roles`, `clients`, `user_clients`, `client_invitations`, `business_names`, `locals`, `rubros`, `sub_rubros`, `units_of_measure`, `suppliers`, `taxes`, `supply_suppliers`, `supplier_rubros`, `supplies`, `invoices`, `invoice_items`, `invoice_taxes`, `payments`, `payment_allocations`, `recipe_categories`, `recipe_subcategories`, `recipes`, `recipe_ingredients`, `cost_history`, `category_groups`, `financial_groups`, `transaction_categories`, `client_banks`, `bank_accounts`, `counterparties`, `counterparty_identifiers`, `financial_import_batches`, `financial_saved_views`, `transactions`, `monthly_balances`, `sales`, `permissions`, `role_permissions`, `user_local_assignments`, `notifications`, `stock_movements`, `stock_levels`, `stock_adjustments`, `operational_audits`, `audit_templates`, `audit_template_items`, `audit_results`, `employees`, …
+Tablas representativas (no lista completa): `sessions`, `users`, `user_credentials`, `roles`, `clients`, `user_clients`, `client_invitations`, `business_names`, `locals`, `rubros`, `sub_rubros`, `units_of_measure`, `suppliers`, `taxes`, `supply_suppliers`, `supplier_rubros`, `supplies`, `invoices`, `invoice_items`, `invoice_taxes`, `payments`, `payment_allocations`, `recipe_categories`, `recipe_subcategories`, `recipes`, `recipe_ingredients`, `cost_history`, `category_groups`, `financial_groups`, `transaction_categories`, `client_banks`, `bank_accounts`, `counterparties`, `counterparty_identifiers`, **`financial_import_jobs`** (cola de import MP async), `financial_import_batches`, `financial_saved_views`, `transactions`, `monthly_balances`, `sales`, `permissions`, `role_permissions`, `user_local_assignments`, `notifications`, `stock_movements`, `stock_levels`, `stock_adjustments`, `operational_audits`, `audit_templates`, `audit_template_items`, `audit_results`, `employees`, …
 
 ---
 
@@ -214,10 +253,14 @@ Tablas representativas (no lista completa): `sessions`, `users`, `user_credentia
 
 | Periodo / tema | Qué se hizo |
 |----------------|-------------|
-| **2026-05-07 — MP desglose ×3 + comisión fija + conciliación neta** | Parser: hasta líneas bruto (**H**), comisión (**J**, descripción fija «Comisión Mercado Pago»), IIBB (**M**/**Q**), más **ajuste** si no cierra a **F−G**. Import: conciliación `sumNetImportable` vs «Saldo disponible total»; `mpDiagnostics` con neto y brutos; panel UI referencial (sin overrides que alteren la suma neta). |
-| 2026-05-07 — Iteraciones previas MP bruto en 0 | Commits `f6f833a` y `2288fe4`: primero se expusieron filas con bruto = 0 como candidatas en el panel de conciliación, luego se forzó el panel siempre que hubiera filas sospechosas y se agregó diagnóstico `mpDiagnostics` en respuesta exitosa. Reemplazados por el fallback F−G. |
-| Extractos MP/Galicia | Parsers, multipart, purge por lotes, paginación GET, orden estable `fecha+id`, dedupe cliente |
-| MP conciliación por suma | «Saldo disponible total» vs **suma neta** de líneas importables (± ajustes); UI referencial; `mpDiagnostics` con neto y brutos |
+| **2026-05-07 — Bloqueador abierto: `GET /api/transactions` → 502 al paginar** | Tras import masivo (~10k+ filas), el front hace muchas páginas (`pageSize=800`). El navegador reporta fallo tipo **`/api/transactions?page=9&pageSize=800` → 502** antes de completar la hidratación de `transactions` → **pantalla Extractos sin filas en ningún banco**. Causa raíz por confirmar (§9). |
+| **2026-05-07 — Paginación cliente extractos (`d0e74db`)** | Se dejó de usar `mergedById.size >= total` como condición de parada (total del servidor podía subestimar filas reales → pestaña MP “vacía” con lote OK). Parada por página corta o sin ids nuevos. Efecto: más requests en series. |
+| **2026-05-07 — Import MP async + `financial_import_jobs` (`85be022`)** | Encolado en primer request; worker **`process-financial-import-background`** (Netlify Background) o **`/api/transactions/import/execute-job`** en local; polling **`/api/transactions/import-jobs/:jobToken`**. Evita 504 en import. |
+| **2026-05-07 — Batch insert sin transacción única (`7c8b12f`)** | `createTransactionsBatch`: lotes 1200, inserts en serie, rollback parcial por `import_batch_id`. |
+| **2026-05-07 — MP desglose ×3 + comisión fija + conciliación neta (`e45feda`)** | Parser: bruto/comisión/IIBB/ajuste; conciliación `sumNetImportable`; UI diagnóstico; descripción fija «Comisión Mercado Pago». |
+| 2026-05-07 — Parser MP fallback F−G | Commit `aa82ca3` + tag `backup-pre-pruebas-drasticas-2026-05-07`; filas H=0 con movimiento vía F−G. |
+| 2026-05-07 — Iteraciones previas MP bruto en 0 | Commits `f6f833a` y `2288fe4`: panel candidatos / forzar panel — reemplazados por fallback F−G. |
+| Extractos MP/Galicia | Parsers, multipart, purge por lotes, paginación GET, orden estable `fecha+id` |
 | Identidad movimientos | `bankId` cuenta + inferencia nombre + envío desde cliente |
 
 ### Backups y red de seguridad (2026-05-07)
@@ -247,16 +290,27 @@ El backup de Turso se generó con **`script/backup-turso.ts`** (ver §13). Requi
 
 | Área | Problema |
 |------|-----------|
-| Conciliación MP | Si el Excel no trae fila reconocible para "saldo disponible total", import 400 |
-| Conciliación MP | Overrides de bruto vía multipart ya no resuelven descuadre neto (el ajuste por fila absorbe H); usar archivo corregido o investigar omisiones/duplicados |
+| **`GET /api/transactions` (502 en paginación)** | **Síntoma:** en prod (Netlify), consola del navegador: `Failed to load resource: … /api/transactions?page=9&pageSize=800 … 502`. Ocurre **durante** el bucle de páginas del `useQuery` en `bank-statements.tsx` (carga **todos** los movimientos del cliente, 800 por página, hasta ~200k filas teóricas). Un solo 502 hace fallar **toda** la query → **ningún banco muestra filas** en la tabla (aunque import y lotes en “Extractos importados” muestren miles). **Hipótesis a verificar próxima sesión:** (1) timeout interno del **origin** (Netlify function `api` 26 s) si una sola página tarda demasiado en Turso con offset alto + `ORDER BY transaction_date DESC, id DESC`; (2) **límite de tiempo o tamaño** en **Turso / HTTP** o proxy entre Lambda y LibSQL; (3) **cold start + query pesada** acumulada; (4) error no logueado en cliente (solo 502 genérico). **Pasos sugeridos:** reproducir con `curl` / DevTools repitiendo `page=8,9,10` con sesión; revisar **Netlify Functions log** para la invocación que coincide en tiempo; en Turso dashboard ver latencias; valorar **índice compuesto** `(client_id, transaction_date DESC, id DESC)` si no existe; valorar **API server-side** que devuelva “página siguiente” con **cursor** (`id` / fecha) en lugar de `OFFSET` para estabilidad y coste; o **reducir** datos cargados al front (filtro por cuenta/fecha obligatorio, o virtualización con server sorting). |
+| Conciliación MP | Si el Excel no trae fila reconocible para «saldo disponible total», import 400 |
+| Conciliación MP | Overrides de bruto vía multipart ya no resuelven descuadre neto; usar archivo corregido o investigar omisiones/duplicados |
+| Jobs import MP | Limpiar `financial_import_jobs` antiguos (`pending` colgados, filas grandes en texto) si crece la tabla; considerar TTL o cron |
 | Sidebar | Sección Operaciones oculta por flag hasta activar |
 | Tooling | Posibles errores TypeScript globales no resueltos |
 | Docs legacy | Otros `.md` pueden contradecir el código actual |
+
+### Retomar próxima sesión (checklist express — extractos / 502)
+
+1. Confirmar en **Network** si 502 afecta siempre el mismo `page` u offset creciente.
+2. **Logs Netlify** de función `api` en la ventana del fallo; buscar `GET /api/transactions` y stack.
+3. Probar **`storage.getTransactions`** equivalente en script local contra Turso con `limit 800 offset 6400` (page 8) y medir ms.
+4. Revisar en schema/drizzle si hace falta **índice** alineado al `orderBy` usado en listado.
+5. Decidir si el fix es **infra** (subir tope / caché) o **producto** (paginación con cursor, menos filas en cliente, filtros obligatorios).
 
 ---
 
 ## 10. Pendientes sugeridos (backlog)
 
+- **Crítico — Extractos:** resolver **502 en `GET /api/transactions`** con volumen alto (ver §9 y §5.6.4); sin esto la pantalla de movimientos puede quedar inutilizable tras imports masivos.
 - Documentar **fórmulas de dashboard** y origen de cada KPI en `dashboard/stats`.
 - Inventario de **permisos** vs pantallas (matriz rol ↔ ruta).
 - **Ventas** (`sales`): tabla existe; revisar flujo UI si aún no hay página dedicada.
