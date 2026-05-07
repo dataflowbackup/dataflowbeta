@@ -133,6 +133,12 @@ interface MpReconciliationPayload {
   rows: MpReconciliationRow[];
 }
 
+function isLocalDevHost(): boolean {
+  if (typeof window === "undefined") return false;
+  const h = window.location.hostname;
+  return h === "localhost" || h === "127.0.0.1";
+}
+
 function parseSavedViewFilters(raw: unknown): {
   bankFilter: string;
   accountContextFilter: string;
@@ -494,7 +500,78 @@ export default function BankStatementsPage() {
         }
         throw new Error(errorMessage);
       }
-      return res.json();
+      const data = await res.json();
+
+      /** Mercado Pago en producción: cola + Netlify Background Function (evita 504). */
+      if (data?.async === true && data.jobToken && data.triggerKey) {
+        toast({
+          title: "Import en segundo plano",
+          description:
+            "Mercado Pago: procesando archivo (puede tardar 1–3 min). Esperá sin cerrar la pestaña.",
+          duration: 8000,
+        });
+        if (isLocalDevHost()) {
+          await apiRequest("POST", "/api/transactions/import/execute-job", {
+            jobToken: data.jobToken,
+            triggerKey: data.triggerKey,
+          });
+        } else {
+          const bgRes = await fetch("/.netlify/functions/process-financial-import-background", {
+            method: "POST",
+            credentials: "include",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ jobToken: data.jobToken, triggerKey: data.triggerKey }),
+          });
+          if (!bgRes.ok) {
+            const t = await bgRes.text();
+            throw new Error(
+              t ||
+                `No se pudo iniciar el procesamiento en segundo plano (${bgRes.status}). Probá de nuevo.`,
+            );
+          }
+        }
+
+        const deadline = Date.now() + 14 * 60 * 1000;
+        let last: {
+          status?: string;
+          httpStatus?: number;
+          payload?: unknown;
+          errorMessage?: string;
+        } | null = null;
+        while (Date.now() < deadline) {
+          await new Promise((r) => setTimeout(r, 1500));
+          const pr = await fetch(
+            `/api/transactions/import-jobs/${encodeURIComponent(data.jobToken)}`,
+            { credentials: "include" },
+          );
+          if (!pr.ok) {
+            const tx = await pr.text();
+            throw new Error(tx || "Error al consultar el estado del import");
+          }
+          last = await pr.json();
+          if (last.status === "done" || last.status === "failed") break;
+        }
+        if (!last || (last.status !== "done" && last.status !== "failed")) {
+          throw new Error(
+            "El import está tardando demasiado. Revisá si los movimientos se cargaron o intentá de nuevo.",
+          );
+        }
+        if (last.status === "failed") {
+          const p = last.payload as { message?: string } | undefined;
+          throw new Error(
+            last.errorMessage ||
+              (p && typeof p.message === "string" ? p.message : null) ||
+              "Error al importar el extracto",
+          );
+        }
+        const pl = last.payload;
+        if (!pl || typeof pl !== "object") {
+          throw new Error("Respuesta de import inválida");
+        }
+        return pl as any;
+      }
+
+      return data;
     },
     onSuccess: (data: {
       reconciliationRequired?: boolean;

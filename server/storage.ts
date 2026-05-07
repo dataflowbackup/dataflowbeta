@@ -26,6 +26,7 @@ import {
   transactionCategories,
   bankAccounts,
   financialImportBatches,
+  financialImportJobs,
   financialSavedViews,
   clientBanks,
   businessNames,
@@ -101,6 +102,8 @@ import {
   type BankAccount,
   type InsertFinancialImportBatch,
   type FinancialImportBatch,
+  type InsertFinancialImportJob,
+  type FinancialImportJob,
   type InsertFinancialSavedView,
   type FinancialSavedView,
   type InsertClientBank,
@@ -280,6 +283,16 @@ export interface IStorage {
     bankAccountId: number,
   ): Promise<{ deletedTransactions: number; deletedBatches: number }>;
   createFinancialImportBatch(row: InsertFinancialImportBatch): Promise<FinancialImportBatch>;
+  createFinancialImportJob(row: InsertFinancialImportJob): Promise<FinancialImportJob>;
+  claimFinancialImportJobForProcessing(
+    jobToken: string,
+    triggerKey: string,
+  ): Promise<FinancialImportJob | undefined>;
+  getFinancialImportJobForClient(clientId: number, jobToken: string): Promise<FinancialImportJob | undefined>;
+  updateFinancialImportJob(
+    id: number,
+    patch: Partial<Pick<FinancialImportJob, "status" | "resultJson" | "resultHttpStatus" | "errorMessage" | "updatedAt">>,
+  ): Promise<void>;
   getLastFinancialImportBatchForAccount(clientId: number, bankAccountId: number): Promise<FinancialImportBatch | undefined>;
   getTransactionCountForBankAccount(clientId: number, bankAccountId: number): Promise<number>;
   getFinancialSavedViews(clientId: number, userId: string): Promise<FinancialSavedView[]>;
@@ -1875,6 +1888,51 @@ export class DatabaseStorage implements IStorage {
   async createFinancialImportBatch(row: InsertFinancialImportBatch): Promise<FinancialImportBatch> {
     const [created] = await db.insert(financialImportBatches).values(row).returning();
     return created;
+  }
+
+  async createFinancialImportJob(row: InsertFinancialImportJob): Promise<FinancialImportJob> {
+    const [created] = await db.insert(financialImportJobs).values(row).returning();
+    return created;
+  }
+
+  async claimFinancialImportJobForProcessing(
+    jobToken: string,
+    triggerKey: string,
+  ): Promise<FinancialImportJob | undefined> {
+    const rows = await db
+      .update(financialImportJobs)
+      .set({ status: "processing", updatedAt: new Date() })
+      .where(
+        and(
+          eq(financialImportJobs.jobToken, jobToken),
+          eq(financialImportJobs.triggerKey, triggerKey),
+          eq(financialImportJobs.status, "pending"),
+        ),
+      )
+      .returning();
+    return rows[0];
+  }
+
+  async getFinancialImportJobForClient(
+    clientId: number,
+    jobToken: string,
+  ): Promise<FinancialImportJob | undefined> {
+    const [row] = await db
+      .select()
+      .from(financialImportJobs)
+      .where(and(eq(financialImportJobs.clientId, clientId), eq(financialImportJobs.jobToken, jobToken)))
+      .limit(1);
+    return row;
+  }
+
+  async updateFinancialImportJob(
+    id: number,
+    patch: Partial<Pick<FinancialImportJob, "status" | "resultJson" | "resultHttpStatus" | "errorMessage" | "updatedAt">>,
+  ): Promise<void> {
+    await db
+      .update(financialImportJobs)
+      .set({ ...patch, updatedAt: new Date() })
+      .where(eq(financialImportJobs.id, id));
   }
 
   async getLastFinancialImportBatchForAccount(

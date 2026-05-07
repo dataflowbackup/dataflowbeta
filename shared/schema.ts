@@ -736,6 +736,40 @@ export const insertFinancialImportBatchSchema = createInsertSchema(financialImpo
 export type InsertFinancialImportBatch = z.infer<typeof insertFinancialImportBatchSchema>;
 export type FinancialImportBatch = typeof financialImportBatches.$inferSelect;
 
+// ==================================
+// FINANCIAL IMPORT JOBS (cola async p. ej. MP grande en Netlify)
+// ==================================
+export const financialImportJobs = pgTable(
+  "financial_import_jobs",
+  {
+    id: serial("id").primaryKey(),
+    jobToken: varchar("job_token", { length: 36 }).notNull().unique(),
+    triggerKey: varchar("trigger_key", { length: 64 }).notNull(),
+    clientId: integer("client_id").notNull().references(() => clients.id, { onDelete: "cascade" }),
+    createdBy: varchar("created_by", { length: 255 }),
+    status: varchar("status", { length: 20 }).notNull().default("pending"),
+    /** Excel original comprimido (gzip) en base64 — evita filas enormes sin compresión. */
+    fileGzipBase64: text("file_gzip_base64").notNull(),
+    originalFileName: varchar("original_file_name", { length: 255 }),
+    paramsJson: text("params_json").notNull(),
+    /** Respuesta lista para el cliente (import OK o conciliación MP). Errores 4xx/5xx en errorMessage + resultJson opcional. */
+    resultJson: text("result_json"),
+    resultHttpStatus: integer("result_http_status"),
+    errorMessage: text("error_message"),
+    createdAt: timestamp("created_at").defaultNow(),
+    updatedAt: timestamp("updated_at").defaultNow(),
+  },
+  (table) => [index("financial_import_jobs_client_id_status_idx").on(table.clientId, table.status)],
+);
+
+export const insertFinancialImportJobSchema = createInsertSchema(financialImportJobs).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+export type InsertFinancialImportJob = z.infer<typeof insertFinancialImportJobSchema>;
+export type FinancialImportJob = typeof financialImportJobs.$inferSelect;
+
 // ==========================================
 // FINANCIAL SAVED VIEWS (Atajos de filtros por usuario)
 // ==========================================

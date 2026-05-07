@@ -9,19 +9,16 @@ import * as XLSX from "xlsx";
 import { z } from "zod";
 import {
   getAvailableBanks,
-  getBankParser,
-  parseBbvaWorkbook,
-  pickMercadoPagoReconciliationCandidates,
-  mpAmountsMatchCent,
-  type ParseResult,
 } from "./bankParsers";
 import { seedFinancialDataForClient } from "./seedFinancialData";
 import path from "path";
+import { randomUUID, randomBytes } from "crypto";
+import { gzipSync } from "zlib";
+import { runBankStatementImport } from "./bankStatementImport";
+import { processFinancialImportJobBody } from "./processFinancialImportJob";
 import type {
   InsertBankAccount,
-  InsertFinancialImportBatch,
   InsertFinancialSavedView,
-  InsertTransaction,
   InsertBusinessName,
   InsertCounterparty,
   InsertCounterpartyIdentifier,
@@ -2336,240 +2333,110 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         inferBankIdFromAccountName((bankAccountRow as any).name) ||
         "generic";
 
-      console.log(`[IMPORT] Client: ${clientId}, Bank: ${bankId}, File size: ${req.file?.size || 0} bytes`);
-      
       if (!req.file) {
         return res.status(400).json({ message: "No se proporciono archivo" });
       }
 
-      console.log("[IMPORT] Parsing Excel file...");
-      const workbook = XLSX.read(req.file.buffer, { type: "buffer" });
-
-      const parser = getBankParser(bankId);
-      console.log(`[IMPORT] Using parser: ${parser.bankName}`);
-
-      let parseResult: ParseResult;
-      let openingBalanceDetected: number | null = null;
-      let closingBalanceDetected: number | null = null;
-      let periodStartDetected: string | null = null;
-      let periodEndDetected: string | null = null;
-
-      if (bankId === "bbva") {
-        const bbva = parseBbvaWorkbook(workbook);
-        parseResult = {
-          transactions: bbva.transactions,
-          skipped: bbva.skipped,
-          skippedReasons: bbva.skippedReasons,
-          total: bbva.total,
-          openingBalance: bbva.openingBalance,
-          periodStart: bbva.periodStart ?? null,
-          periodEnd: bbva.periodEnd ?? null,
-        };
-        openingBalanceDetected = bbva.openingBalance;
-        periodStartDetected = bbva.periodStart ?? null;
-        periodEndDetected = bbva.periodEnd ?? null;
-        console.log(`[IMPORT] BBVA sheets merged: ${parseResult.transactions.length} txs, sheets=${workbook.SheetNames.join(",")}`);
-      } else {
-        const sheetName = workbook.SheetNames[0];
-        const sheet = workbook.Sheets[sheetName];
-        const rawData = XLSX.utils.sheet_to_json(sheet, { header: 1 }) as any[][];
-        console.log(`[IMPORT] Excel parsed: ${rawData.length} rows`);
-
-        if (rawData.length < 2) {
-          return res.status(400).json({ message: "El archivo esta vacio o no tiene datos" });
-        }
-
-        const mpOverrides = parseMpGrossOverridesFromRequest(req);
-        if (bankId === "mercadopago") {
-          parseResult = getBankParser("mercadopago").parse(rawData, {
-            grossOverridesByExcelRow: mpOverrides,
-          });
-        } else {
-          parseResult = parser.parse(rawData);
-        }
-        openingBalanceDetected = parseResult.openingBalance ?? null;
-        closingBalanceDetected = parseResult.closingBalance ?? null;
-        periodStartDetected = parseResult.periodStart ?? null;
-        periodEndDetected = parseResult.periodEnd ?? null;
-      }
-
-      // Diagnóstico MP (saldo del archivo + sumas): se incluye también
-      // en respuestas exitosas para auditar lo que leyó el sistema.
-      const mpSumNetForReco = bankId === "mercadopago" ? (parseResult.sumNetImportable ?? 0) : 0;
-      const mpSumGrossForReco = bankId === "mercadopago" ? (parseResult.sumGrossImportable ?? 0) : 0;
-      const mpRefForReco = bankId === "mercadopago" ? parseResult.saldoDisponibleTotal ?? null : null;
-
-      if (bankId === "mercadopago") {
-        const ref = mpRefForReco;
-        const sum = mpSumNetForReco;
-        if (ref == null || Number.isNaN(Number(ref))) {
-          return res.status(400).json({
-            message:
-              "No se encontró en el archivo el valor «Saldo disponible total» necesario para conciliar el extracto de Mercado Pago.",
-          });
-        }
-        if (!mpAmountsMatchCent(sum, Number(ref))) {
-          const candidates = pickMercadoPagoReconciliationCandidates(parseResult.transactions, 10);
-          return res.json({
-            imported: 0,
-            reconciliationRequired: true,
-            code: "MP_RECONCILIATION_REQUIRED",
-            reason: "sum_mismatch",
-            message: `La suma algebraica de los movimientos a importar (${sum.toFixed(2)}, bruto + comisión + impuesto ± ajuste por fila) no coincide con el «Saldo disponible total» del archivo (${Number(ref).toFixed(2)}). Revisá filas omitidas, duplicados en sistema, o el pie del Excel; las filas mostradas son solo referencia.`,
-            saldoDisponibleTotal: ref,
-            sumGrossImportable: mpSumGrossForReco,
-            sumNetImportable: sum,
-            delta: sum - Number(ref),
-            rows: candidates.map((t) => ({
-              excelRow: t.excelRow ?? 0,
-              description: (t.description || "").slice(0, 200),
-              description2: (t.description2 || "").slice(0, 200),
-              date: t.date ?? null,
-              montoBrutoActual: t.grossAmount ?? 0,
-            })),
-            skipped: parseResult.skipped,
-            total: parseResult.total,
-            bankUsed: parser.bankName,
-          });
-        }
-      }
-
-      const openingBalanceManual = z.coerce.number().safeParse(pickMultipartOrQueryString(req, "openingBalance"));
-      const closingBalanceManual = z.coerce.number().safeParse(pickMultipartOrQueryString(req, "closingBalance"));
-      const openingBalanceToUse =
-        openingBalanceManual.success ? openingBalanceManual.data : openingBalanceDetected;
-      const closingBalanceToUse =
-        closingBalanceManual.success ? closingBalanceManual.data : closingBalanceDetected;
-
-      // Continuidad de saldos solo si aún hay movimientos para esa cuenta (evita bloqueo por metadatos huérfanos)
       const skipContinuityRaw = pickMultipartOrQueryString(req, "skipContinuityCheck");
       const skipContinuity =
         skipContinuityRaw === "1" ||
         skipContinuityRaw?.toLowerCase() === "true" ||
         skipContinuityRaw?.toLowerCase() === "on";
 
-      const txCountForAccount = await storage.getTransactionCountForBankAccount(
-        clientId,
-        bankAccountParsed.data,
-      );
-      const lastBatch = await storage.getLastFinancialImportBatchForAccount(clientId, bankAccountParsed.data);
-      if (
-        !skipContinuity &&
-        txCountForAccount > 0 &&
-        lastBatch?.closingBalance != null &&
-        openingBalanceToUse != null
-      ) {
-        const prevClose = Number(lastBatch.closingBalance);
-        const currOpen = Number(openingBalanceToUse);
-        const diff = Math.abs(prevClose - currOpen);
-        if (diff > 0.01) {
-          return res.status(409).json({
-            message: "El saldo inicial del extracto no coincide con el cierre del último extracto cargado para esta cuenta/caja.",
-            previousClosingBalance: prevClose,
-            currentOpeningBalance: currOpen,
-            difference: diff,
-          });
-        }
-      }
-      console.log(`[IMPORT] Parsed: ${parseResult.transactions.length} transactions, ${parseResult.skipped} skipped`);
-      
-      const unmappedBranches: string[] = [];
-      // Optimización: precargar todos los alias en memoria para evitar consultas por fila
-      const allAliases = await storage.getLocalAliases(clientId);
-      const aliasToLocalId = new Map<string, number | null>(
-        allAliases.map((a) => [String(a.alias || "").trim(), a.localId ?? null]),
-      );
-      
-      const importBatchId = `${bankId}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-      console.log(`[IMPORT] Batch ID: ${importBatchId}`);
-      console.log("[IMPORT] Preparing transactions for batch insert...");
-      const transactionsToInsert = [];
-      
-      for (const tx of parseResult.transactions) {
-        let localId: number | undefined = undefined;
-        
-        if (tx.branchName) {
-          const mapped = aliasToLocalId.get(tx.branchName);
-          if (mapped !== undefined && mapped !== null) {
-            localId = mapped;
-          } else {
-            if (!unmappedBranches.includes(tx.branchName)) {
-              unmappedBranches.push(tx.branchName);
-            }
-          }
-        }
-
-        if (localId === undefined && defaultLocalId != null) {
-          localId = defaultLocalId;
-        }
-        
-        transactionsToInsert.push({
+      /** Mercado Pago: el volumen de líneas supera el timeout síncrono de Netlify (~26s) → cola + background function. */
+      if (bankId === "mercadopago") {
+        const jobToken = randomUUID();
+        const triggerKey = randomBytes(32).toString("hex");
+        const mpOv = parseMpGrossOverridesFromRequest(req);
+        await storage.createFinancialImportJob({
+          jobToken,
+          triggerKey,
           clientId,
-          localId,
-          bankAccountId: bankAccountParsed.data,
           createdBy: userId ?? undefined,
-          transactionDate: tx.date,
-          description: tx.description,
-          description2: tx.description2,
-          counterpartyRef: tx.counterpartyRef,
-          amount: String(tx.amount),
-          type: tx.type,
-          source: "import" as const,
-          bankSource: bankId,
-          grossAmount: tx.grossAmount ? String(tx.grossAmount) : undefined,
-          commission: tx.commission ? String(tx.commission) : undefined,
-          taxWithholding: tx.taxWithholding ? String(tx.taxWithholding) : undefined,
-          branchName: tx.branchName,
-          importBatchId,
-        });
+          status: "pending",
+          fileGzipBase64: gzipSync(req.file.buffer).toString("base64"),
+          originalFileName: req.file.originalname?.slice(0, 255) ?? undefined,
+          paramsJson: JSON.stringify({
+            bankAccountId: bankAccountParsed.data,
+            bankId,
+            defaultLocalId,
+            openingBalance: pickMultipartOrQueryString(req, "openingBalance") ?? "",
+            closingBalance: pickMultipartOrQueryString(req, "closingBalance") ?? "",
+            skipContinuityCheck: skipContinuity,
+            mpGrossOverridesJson: JSON.stringify(mpOv),
+          }),
+        } as any);
+        console.log(`[IMPORT] MP encolado async jobToken=${jobToken}`);
+        return res.json({ async: true, jobToken, triggerKey });
       }
-      
-      console.log(`[IMPORT] Inserting ${transactionsToInsert.length} transactions in batch...`);
-      const insertStarted = Date.now();
-      const imported = await storage.createTransactionsBatch(
-        transactionsToInsert as unknown as InsertTransaction[],
-      );
-      console.log(`[IMPORT] Complete: ${imported} imported in ${Date.now() - insertStarted}ms`);
 
-      if (imported > 0) {
-        await storage.createFinancialImportBatch({
-          clientId,
-          importBatchId,
-          bankAccountId: bankAccountParsed.data,
-          bankSource: bankId,
-          openingBalance:
-            openingBalanceToUse != null ? String(openingBalanceToUse) : undefined,
-          closingBalance:
-            closingBalanceToUse != null ? String(closingBalanceToUse) : undefined,
-          periodStart: periodStartDetected ?? undefined,
-          periodEnd: periodEndDetected ?? undefined,
-        } as unknown as InsertFinancialImportBatch);
-      }
-      
-      res.json({
-        imported,
-        total: parseResult.total,
-        skipped: parseResult.skipped,
-        skippedReasons: parseResult.skippedReasons.slice(0, 10),
-        bankUsed: parser.bankName,
-        /** Id del parser (galicia, mercadopago, …) para alinear filtros del cliente tras importar */
-        bankSourceId: bankId,
-        unmappedBranches: unmappedBranches.length > 0 ? unmappedBranches : undefined,
-        batchOpeningBalance: openingBalanceToUse,
-        batchClosingBalance: closingBalanceToUse,
-        batchPeriodStart: periodStartDetected,
-        batchPeriodEnd: periodEndDetected,
-        // Diagnóstico MP visible en el toast (saldo del archivo + suma neta + brutos informativos).
-        ...(bankId === "mercadopago"
-          ? {
-              mpDiagnostics: {
-                saldoDisponibleTotalArchivo: mpRefForReco,
-                sumNetImportable: mpSumNetForReco,
-                sumGrossImportable: mpSumGrossForReco,
-              },
-            }
-          : {}),
+      const out = await runBankStatementImport({
+        clientId,
+        userId,
+        buffer: req.file.buffer,
+        bankId,
+        bankAccountId: bankAccountParsed.data,
+        defaultLocalId,
+        openingBalanceRaw: pickMultipartOrQueryString(req, "openingBalance"),
+        closingBalanceRaw: pickMultipartOrQueryString(req, "closingBalance"),
+        skipContinuityCheck: skipContinuity,
+        mpGrossOverrides: parseMpGrossOverridesFromRequest(req),
       });
+
+      if (out.kind === "error") {
+        return res.status(out.status).json(out.body);
+      }
+      return res.json(out.body);
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
+  app.get("/api/transactions/import-jobs/:jobToken", isAuthenticated, async (req, res) => {
+    try {
+      const clientId = await getClientId(req);
+      const jobToken = String(req.params.jobToken || "").trim();
+      if (!jobToken) {
+        return res.status(400).json({ message: "Falta jobToken" });
+      }
+      const job = await storage.getFinancialImportJobForClient(clientId, jobToken);
+      if (!job) {
+        return res.status(404).json({ message: "Trabajo no encontrado" });
+      }
+      let payload: unknown = undefined;
+      if (job.resultJson) {
+        try {
+          payload = JSON.parse(job.resultJson);
+        } catch {
+          payload = undefined;
+        }
+      }
+      return res.json({
+        status: job.status,
+        httpStatus: job.resultHttpStatus ?? undefined,
+        payload,
+        errorMessage: job.errorMessage ?? undefined,
+      });
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
+  /** En desarrollo local (sin función Netlify en background) el mismo servidor ejecuta el job. */
+  app.post("/api/transactions/import/execute-job", isAuthenticated, async (req, res) => {
+    try {
+      const clientId = await getClientId(req);
+      const jobToken = String(req.body?.jobToken || "").trim();
+      const triggerKey = String(req.body?.triggerKey || "").trim();
+      if (!jobToken || !triggerKey) {
+        return res.status(400).json({ message: "Faltan jobToken o triggerKey" });
+      }
+      const job = await storage.getFinancialImportJobForClient(clientId, jobToken);
+      if (!job || job.triggerKey !== triggerKey) {
+        return res.status(403).json({ message: "No autorizado" });
+      }
+      await processFinancialImportJobBody(jobToken, triggerKey);
+      return res.json({ ok: true });
     } catch (e: any) {
       res.status(500).json({ message: e.message });
     }
