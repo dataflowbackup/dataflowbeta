@@ -57,6 +57,7 @@ import {
   Check,
   ChevronsUpDown,
   Filter,
+  Scale,
 } from "lucide-react";
 import type { Transaction, BankAccount, TransactionCategory, Local } from "@shared/schema";
 
@@ -317,7 +318,7 @@ export default function CashPage() {
     [filteredTransactions],
   );
 
-  const openBatch = () => {
+  const saldoFiltered = useMemo(() => totalIncome - totalExpense, [totalIncome, totalExpense]);
     draftRowSeqRef.current = 0;
     setDraftRows([makeDraftRow(draftRowSeqRef)]);
     setBatchOpen(true);
@@ -531,7 +532,7 @@ export default function CashPage() {
         }
       />
 
-      <div className="grid gap-4 md:grid-cols-3">
+      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <Card>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
             <div>
@@ -558,6 +559,34 @@ export default function CashPage() {
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold font-mono text-red-600">{formatCurrency(totalExpense)}</div>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+            <div>
+              <CardTitle className="text-sm font-medium">Saldo</CardTitle>
+              <p className="text-xs text-muted-foreground font-normal mt-0.5">
+                Ingresos − egresos
+                {filteredTransactions.length !== transactions.length ? " · Vista filtrada" : ""}
+              </p>
+            </div>
+            <Scale className="h-4 w-4 text-muted-foreground" />
+          </CardHeader>
+          <CardContent>
+            <div
+              className={cn(
+                "text-2xl font-bold font-mono",
+                saldoFiltered > 0 && "text-green-600",
+                saldoFiltered < 0 && "text-red-600",
+                saldoFiltered === 0 && "text-muted-foreground",
+              )}
+            >
+              {saldoFiltered > 0 ? "+" : saldoFiltered < 0 ? "−" : ""}
+              {formatCurrency(Math.abs(saldoFiltered))}
+            </div>
+            {filtersActive && (
+              <p className="text-xs text-muted-foreground mt-1">Según filtros aplicados</p>
+            )}
           </CardContent>
         </Card>
         <Card>
