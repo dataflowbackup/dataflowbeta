@@ -35,10 +35,19 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import {
+  Command,
+  CommandEmpty,
+  CommandGroup,
+  CommandInput,
+  CommandItem,
+  CommandList,
+} from "@/components/ui/command";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { useToast } from "@/hooks/use-toast";
-import { useAuth } from "@/hooks/useAuth";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { formatCurrency, formatDate } from "@/lib/formatters";
+import { cn } from "@/lib/utils";
 import { 
   Upload, 
   TrendingUp, 
@@ -55,9 +64,11 @@ import {
   Split,
   Plus,
   Trash2,
-  Bookmark,
   Landmark,
   Eraser,
+  ChevronsUpDown,
+  Check,
+  Filter,
 } from "lucide-react";
 import type {
   Transaction,
@@ -65,7 +76,6 @@ import type {
   TransactionCategory,
   Local,
   LocalAlias,
-  FinancialSavedView,
 } from "@shared/schema";
 import type { BusinessName } from "@shared/schema";
 
@@ -139,26 +149,81 @@ function isLocalDevHost(): boolean {
   return h === "localhost" || h === "127.0.0.1";
 }
 
-function parseSavedViewFilters(raw: unknown): {
-  bankFilter: string;
-  accountContextFilter: string;
-  filterTab: FilterTab;
-} | null {
-  if (!raw || typeof raw !== "object") return null;
-  const o = raw as Record<string, unknown>;
-  const filterTab = o.filterTab;
-  if (filterTab !== "all" && filterTab !== "uncategorized" && filterTab !== "categorized") return null;
-  return {
-    bankFilter: typeof o.bankFilter === "string" ? o.bankFilter : "all",
-    accountContextFilter:
-      typeof o.accountContextFilter === "string" ? o.accountContextFilter : "all",
-    filterTab,
-  };
+/** Filtro de listado: opción "todos" + lista con búsqueda (cmdk). */
+function FilterSearchableSelect({
+  value,
+  onChange,
+  allLabel,
+  items,
+  searchPlaceholder,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  allLabel: string;
+  items: { id: number; name: string }[];
+  searchPlaceholder: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const selected = value === "all" ? null : items.find((x) => String(x.id) === value);
+  const label = selected?.name ?? allLabel;
+  return (
+    <Popover open={open} onOpenChange={setOpen} modal={false}>
+      <PopoverTrigger asChild>
+        <Button
+          type="button"
+          variant="outline"
+          role="combobox"
+          aria-expanded={open}
+          className="w-full justify-between font-normal min-h-9"
+        >
+          <span className="truncate text-left">{label}</span>
+          <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent className="w-[min(100vw-2rem,24rem)] p-0 z-[100]" align="start">
+        <Command>
+          <CommandInput placeholder={searchPlaceholder} />
+          <CommandList className="max-h-[280px]">
+            <CommandEmpty>Sin resultados.</CommandEmpty>
+            <CommandGroup>
+              <CommandItem
+                value={`__all__ ${allLabel}`}
+                onSelect={() => {
+                  onChange("all");
+                  setOpen(false);
+                }}
+              >
+                <Check className={cn("mr-2 h-4 w-4 shrink-0", value === "all" ? "opacity-100" : "opacity-0")} />
+                {allLabel}
+              </CommandItem>
+              {items.map((item) => (
+                <CommandItem
+                  key={item.id}
+                  value={`${item.name} ${item.id}`}
+                  onSelect={() => {
+                    onChange(String(item.id));
+                    setOpen(false);
+                  }}
+                >
+                  <Check
+                    className={cn(
+                      "mr-2 h-4 w-4 shrink-0",
+                      value === String(item.id) ? "opacity-100" : "opacity-0",
+                    )}
+                  />
+                  <span className="truncate">{item.name}</span>
+                </CommandItem>
+              ))}
+            </CommandGroup>
+          </CommandList>
+        </Command>
+      </PopoverContent>
+    </Popover>
+  );
 }
 
 export default function BankStatementsPage() {
   const { toast } = useToast();
-  const { user } = useAuth();
   const [isUploadOpen, setIsUploadOpen] = useState(false);
   const [isCategorizeOpen, setIsCategorizeOpen] = useState(false);
   const [isBatchCategorizeOpen, setIsBatchCategorizeOpen] = useState(false);
@@ -187,7 +252,11 @@ export default function BankStatementsPage() {
   const [isDeleteBatchOpen, setIsDeleteBatchOpen] = useState(false);
   const [deleteBatchTarget, setDeleteBatchTarget] = useState<ImportBatch | null>(null);
   const [deleteConfirmCode, setDeleteConfirmCode] = useState("");
-  const [accountContextFilter, setAccountContextFilter] = useState<string>("all");
+  const [listFilterLocalId, setListFilterLocalId] = useState<string>("all");
+  const [listFilterCategoryId, setListFilterCategoryId] = useState<string>("all");
+  const [listFilterDateFrom, setListFilterDateFrom] = useState("");
+  const [listFilterDateTo, setListFilterDateTo] = useState("");
+  const [listFilterType, setListFilterType] = useState<"all" | "income" | "expense">("all");
   const [uploadBankAccountId, setUploadBankAccountId] = useState("");
   const [uploadDefaultLocalId, setUploadDefaultLocalId] = useState<string>("none");
   const [uploadOpeningBalance, setUploadOpeningBalance] = useState<string>("");
@@ -205,11 +274,7 @@ export default function BankStatementsPage() {
   const [newAccountNumber, setNewAccountNumber] = useState("");
   const [newAccountBusinessNameId, setNewAccountBusinessNameId] = useState<string>("none");
   const [newAccountBankId, setNewAccountBankId] = useState<string>("none");
-  const [isSaveViewDialogOpen, setIsSaveViewDialogOpen] = useState(false);
-  const [saveViewName, setSaveViewName] = useState("");
-
-  const {
-    data: transactions = [],
+  const { data: transactions = [],
     isLoading,
     isError: isTransactionsError,
     error: transactionsError,
@@ -292,11 +357,6 @@ export default function BankStatementsPage() {
     queryKey: ["/api/bank-accounts"],
   });
 
-  const { data: savedViews = [] } = useQuery<FinancialSavedView[]>({
-    queryKey: ["/api/financial-saved-views"],
-    enabled: !!user?.id,
-  });
-
   const { data: categories = [] } = useQuery<TransactionCategory[]>({
     queryKey: ["/api/transaction-categories"],
   });
@@ -322,22 +382,14 @@ export default function BankStatementsPage() {
   });
 
   const effectiveContextAccountId = useMemo(() => {
-    // Si el usuario eligió una cuenta específica, usamos esa.
-    if (accountContextFilter !== "all" && accountContextFilter !== "unassigned") {
-      const aid = parseInt(accountContextFilter, 10);
-      return Number.isFinite(aid) ? aid : null;
-    }
-
-    // Si la vista está en "todas", pero en la práctica hay movimientos de una sola cuenta,
-    // mostramos el saldo de esa cuenta para evitar confusión (caso típico: solo Galicia cargado).
     const ids = new Set<number>();
     for (const t of transactions) {
       if (bankFilter !== "all" && t.bankSource !== bankFilter) continue;
-      const id = (t as any).bankAccountId;
+      const id = (t as TransactionWithRelations).bankAccountId;
       if (typeof id === "number" && Number.isFinite(id)) ids.add(id);
     }
     return ids.size === 1 ? Array.from(ids)[0] : null;
-  }, [accountContextFilter, bankFilter, transactions]);
+  }, [bankFilter, transactions]);
 
   const latestContextBatch = useMemo(() => {
     if (!importBatches.length) return null;
@@ -459,35 +511,6 @@ export default function BankStatementsPage() {
     },
     onError: (error: Error) => {
       toast({ title: "Error al vaciar extractos", description: error.message, variant: "destructive" });
-    },
-  });
-
-  const saveViewMutation = useMutation({
-    mutationFn: async (payload: { name: string; filters: Record<string, unknown> }) => {
-      const res = await apiRequest("POST", "/api/financial-saved-views", payload);
-      return res.json();
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/financial-saved-views"] });
-      toast({ title: "Vista guardada" });
-      setIsSaveViewDialogOpen(false);
-      setSaveViewName("");
-    },
-    onError: (error: Error) => {
-      toast({ title: "Error al guardar vista", description: error.message, variant: "destructive" });
-    },
-  });
-
-  const deleteViewMutation = useMutation({
-    mutationFn: async (id: number) => {
-      await apiRequest("DELETE", `/api/financial-saved-views/${id}`);
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/financial-saved-views"] });
-      toast({ title: "Vista eliminada" });
-    },
-    onError: (error: Error) => {
-      toast({ title: "Error al eliminar vista", description: error.message, variant: "destructive" });
     },
   });
 
@@ -844,17 +867,6 @@ export default function BankStatementsPage() {
     }
   }, [isUploadOpen, bankAccounts, uploadBankAccountId]);
 
-  const applySavedView = (view: FinancialSavedView) => {
-    const f = parseSavedViewFilters(view.filters);
-    if (!f) {
-      toast({ title: "Vista invalida", variant: "destructive" });
-      return;
-    }
-    setBankFilter(f.bankFilter);
-    setAccountContextFilter(f.accountContextFilter);
-    setFilterTab(f.filterTab);
-  };
-
   const handleCreateAccount = () => {
     if (!newAccountName.trim()) {
       toast({ title: "Indique el nombre de la cuenta", variant: "destructive" });
@@ -878,21 +890,6 @@ export default function BankStatementsPage() {
       bankId: newAccountBankId,
       businessNameId: parseInt(newAccountBusinessNameId, 10),
       localId: newAccountLocalId === "none" ? null : parseInt(newAccountLocalId, 10),
-    });
-  };
-
-  const handleSaveCurrentView = () => {
-    if (!saveViewName.trim()) {
-      toast({ title: "Indique un nombre para la vista", variant: "destructive" });
-      return;
-    }
-    saveViewMutation.mutate({
-      name: saveViewName.trim(),
-      filters: {
-        bankFilter,
-        accountContextFilter,
-        filterTab,
-      },
     });
   };
 
@@ -992,10 +989,10 @@ export default function BankStatementsPage() {
   };
 
   const toggleAllSelection = () => {
-    if (selectedTransactionIds.size === filteredTransactions.length) {
+    if (selectedTransactionIds.size === listFilteredTransactions.length) {
       setSelectedTransactionIds(new Set());
     } else {
-      setSelectedTransactionIds(new Set(filteredTransactions.map(t => t.id)));
+      setSelectedTransactionIds(new Set(listFilteredTransactions.map((t) => t.id)));
     }
   };
 
@@ -1131,28 +1128,89 @@ export default function BankStatementsPage() {
     ? transactions 
     : transactions.filter(t => t.bankSource === bankFilter);
 
-  const accountFilteredTransactions = useMemo(() => {
-    if (accountContextFilter === "all") return bankFilteredTransactions;
-    if (accountContextFilter === "unassigned") {
-      return bankFilteredTransactions.filter((t) => !t.bankAccountId);
+  const tabFilteredTransactions = useMemo(() => {
+    if (filterTab === "all") return bankFilteredTransactions;
+    if (filterTab === "uncategorized") {
+      return bankFilteredTransactions.filter((t) => !t.categoryId);
     }
-    const aid = parseInt(accountContextFilter, 10);
-    if (Number.isNaN(aid)) return bankFilteredTransactions;
-    return bankFilteredTransactions.filter((t) => t.bankAccountId === aid);
-  }, [bankFilteredTransactions, accountContextFilter]);
+    return bankFilteredTransactions.filter((t) => t.categoryId);
+  }, [bankFilteredTransactions, filterTab]);
 
-  const filteredTransactions = filterTab === "all" 
-    ? accountFilteredTransactions 
-    : filterTab === "uncategorized" 
-      ? accountFilteredTransactions.filter(t => !t.categoryId)
-      : accountFilteredTransactions.filter(t => t.categoryId);
+  const categoryFilterItems = useMemo(
+    () =>
+      [...categories]
+        .filter((c) => c.active !== false)
+        .sort((a, b) => String(a.name).localeCompare(String(b.name), "es"))
+        .map((c) => ({ id: c.id, name: c.name })),
+    [categories],
+  );
+
+  const localFilterItems = useMemo(
+    () =>
+      [...locals].sort((a, b) => String(a.name).localeCompare(String(b.name), "es")).map((l) => ({
+        id: l.id,
+        name: l.name,
+      })),
+    [locals],
+  );
+
+  const listFiltersActive =
+    listFilterLocalId !== "all" ||
+    listFilterCategoryId !== "all" ||
+    listFilterType !== "all" ||
+    listFilterDateFrom !== "" ||
+    listFilterDateTo !== "";
+
+  const clearListFilters = () => {
+    setListFilterLocalId("all");
+    setListFilterCategoryId("all");
+    setListFilterType("all");
+    setListFilterDateFrom("");
+    setListFilterDateTo("");
+  };
+
+  const listFilteredTransactions = useMemo(() => {
+    let rows = tabFilteredTransactions;
+    if (listFilterLocalId !== "all") {
+      const lid = parseInt(listFilterLocalId, 10);
+      if (Number.isFinite(lid)) rows = rows.filter((t) => t.localId === lid);
+    }
+    if (listFilterCategoryId !== "all") {
+      const cid = parseInt(listFilterCategoryId, 10);
+      if (Number.isFinite(cid)) rows = rows.filter((t) => t.categoryId === cid);
+    }
+    if (listFilterType !== "all") {
+      rows = rows.filter((t) => t.type === listFilterType);
+    }
+    if (listFilterDateFrom) {
+      rows = rows.filter(
+        (t) => String(t.transactionDate ?? "").slice(0, 10) >= listFilterDateFrom,
+      );
+    }
+    if (listFilterDateTo) {
+      rows = rows.filter(
+        (t) => String(t.transactionDate ?? "").slice(0, 10) <= listFilterDateTo,
+      );
+    }
+    return rows;
+  }, [
+    tabFilteredTransactions,
+    listFilterLocalId,
+    listFilterCategoryId,
+    listFilterType,
+    listFilterDateFrom,
+    listFilterDateTo,
+  ]);
 
   const columns: Column<TransactionWithRelations>[] = [
     {
       key: "select",
       header: () => (
         <Checkbox
-          checked={selectedTransactionIds.size === filteredTransactions.length && filteredTransactions.length > 0}
+          checked={
+            selectedTransactionIds.size === listFilteredTransactions.length &&
+            listFilteredTransactions.length > 0
+          }
           onCheckedChange={toggleAllSelection}
           data-testid="checkbox-select-all"
         />
@@ -1221,6 +1279,15 @@ export default function BankStatementsPage() {
             Sin clasificar
           </Badge>
         ),
+    },
+    {
+      key: "local",
+      header: "Local",
+      cell: (row) => (
+        <span className="text-sm truncate max-w-[140px] block" title={row.local?.name ?? undefined}>
+          {row.local?.name?.trim() ? row.local.name : "—"}
+        </span>
+      ),
     },
     {
       key: "amount",
@@ -1425,74 +1492,6 @@ export default function BankStatementsPage() {
         </Card>
       </div>
 
-      <div className="space-y-3 rounded-lg border-2 border-primary/20 bg-primary/5 p-4">
-        <p className="text-sm font-semibold text-foreground">Vista por cuenta y atajos</p>
-        <div className="flex flex-col gap-3 md:flex-row md:flex-wrap md:items-end">
-        <div className="space-y-2 min-w-[220px] flex-1">
-          <Label className="text-xs font-medium text-foreground">Cuenta / caja (vista)</Label>
-          <Select value={accountContextFilter} onValueChange={setAccountContextFilter}>
-            <SelectTrigger data-testid="select-account-context" className="w-full md:max-w-md">
-              <SelectValue placeholder="Filtrar por cuenta..." />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">Todas las cuentas</SelectItem>
-              <SelectItem value="unassigned">Sin cuenta asignada (importes antiguos)</SelectItem>
-              {bankAccounts.map((a) => (
-                <SelectItem key={a.id} value={String(a.id)}>
-                  {a.name}
-                  {a.local?.name ? ` · ${a.local.name}` : ""}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
-        <div className="flex flex-1 flex-wrap items-center gap-2">
-          {user?.id && savedViews.length > 0 && (
-            <div className="flex flex-wrap items-center gap-2">
-              <span className="text-xs text-muted-foreground shrink-0">Vistas:</span>
-              {savedViews.map((v) => (
-                <div key={v.id} className="flex items-center gap-0.5 rounded-md border bg-background">
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="sm"
-                    className="h-8 px-2 text-xs"
-                    onClick={() => applySavedView(v)}
-                  >
-                    <Bookmark className="h-3 w-3 mr-1 opacity-70" />
-                    {v.name}
-                  </Button>
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="icon"
-                    className="h-8 w-8 shrink-0 text-muted-foreground hover:text-destructive"
-                    title="Eliminar vista"
-                    onClick={() => deleteViewMutation.mutate(v.id)}
-                    disabled={deleteViewMutation.isPending}
-                  >
-                    <Trash2 className="h-3.5 w-3.5" />
-                  </Button>
-                </div>
-              ))}
-            </div>
-          )}
-          {user?.id && (
-            <Button
-              type="button"
-              variant="secondary"
-              size="sm"
-              className="h-8"
-              onClick={() => setIsSaveViewDialogOpen(true)}
-              data-testid="button-save-view"
-            >
-              Guardar vista
-            </Button>
-          )}
-        </div>
-        </div>
-      </div>
-
       {categorizationPercent < 100 && transactions.length > 0 && (
         <Card className="border-amber-500/50 bg-amber-500/5">
           <CardContent className="py-4">
@@ -1559,7 +1558,7 @@ export default function BankStatementsPage() {
                 </CardHeader>
                 <CardContent>
                   <div className="text-2xl font-bold font-mono" data-testid="stat-bank-total">
-                    {accountFilteredTransactions.length}
+                    {bankFilteredTransactions.length}
                   </div>
                 </CardContent>
               </Card>
@@ -1571,7 +1570,7 @@ export default function BankStatementsPage() {
                 </CardHeader>
                 <CardContent>
                   <div className="text-2xl font-bold font-mono text-green-600" data-testid="stat-bank-income">
-                    {formatCurrency(accountFilteredTransactions.filter(t => t.type === "income").reduce((sum, t) => sum + parseFloat(String(t.amount) || "0"), 0))}
+                    {formatCurrency(bankFilteredTransactions.filter(t => t.type === "income").reduce((sum, t) => sum + parseFloat(String(t.amount) || "0"), 0))}
                   </div>
                 </CardContent>
               </Card>
@@ -1583,7 +1582,7 @@ export default function BankStatementsPage() {
                 </CardHeader>
                 <CardContent>
                   <div className="text-2xl font-bold font-mono text-red-600" data-testid="stat-bank-expense">
-                    {formatCurrency(accountFilteredTransactions.filter(t => t.type === "expense").reduce((sum, t) => sum + Math.abs(parseFloat(String(t.amount) || "0")), 0))}
+                    {formatCurrency(bankFilteredTransactions.filter(t => t.type === "expense").reduce((sum, t) => sum + Math.abs(parseFloat(String(t.amount) || "0")), 0))}
                   </div>
                 </CardContent>
               </Card>
@@ -1595,8 +1594,8 @@ export default function BankStatementsPage() {
                 </CardHeader>
                 <CardContent>
                   {(() => {
-                    const bankIncome = accountFilteredTransactions.filter(t => t.type === "income").reduce((sum, t) => sum + parseFloat(String(t.amount) || "0"), 0);
-                    const bankExpense = accountFilteredTransactions.filter(t => t.type === "expense").reduce((sum, t) => sum + Math.abs(parseFloat(String(t.amount) || "0")), 0);
+                    const bankIncome = bankFilteredTransactions.filter(t => t.type === "income").reduce((sum, t) => sum + parseFloat(String(t.amount) || "0"), 0);
+                    const bankExpense = bankFilteredTransactions.filter(t => t.type === "expense").reduce((sum, t) => sum + Math.abs(parseFloat(String(t.amount) || "0")), 0);
                     const bankBalance = bankIncome - bankExpense;
                     return (
                       <div className={`text-2xl font-bold font-mono ${bankBalance >= 0 ? "text-green-600" : "text-red-600"}`} data-testid="stat-bank-balance">
@@ -1613,28 +1612,98 @@ export default function BankStatementsPage() {
               <Tabs value={filterTab} onValueChange={(v) => setFilterTab(v as FilterTab)}>
                 <TabsList>
                   <TabsTrigger value="all" data-testid="filter-all">
-                    Todos ({accountFilteredTransactions.length})
+                    Todos ({bankFilteredTransactions.length})
                   </TabsTrigger>
                   <TabsTrigger value="uncategorized" data-testid="filter-uncategorized" className="text-amber-600">
-                    Sin categorizar ({accountFilteredTransactions.filter(t => !t.categoryId).length})
+                    Sin categorizar ({bankFilteredTransactions.filter(t => !t.categoryId).length})
                   </TabsTrigger>
                   <TabsTrigger value="categorized" data-testid="filter-categorized">
-                    Categorizados ({accountFilteredTransactions.filter(t => t.categoryId).length})
+                    Categorizados ({bankFilteredTransactions.filter(t => t.categoryId).length})
                   </TabsTrigger>
                 </TabsList>
               </Tabs>
             </div>
 
+            <div className="rounded-lg border bg-muted/20 p-4 space-y-3">
+              <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                <p className="text-sm font-medium flex items-center gap-2">
+                  <Filter className="h-4 w-4" />
+                  Filtros del listado
+                </p>
+                {listFiltersActive && (
+                  <Button type="button" variant="outline" size="sm" onClick={clearListFilters}>
+                    Limpiar filtros
+                  </Button>
+                )}
+              </div>
+              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
+                <div className="space-y-1 sm:col-span-2">
+                  <Label className="text-xs">Local</Label>
+                  <FilterSearchableSelect
+                    value={listFilterLocalId}
+                    onChange={setListFilterLocalId}
+                    allLabel="Todos los locales"
+                    items={localFilterItems}
+                    searchPlaceholder="Buscar local…"
+                  />
+                </div>
+                <div className="space-y-1 sm:col-span-2">
+                  <Label className="text-xs">Categoría</Label>
+                  <FilterSearchableSelect
+                    value={listFilterCategoryId}
+                    onChange={setListFilterCategoryId}
+                    allLabel="Todas las categorías"
+                    items={categoryFilterItems}
+                    searchPlaceholder="Buscar categoría…"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <Label className="text-xs">Tipo</Label>
+                  <Select
+                    value={listFilterType}
+                    onValueChange={(v) => setListFilterType(v as "all" | "income" | "expense")}
+                  >
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">Todos</SelectItem>
+                      <SelectItem value="income">Ingresos</SelectItem>
+                      <SelectItem value="expense">Egresos</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-1">
+                  <Label className="text-xs">Desde</Label>
+                  <Input
+                    type="date"
+                    value={listFilterDateFrom}
+                    onChange={(e) => setListFilterDateFrom(e.target.value)}
+                  />
+                </div>
+                <div className="space-y-1">
+                  <Label className="text-xs">Hasta</Label>
+                  <Input
+                    type="date"
+                    value={listFilterDateTo}
+                    onChange={(e) => setListFilterDateTo(e.target.value)}
+                  />
+                </div>
+              </div>
+            </div>
+
             <DataTable
               columns={columns}
-              data={filteredTransactions}
+              data={listFilteredTransactions}
               isLoading={isLoading}
               searchPlaceholder="Buscar por descripcion o descripcion 2..."
               searchKeys={["description", "description2"]}
               emptyMessage={
-                filterTab === "uncategorized" 
+                filterTab === "uncategorized"
                   ? "No hay movimientos sin categorizar"
-                  : "No hay movimientos registrados. Importa un extracto bancario en formato Excel."
+                  : listFiltersActive
+                    ? "No hay movimientos que coincidan con los filtros del listado."
+                    : "No hay movimientos registrados. Importa un extracto bancario en formato Excel."
               }
               pageSize={20}
             />
@@ -2269,40 +2338,6 @@ export default function BankStatementsPage() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
-
-      <Dialog open={isSaveViewDialogOpen} onOpenChange={setIsSaveViewDialogOpen}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Guardar vista</DialogTitle>
-            <DialogDescription>
-              Guarda el banco activo, el filtro de cuenta y la pestaña de categorización para recuperarlos con un clic.
-            </DialogDescription>
-          </DialogHeader>
-          <div className="space-y-4">
-            <div className="space-y-2">
-              <Label>Nombre</Label>
-              <Input
-                value={saveViewName}
-                onChange={(e) => setSaveViewName(e.target.value)}
-                placeholder="Ej. Galicia + cuenta caja"
-                data-testid="input-save-view-name"
-              />
-            </div>
-            <div className="flex justify-end gap-2">
-              <Button variant="outline" onClick={() => setIsSaveViewDialogOpen(false)}>
-                Cancelar
-              </Button>
-              <Button
-                onClick={handleSaveCurrentView}
-                disabled={saveViewMutation.isPending}
-                data-testid="button-confirm-save-view"
-              >
-                {saveViewMutation.isPending ? "Guardando..." : "Guardar"}
-              </Button>
-            </div>
-          </div>
-        </DialogContent>
-      </Dialog>
 
       <Dialog open={isCategorizeOpen} onOpenChange={setIsCategorizeOpen}>
         <DialogContent>
