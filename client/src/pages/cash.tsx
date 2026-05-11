@@ -319,6 +319,8 @@ export default function CashPage() {
   );
 
   const saldoFiltered = useMemo(() => totalIncome - totalExpense, [totalIncome, totalExpense]);
+
+  const openBatch = () => {
     draftRowSeqRef.current = 0;
     setDraftRows([makeDraftRow(draftRowSeqRef)]);
     setBatchOpen(true);
