@@ -1,4 +1,4 @@
-import { useMemo, useState, useCallback } from "react";
+import { useMemo, useState, useCallback, useRef } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { PageHeader } from "@/components/page-header";
 import { DataTable, Column } from "@/components/data-table";
@@ -32,9 +32,19 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import {
+  Command,
+  CommandEmpty,
+  CommandGroup,
+  CommandInput,
+  CommandItem,
+  CommandList,
+} from "@/components/ui/command";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { formatCurrency, formatDate } from "@/lib/formatters";
+import { cn } from "@/lib/utils";
 import {
   Banknote,
   Plus,
@@ -44,6 +54,9 @@ import {
   ArrowDownRight,
   TrendingUp,
   TrendingDown,
+  Check,
+  ChevronsUpDown,
+  Filter,
 } from "lucide-react";
 import type { Transaction, BankAccount, TransactionCategory, Local } from "@shared/schema";
 
@@ -65,9 +78,18 @@ type DraftRow = {
   amount: string;
 };
 
-function makeDraftRow(): DraftRow {
+function makeDraftKey(seqRef: { current: number }): string {
+  seqRef.current += 1;
+  const rnd =
+    typeof crypto !== "undefined" && "randomUUID" in crypto
+      ? crypto.randomUUID()
+      : `${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
+  return `cash-draft-${seqRef.current}-${rnd}`;
+}
+
+function makeDraftRow(seqRef: { current: number }): DraftRow {
   return {
-    key: `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
+    key: makeDraftKey(seqRef),
     transactionDate: new Date().toISOString().slice(0, 10),
     description: "",
     categoryId: "",
@@ -77,14 +99,94 @@ function makeDraftRow(): DraftRow {
   };
 }
 
+function CategoryPicker({
+  value,
+  onChange,
+  categories,
+  placeholder = "Elegir categoría…",
+  allowClear = false,
+  clearLabel = "Sin categoría",
+}: {
+  value: string;
+  onChange: (id: string) => void;
+  categories: TransactionCategory[];
+  placeholder?: string;
+  allowClear?: boolean;
+  clearLabel?: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const selected = value ? categories.find((c) => String(c.id) === value) : undefined;
+  const label =
+    selected?.name ?? (allowClear && !value ? clearLabel : placeholder);
+  return (
+    <Popover open={open} onOpenChange={setOpen} modal={false}>
+      <PopoverTrigger asChild>
+        <Button
+          type="button"
+          variant="outline"
+          role="combobox"
+          aria-expanded={open}
+          className="w-full justify-between font-normal min-h-9"
+        >
+          <span className="truncate text-left">{label}</span>
+          <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent className="w-[min(100vw-2rem,28rem)] p-0 z-[200]" align="start">
+        <Command>
+          <CommandInput placeholder="Buscar categoría…" />
+          <CommandList className="max-h-[280px]">
+            <CommandEmpty>No se encontró ninguna categoría.</CommandEmpty>
+            <CommandGroup>
+              {allowClear && (
+                <CommandItem
+                  value={`__clear__ ${clearLabel}`}
+                  onSelect={() => {
+                    onChange("");
+                    setOpen(false);
+                  }}
+                >
+                  <Check className={cn("mr-2 h-4 w-4 shrink-0", !value ? "opacity-100" : "opacity-0")} />
+                  {clearLabel}
+                </CommandItem>
+              )}
+              {categories.map((c) => (
+                <CommandItem
+                  key={c.id}
+                  value={`${c.name} ${c.id}`}
+                  onSelect={() => {
+                    onChange(String(c.id));
+                    setOpen(false);
+                  }}
+                >
+                  <Check className={cn("mr-2 h-4 w-4 shrink-0", value === String(c.id) ? "opacity-100" : "opacity-0")} />
+                  <span className="truncate">{c.name}</span>
+                </CommandItem>
+              ))}
+            </CommandGroup>
+          </CommandList>
+        </Command>
+      </PopoverContent>
+    </Popover>
+  );
+}
+
 export default function CashPage() {
   const { toast } = useToast();
+  const draftRowSeqRef = useRef(0);
   const [batchOpen, setBatchOpen] = useState(false);
-  const [draftRows, setDraftRows] = useState<DraftRow[]>([makeDraftRow()]);
+  const [draftRows, setDraftRows] = useState<DraftRow[]>(() => [makeDraftRow(draftRowSeqRef)]);
   const [editRow, setEditRow] = useState<TransactionWithRelations | null>(null);
   const [editCategoryId, setEditCategoryId] = useState<string>("");
   const [editLocalId, setEditLocalId] = useState<string>("none");
   const [deleteTarget, setDeleteTarget] = useState<TransactionWithRelations | null>(null);
+
+  const [filterSearch, setFilterSearch] = useState("");
+  const [filterType, setFilterType] = useState<"all" | "income" | "expense">("all");
+  const [filterLocalId, setFilterLocalId] = useState<string>("all");
+  const [filterCategoryId, setFilterCategoryId] = useState<string>("all");
+  const [filterDateFrom, setFilterDateFrom] = useState("");
+  const [filterDateTo, setFilterDateTo] = useState("");
 
   const { data: categories = [] } = useQuery<TransactionCategory[]>({
     queryKey: ["/api/transaction-categories"],
@@ -99,6 +201,13 @@ export default function CashPage() {
   );
   const expenseCategories = useMemo(
     () => categories.filter((c) => c.active !== false && (c.type === "expense" || c.type === "both")),
+    [categories],
+  );
+  const allCategoriesSorted = useMemo(
+    () =>
+      [...categories]
+        .filter((c) => c.active !== false)
+        .sort((a, b) => String(a.name).localeCompare(String(b.name), "es")),
     [categories],
   );
 
@@ -166,25 +275,55 @@ export default function CashPage() {
     },
   });
 
+  const filteredTransactions = useMemo(() => {
+    const q = filterSearch.trim().toLowerCase();
+    return transactions.filter((t) => {
+      if (filterType !== "all" && t.type !== filterType) return false;
+      if (filterLocalId !== "all") {
+        const lid = parseInt(filterLocalId, 10);
+        if (!Number.isFinite(lid) || t.localId !== lid) return false;
+      }
+      if (filterCategoryId !== "all") {
+        const cid = parseInt(filterCategoryId, 10);
+        if (!Number.isFinite(cid) || t.categoryId !== cid) return false;
+      }
+      if (filterDateFrom && String(t.transactionDate) < filterDateFrom) return false;
+      if (filterDateTo && String(t.transactionDate) > filterDateTo) return false;
+      if (q && !String(t.description ?? "").toLowerCase().includes(q)) return false;
+      return true;
+    });
+  }, [
+    transactions,
+    filterSearch,
+    filterType,
+    filterLocalId,
+    filterCategoryId,
+    filterDateFrom,
+    filterDateTo,
+  ]);
+
   const totalIncome = useMemo(
     () =>
-      transactions.filter((t) => t.type === "income").reduce((s, t) => s + parseFloat(String(t.amount) || "0"), 0),
-    [transactions],
+      filteredTransactions
+        .filter((t) => t.type === "income")
+        .reduce((s, t) => s + parseFloat(String(t.amount) || "0"), 0),
+    [filteredTransactions],
   );
   const totalExpense = useMemo(
     () =>
-      transactions
+      filteredTransactions
         .filter((t) => t.type === "expense")
         .reduce((s, t) => s + Math.abs(parseFloat(String(t.amount) || "0")), 0),
-    [transactions],
+    [filteredTransactions],
   );
 
   const openBatch = () => {
-    setDraftRows([makeDraftRow()]);
+    draftRowSeqRef.current = 0;
+    setDraftRows([makeDraftRow(draftRowSeqRef)]);
     setBatchOpen(true);
   };
 
-  const addDraftRow = () => setDraftRows((r) => [...r, makeDraftRow()]);
+  const addDraftRow = () => setDraftRows((r) => [...r, makeDraftRow(draftRowSeqRef)]);
   const removeDraftRow = (key: string) =>
     setDraftRows((r) => (r.length <= 1 ? r : r.filter((x) => x.key !== key)));
 
@@ -354,6 +493,31 @@ export default function CashPage() {
   const categoriasForType = (t: "income" | "expense") =>
     t === "income" ? incomeCategories : expenseCategories;
 
+  const listEmptyMessage = useMemo(
+    () =>
+      transactions.length === 0
+        ? "No hay movimientos en efectivo registrados."
+        : "Ningún movimiento coincide con los filtros.",
+    [transactions.length],
+  );
+
+  const clearFilters = () => {
+    setFilterSearch("");
+    setFilterType("all");
+    setFilterLocalId("all");
+    setFilterCategoryId("all");
+    setFilterDateFrom("");
+    setFilterDateTo("");
+  };
+
+  const filtersActive =
+    filterSearch.trim() !== "" ||
+    filterType !== "all" ||
+    filterLocalId !== "all" ||
+    filterCategoryId !== "all" ||
+    filterDateFrom !== "" ||
+    filterDateTo !== "";
+
   return (
     <div className="space-y-6">
       <PageHeader
@@ -370,7 +534,12 @@ export default function CashPage() {
       <div className="grid gap-4 md:grid-cols-3">
         <Card>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Ingresos</CardTitle>
+            <div>
+              <CardTitle className="text-sm font-medium">Ingresos</CardTitle>
+              {filteredTransactions.length !== transactions.length && (
+                <p className="text-xs text-muted-foreground font-normal mt-0.5">Filtrado</p>
+              )}
+            </div>
             <TrendingUp className="h-4 w-4 text-green-600" />
           </CardHeader>
           <CardContent>
@@ -379,7 +548,12 @@ export default function CashPage() {
         </Card>
         <Card>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Egresos</CardTitle>
+            <div>
+              <CardTitle className="text-sm font-medium">Egresos</CardTitle>
+              {filteredTransactions.length !== transactions.length && (
+                <p className="text-xs text-muted-foreground font-normal mt-0.5">Filtrado</p>
+              )}
+            </div>
             <TrendingDown className="h-4 w-4 text-red-600" />
           </CardHeader>
           <CardContent>
@@ -392,40 +566,116 @@ export default function CashPage() {
             <Banknote className="h-4 w-4 text-muted-foreground" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">{transactions.length}</div>
+            <div className="text-2xl font-bold">{filteredTransactions.length}</div>
+            {filtersActive && (
+              <p className="text-xs text-muted-foreground mt-1">Según filtros aplicados</p>
+            )}
           </CardContent>
         </Card>
       </div>
 
       <Card>
         <CardHeader>
-          <CardTitle>Listado</CardTitle>
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+            <CardTitle className="flex items-center gap-2">
+              <Filter className="h-4 w-4" />
+              Listado
+            </CardTitle>
+            {filtersActive && (
+              <Button type="button" variant="outline" size="sm" onClick={clearFilters}>
+                Limpiar filtros
+              </Button>
+            )}
+          </div>
         </CardHeader>
-        <CardContent>
+        <CardContent className="space-y-4">
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
+            <div className="space-y-1 sm:col-span-2">
+              <Label className="text-xs">Buscar en descripción</Label>
+              <Input
+                placeholder="Texto en descripción…"
+                value={filterSearch}
+                onChange={(e) => setFilterSearch(e.target.value)}
+              />
+            </div>
+            <div className="space-y-1">
+              <Label className="text-xs">Tipo</Label>
+              <Select value={filterType} onValueChange={(v) => setFilterType(v as "all" | "income" | "expense")}>
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">Todos</SelectItem>
+                  <SelectItem value="income">Ingresos</SelectItem>
+                  <SelectItem value="expense">Egresos</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-1">
+              <Label className="text-xs">Local</Label>
+              <Select value={filterLocalId} onValueChange={setFilterLocalId}>
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">Todos los locales</SelectItem>
+                  {locals.map((l) => (
+                    <SelectItem key={l.id} value={String(l.id)}>
+                      {l.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-1">
+              <Label className="text-xs">Categoría</Label>
+              <Select value={filterCategoryId} onValueChange={setFilterCategoryId}>
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent className="max-h-72">
+                  <SelectItem value="all">Todas las categorías</SelectItem>
+                  {allCategoriesSorted.map((c) => (
+                    <SelectItem key={c.id} value={String(c.id)}>
+                      {c.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-1">
+              <Label className="text-xs">Desde</Label>
+              <Input type="date" value={filterDateFrom} onChange={(e) => setFilterDateFrom(e.target.value)} />
+            </div>
+            <div className="space-y-1">
+              <Label className="text-xs">Hasta</Label>
+              <Input type="date" value={filterDateTo} onChange={(e) => setFilterDateTo(e.target.value)} />
+            </div>
+          </div>
           {isLoading ? (
             <p className="text-sm text-muted-foreground">Cargando…</p>
           ) : (
             <DataTable
               columns={columns}
-              data={transactions}
+              data={filteredTransactions}
               pageSize={25}
-              searchKeys={["description"]}
-              emptyMessage="No hay movimientos en efectivo registrados."
+              showSearch={false}
+              emptyMessage={listEmptyMessage}
             />
           )}
         </CardContent>
       </Card>
 
       <Dialog open={batchOpen} onOpenChange={setBatchOpen}>
-        <DialogContent className="max-w-3xl max-h-[90vh] flex flex-col">
+        <DialogContent className="max-w-3xl max-h-[90vh] flex flex-col overflow-hidden">
           <DialogHeader>
             <DialogTitle>Nuevo movimiento en efectivo</DialogTitle>
             <DialogDescription>
               Podés agregar varias filas y guardarlas todas en una sola operación.
             </DialogDescription>
           </DialogHeader>
-          <ScrollArea className="flex-1 max-h-[55vh] pr-3">
-            <div className="space-y-4">
+          <ScrollArea className="h-[min(50vh,520px)] w-full pr-3 border rounded-md">
+            <div className="space-y-4 p-3">
               {draftRows.map((r) => (
                 <div
                   key={r.key}
@@ -484,21 +734,12 @@ export default function CashPage() {
                   </div>
                   <div className="md:col-span-6 space-y-1">
                     <Label className="text-xs">Categoría</Label>
-                    <Select
-                      value={r.categoryId || undefined}
-                      onValueChange={(v) => patchDraft(r.key, { categoryId: v })}
-                    >
-                      <SelectTrigger>
-                        <SelectValue placeholder="Elegir…" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {categoriasForType(r.type).map((c) => (
-                          <SelectItem key={c.id} value={String(c.id)}>
-                            {c.name}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
+                    <CategoryPicker
+                      value={r.categoryId}
+                      onChange={(id) => patchDraft(r.key, { categoryId: id })}
+                      categories={categoriasForType(r.type)}
+                      placeholder="Elegir categoría…"
+                    />
                   </div>
                   <div className="md:col-span-6 space-y-1">
                     <Label className="text-xs">Local</Label>
@@ -547,22 +788,14 @@ export default function CashPage() {
             <div className="space-y-3 py-2">
               <div className="space-y-1">
                 <Label>Categoría</Label>
-                <Select
-                  value={editCategoryId ? editCategoryId : "__sin__"}
-                  onValueChange={(v) => setEditCategoryId(v === "__sin__" ? "" : v)}
-                >
-                  <SelectTrigger>
-                    <SelectValue placeholder="Sin categoría" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="__sin__">Sin categoría</SelectItem>
-                    {categoriasForType(editRow.type).map((c) => (
-                      <SelectItem key={c.id} value={String(c.id)}>
-                        {c.name}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                <CategoryPicker
+                  value={editCategoryId}
+                  onChange={setEditCategoryId}
+                  categories={categoriasForType(editRow.type)}
+                  placeholder="Elegir categoría…"
+                  allowClear
+                  clearLabel="Sin categoría"
+                />
               </div>
               <div className="space-y-1">
                 <Label>Local</Label>
