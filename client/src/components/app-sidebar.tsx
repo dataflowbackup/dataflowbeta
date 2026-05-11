@@ -29,6 +29,7 @@ import {
   FolderTree,
   Layers,
   Briefcase,
+  Banknote,
 } from "lucide-react";
 import { useAuth } from "@/hooks/useAuth";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
@@ -107,6 +108,7 @@ const menuSections: MenuSection[] = [
     defaultOpen: false,
     items: [
       { title: "Extractos", url: "/extractos", icon: Receipt },
+      { title: "Efectivo", url: "/efectivo", icon: Banknote },
       { title: "Categorias Mov.", url: "/categorias-movimientos", icon: Tags },
       { title: "Grupos Financ.", url: "/grupos-financieros", icon: FolderTree },
       { title: "Balances Financieros", url: "/balance", icon: BarChart3 },

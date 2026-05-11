@@ -32,6 +32,7 @@ import CostHistoryPage from "@/pages/cost-history";
 import TransactionCategoriesPage from "@/pages/transaction-categories";
 import FinancialGroupsPage from "@/pages/financial-groups";
 import BankStatementsPage from "@/pages/bank-statements";
+import CashPage from "@/pages/cash";
 import BalancePage from "@/pages/balance";
 import DashboardPage from "@/pages/dashboard";
 import StockPage from "@/pages/stock";
@@ -72,6 +73,7 @@ function AppRouter() {
       <Route path="/categorias-movimientos" component={TransactionCategoriesPage} />
       <Route path="/grupos-financieros" component={FinancialGroupsPage} />
       <Route path="/extractos" component={BankStatementsPage} />
+      <Route path="/efectivo" component={CashPage} />
       <Route path="/balance" component={BalancePage} />
       <Route path="/dashboard" component={DashboardPage} />
       <Route path="/stock" component={StockPage} />

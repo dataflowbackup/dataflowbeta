@@ -306,9 +306,22 @@ export interface IStorage {
       offset?: number;
       /** Paginación estable para listados grandes (sin OFFSET); orden: fecha DESC, id DESC */
       cursor?: { transactionDate: string; id: number };
+      bankSource?: string;
     },
   ): Promise<Transaction[]>;
-  getTransactionCount(clientId: number): Promise<number>;
+  getTransactionCount(clientId: number, options?: { bankSource?: string }): Promise<number>;
+  insertCashMovementBatch(
+    clientId: number,
+    userId: string | undefined,
+    rows: Array<{
+      transactionDate: string;
+      description: string;
+      categoryId: number;
+      localId: number | null | undefined;
+      type: "income" | "expense";
+      amount: number;
+    }>,
+  ): Promise<Transaction[]>;
   createTransaction(transaction: InsertTransaction): Promise<Transaction>;
   createTransactionsBatch(transactionsList: InsertTransaction[]): Promise<number>;
   updateTransaction(clientId: number, id: number, transaction: Partial<InsertTransaction>): Promise<Transaction | undefined>;
@@ -1998,11 +2011,16 @@ export class DatabaseStorage implements IStorage {
     return del.length > 0;
   }
 
-  async getTransactionCount(clientId: number): Promise<number> {
+  async getTransactionCount(clientId: number, options?: { bankSource?: string }): Promise<number> {
+    const conds = [eq(transactions.clientId, clientId)];
+    if (options?.bankSource != null && options.bankSource !== "") {
+      conds.push(eq(transactions.bankSource, options.bankSource));
+    }
+    const whereClause = conds.length === 1 ? conds[0]! : and(...conds);
     const [row] = await db
       .select({ c: sql<number>`count(*)` })
       .from(transactions)
-      .where(eq(transactions.clientId, clientId));
+      .where(whereClause);
     return Number(row?.c ?? 0);
   }
 
@@ -2012,21 +2030,27 @@ export class DatabaseStorage implements IStorage {
       limit?: number;
       offset?: number;
       cursor?: { transactionDate: string; id: number };
+      bankSource?: string;
     },
   ): Promise<Transaction[]> {
     const lim = options?.limit;
     const off = options?.offset ?? 0;
     const cursor = options?.cursor;
+    const bankSource = options?.bankSource;
 
-    const whereClause = cursor
-      ? and(
-          eq(transactions.clientId, clientId),
-          or(
-            lt(transactions.transactionDate, cursor.transactionDate),
-            and(eq(transactions.transactionDate, cursor.transactionDate), lt(transactions.id, cursor.id)),
-          ),
-        )
-      : eq(transactions.clientId, clientId);
+    const conds = [eq(transactions.clientId, clientId)];
+    if (bankSource != null && bankSource !== "") {
+      conds.push(eq(transactions.bankSource, bankSource));
+    }
+    if (cursor) {
+      conds.push(
+        or(
+          lt(transactions.transactionDate, cursor.transactionDate),
+          and(eq(transactions.transactionDate, cursor.transactionDate), lt(transactions.id, cursor.id)),
+        )!,
+      );
+    }
+    const whereClause = conds.length === 1 ? conds[0]! : and(...conds);
 
     let qb = db
       .select()
@@ -2034,7 +2058,6 @@ export class DatabaseStorage implements IStorage {
       .where(whereClause)
       .orderBy(desc(transactions.transactionDate), desc(transactions.id));
 
-    // OFFSET solo sin cursor (compat); con cursor el siguiente bloque no debe saltar filas.
     if (!cursor && off > 0) {
       qb = qb.offset(off);
     }
@@ -2042,6 +2065,67 @@ export class DatabaseStorage implements IStorage {
       qb = qb.limit(lim);
     }
     return await qb;
+  }
+
+  async insertCashMovementBatch(
+    clientId: number,
+    userId: string | undefined,
+    rows: Array<{
+      transactionDate: string;
+      description: string;
+      categoryId: number;
+      localId: number | null | undefined;
+      type: "income" | "expense";
+      amount: number;
+    }>,
+  ): Promise<Transaction[]> {
+    if (rows.length === 0) return [];
+
+    const cats = await db
+      .select()
+      .from(transactionCategories)
+      .where(eq(transactionCategories.clientId, clientId));
+    const catById = new Map(cats.map((c) => [c.id, c]));
+
+    const localsList = await this.getLocals(clientId);
+    const localIds = new Set(localsList.map((l) => l.id));
+
+    for (const r of rows) {
+      const cat = catById.get(r.categoryId);
+      if (!cat) {
+        throw new Error(`Categoría no encontrada (${r.categoryId})`);
+      }
+      if (cat.type !== "both" && cat.type !== r.type) {
+        throw new Error(`La categoría «${cat.name}» no corresponde a un movimiento de ${r.type === "income" ? "ingreso" : "egreso"}`);
+      }
+      if (r.localId != null && !localIds.has(r.localId)) {
+        throw new Error("Local inválido");
+      }
+    }
+
+    return await db.transaction(async (tx) => {
+      const out: Transaction[] = [];
+      for (const r of rows) {
+        const [row] = await tx
+          .insert(transactions)
+          .values({
+            clientId,
+            localId: r.localId ?? undefined,
+            bankAccountId: undefined,
+            categoryId: r.categoryId,
+            transactionDate: r.transactionDate,
+            description: r.description,
+            amount: String(Math.abs(r.amount)),
+            type: r.type,
+            source: "manual",
+            bankSource: "cash",
+            createdBy: userId ?? undefined,
+          })
+          .returning();
+        out.push(row);
+      }
+      return out;
+    });
   }
 
   async createTransaction(transaction: InsertTransaction): Promise<Transaction> {

@@ -93,6 +93,24 @@ const updateTransactionSchema = z.object({
   invoiced: z.union([z.boolean(), z.coerce.boolean()]).optional(),
 }).strict();
 
+const cashMovementRowSchema = z.object({
+  transactionDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  description: z.string().trim().min(1).max(2000),
+  categoryId: z.coerce.number().int().positive(),
+  localId: z
+    .union([z.coerce.number().int().positive(), z.null(), z.literal(""), z.literal("none")])
+    .optional()
+    .transform((v) => (v === "" || v === "none" || v === undefined || v === null ? null : v)),
+  type: z.enum(["income", "expense"]),
+  amount: z.coerce.number().positive().max(1e14),
+});
+
+const cashBatchBodySchema = z
+  .object({
+    items: z.array(cashMovementRowSchema).min(1).max(200),
+  })
+  .strict();
+
 const createBankAccountBodySchema = z.object({
   name: z.string().min(1),
   type: z.string().max(50).optional(),
@@ -2113,8 +2131,19 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const page = useOffsetPages ? pageParsed.data : 0;
       const offset = useLegacyFlat ? 0 : useOffsetPages ? page * pageSize : 0;
 
+      const rawBankSource = req.query.bankSource;
+      let bankSourceFilter: string | undefined;
+      if (rawBankSource !== undefined && rawBankSource !== null && String(rawBankSource).trim() !== "") {
+        const s = String(rawBankSource).trim();
+        if (!/^[a-z0-9_-]{1,40}$/i.test(s)) {
+          return res.status(400).json({ message: "bankSource invalido" });
+        }
+        bankSourceFilter = s;
+      }
+
       const data = await storage.getTransactions(clientId, {
         limit: pageSize,
+        ...(bankSourceFilter ? { bankSource: bankSourceFilter } : {}),
         ...(useLegacyFlat
           ? {}
           : hasCursorPair
@@ -2143,7 +2172,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         return;
       }
 
-      const total = hasCursorPair ? undefined : await storage.getTransactionCount(clientId);
+      const total = hasCursorPair
+        ? undefined
+        : await storage.getTransactionCount(clientId, bankSourceFilter ? { bankSource: bankSourceFilter } : undefined);
       res.json({
         items: enriched,
         ...(total !== undefined ? { total } : {}),
@@ -2474,6 +2505,22 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       return res.json({ ok: true });
     } catch (e: any) {
       res.status(500).json({ message: e.message });
+    }
+  });
+
+  app.post("/api/transactions/cash-batch", isAuthenticated, async (req, res) => {
+    const cashParse = cashBatchBodySchema.safeParse(req.body);
+    if (!cashParse.success) {
+      return res.status(400).json({ message: "Datos invalidos", errors: cashParse.error.flatten() });
+    }
+    try {
+      const clientId = await getClientId(req);
+      const session = req.session as any;
+      const userId = session?.userId || (req.user as any)?.claims?.sub;
+      const created = await storage.insertCashMovementBatch(clientId, userId, cashParse.data.items);
+      res.status(201).json({ inserted: created.length, items: created });
+    } catch (e: any) {
+      res.status(400).json({ message: e.message || "Error al registrar movimientos" });
     }
   });
 
