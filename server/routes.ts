@@ -2070,23 +2070,58 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const pageSizeParsed = z.coerce.number().int().positive().max(MAX_PAGE_SIZE).safeParse(req.query.pageSize);
       const legacyLimitParsed = z.coerce.number().int().positive().max(100000).safeParse(req.query.limit);
 
+      const afterDateRaw = req.query.afterDate;
+      const afterIdRaw = req.query.afterId;
+      const afterDateProvided =
+        afterDateRaw !== undefined && afterDateRaw !== null && String(afterDateRaw).trim() !== "";
+      const afterIdProvided =
+        afterIdRaw !== undefined && afterIdRaw !== null && String(afterIdRaw).trim() !== "";
+      if (afterDateProvided !== afterIdProvided) {
+        return res.status(400).json({ message: "afterDate y afterId deben enviarse juntos" });
+      }
+      const afterDateStr =
+        typeof afterDateRaw === "string" && /^\d{4}-\d{2}-\d{2}$/.test(String(afterDateRaw).trim())
+          ? String(afterDateRaw).trim()
+          : undefined;
+      if (afterDateProvided && !afterDateStr) {
+        return res.status(400).json({ message: "afterDate debe ser YYYY-MM-DD" });
+      }
+      const afterIdParsed = z.coerce.number().int().positive().safeParse(afterIdRaw);
+      if (afterIdProvided && !afterIdParsed.success) {
+        return res.status(400).json({ message: "afterId inválido" });
+      }
+      const hasCursorPair = Boolean(afterDateStr && afterIdProvided && afterIdParsed.success);
+
       const useLegacyFlat =
         req.query.page === undefined &&
         req.query.pageSize === undefined &&
+        !hasCursorPair &&
         legacyLimitParsed.success;
 
-      const page = pageParsed.success ? pageParsed.data : 0;
       const pageSize = pageSizeParsed.success
         ? Math.min(pageSizeParsed.data, MAX_PAGE_SIZE)
         : useLegacyFlat
           ? legacyLimitParsed.data!
           : DEFAULT_PAGE_SIZE;
 
-      const offset = useLegacyFlat ? 0 : page * pageSize;
+      const useOffsetPages =
+        !useLegacyFlat &&
+        !hasCursorPair &&
+        req.query.page !== undefined &&
+        pageParsed.success;
+
+      const page = useOffsetPages ? pageParsed.data : 0;
+      const offset = useLegacyFlat ? 0 : useOffsetPages ? page * pageSize : 0;
 
       const data = await storage.getTransactions(clientId, {
         limit: pageSize,
-        ...(useLegacyFlat ? {} : { offset }),
+        ...(useLegacyFlat
+          ? {}
+          : hasCursorPair
+            ? { cursor: { transactionDate: afterDateStr!, id: afterIdParsed.data! } }
+            : useOffsetPages && offset > 0
+              ? { offset }
+              : {}),
       });
       const categories = await storage.getTransactionCategories(clientId);
       const allLocals = await storage.getLocals(clientId);
@@ -2108,11 +2143,11 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         return;
       }
 
-      const total = await storage.getTransactionCount(clientId);
+      const total = hasCursorPair ? undefined : await storage.getTransactionCount(clientId);
       res.json({
         items: enriched,
-        total,
-        page,
+        ...(total !== undefined ? { total } : {}),
+        ...(useOffsetPages ? { page } : {}),
         pageSize,
       });
     } catch (e: any) {

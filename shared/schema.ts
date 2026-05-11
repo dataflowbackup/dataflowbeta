@@ -837,7 +837,13 @@ export const transactions = pgTable("transactions", {
   importBatchId: varchar("import_batch_id", { length: 50 }),
   createdBy: varchar("created_by").references(() => users.id),
   createdAt: timestamp("created_at").defaultNow(),
-});
+}, (table) => [
+  index("transactions_client_id_txn_date_id_idx").on(
+    table.clientId,
+    table.transactionDate,
+    table.id,
+  ),
+]);
 
 export const insertTransactionSchema = createInsertSchema(transactions).omit({ id: true, createdAt: true });
 export type InsertTransaction = z.infer<typeof insertTransactionSchema>;

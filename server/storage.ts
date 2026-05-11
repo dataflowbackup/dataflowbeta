@@ -1,5 +1,5 @@
 import { db } from "./db";
-import { eq, and, desc, asc, gte, lte, sql, isNull, isNotNull, inArray, or } from "drizzle-orm";
+import { eq, and, desc, asc, gte, lte, sql, isNull, isNotNull, inArray, or, lt } from "drizzle-orm";
 import {
   users,
   clients,
@@ -299,7 +299,15 @@ export interface IStorage {
   createFinancialSavedView(row: InsertFinancialSavedView): Promise<FinancialSavedView>;
   deleteFinancialSavedView(clientId: number, userId: string, id: number): Promise<boolean>;
   
-  getTransactions(clientId: number, options?: { limit?: number; offset?: number }): Promise<Transaction[]>;
+  getTransactions(
+    clientId: number,
+    options?: {
+      limit?: number;
+      offset?: number;
+      /** Paginación estable para listados grandes (sin OFFSET); orden: fecha DESC, id DESC */
+      cursor?: { transactionDate: string; id: number };
+    },
+  ): Promise<Transaction[]>;
   getTransactionCount(clientId: number): Promise<number>;
   createTransaction(transaction: InsertTransaction): Promise<Transaction>;
   createTransactionsBatch(transactionsList: InsertTransaction[]): Promise<number>;
@@ -1998,17 +2006,36 @@ export class DatabaseStorage implements IStorage {
     return Number(row?.c ?? 0);
   }
 
-  async getTransactions(clientId: number, options?: { limit?: number; offset?: number }): Promise<Transaction[]> {
+  async getTransactions(
+    clientId: number,
+    options?: {
+      limit?: number;
+      offset?: number;
+      cursor?: { transactionDate: string; id: number };
+    },
+  ): Promise<Transaction[]> {
     const lim = options?.limit;
     const off = options?.offset ?? 0;
-    // Mismo día en miles de filas (p. ej. import MP) sin tie-break → OFFSET pagina mal y “desaparecen” movimientos.
+    const cursor = options?.cursor;
+
+    const whereClause = cursor
+      ? and(
+          eq(transactions.clientId, clientId),
+          or(
+            lt(transactions.transactionDate, cursor.transactionDate),
+            and(eq(transactions.transactionDate, cursor.transactionDate), lt(transactions.id, cursor.id)),
+          ),
+        )
+      : eq(transactions.clientId, clientId);
+
     let qb = db
       .select()
       .from(transactions)
-      .where(eq(transactions.clientId, clientId))
+      .where(whereClause)
       .orderBy(desc(transactions.transactionDate), desc(transactions.id));
 
-    if (off > 0) {
+    // OFFSET solo sin cursor (compat); con cursor el siguiente bloque no debe saltar filas.
+    if (!cursor && off > 0) {
       qb = qb.offset(off);
     }
     if (lim != null && lim > 0) {

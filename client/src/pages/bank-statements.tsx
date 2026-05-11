@@ -220,10 +220,27 @@ export default function BankStatementsPage() {
       const PAGE_SIZE = 800;
       const MAX_PAGES = 250;
       const mergedById = new Map<number, TransactionWithRelations>();
-      let page = 0;
+      let afterDate: string | undefined;
+      let afterId: number | undefined;
+      let pageIdx = 0;
 
-      while (page < MAX_PAGES) {
-        const res = await fetch(`/api/transactions?page=${page}&pageSize=${PAGE_SIZE}`, {
+      const encodeCursorDate = (d: string | Date | null | undefined): string => {
+        if (d == null) return "";
+        if (typeof d === "string") return d.length >= 10 ? d.slice(0, 10) : d;
+        try {
+          return d.toISOString().slice(0, 10);
+        } catch {
+          return "";
+        }
+      };
+
+      while (pageIdx < MAX_PAGES) {
+        const qs = new URLSearchParams({ pageSize: String(PAGE_SIZE) });
+        if (afterDate !== undefined && afterId !== undefined) {
+          qs.set("afterDate", afterDate);
+          qs.set("afterId", String(afterId));
+        }
+        const res = await fetch(`/api/transactions?${qs}`, {
           credentials: "include",
         });
         if (!res.ok) {
@@ -236,7 +253,7 @@ export default function BankStatementsPage() {
         }
         const body = (await res.json()) as
           | TransactionWithRelations[]
-          | { items: TransactionWithRelations[]; total: number; page: number; pageSize: number };
+          | { items: TransactionWithRelations[]; total: number; page?: number; pageSize: number };
 
         if (Array.isArray(body)) {
           return body;
@@ -253,7 +270,14 @@ export default function BankStatementsPage() {
         if (body.items.length === 0 || body.items.length < PAGE_SIZE || noNewIds) {
           break;
         }
-        page += 1;
+        const last = body.items[body.items.length - 1]!;
+        const nextAfter = encodeCursorDate(last.transactionDate);
+        if (!nextAfter || last.id == null) {
+          break;
+        }
+        afterDate = nextAfter;
+        afterId = last.id;
+        pageIdx += 1;
       }
 
       return Array.from(mergedById.values()).sort((a, b) => {
@@ -545,7 +569,7 @@ export default function BankStatementsPage() {
             throw new Error(tx || "Error al consultar el estado del import");
           }
           last = await pr.json();
-          if (last.status === "done" || last.status === "failed") break;
+          if (last?.status === "done" || last?.status === "failed") break;
         }
         if (!last || (last.status !== "done" && last.status !== "failed")) {
           throw new Error(
