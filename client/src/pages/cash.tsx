@@ -43,7 +43,7 @@ import {
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
-import { formatCurrency, formatDate } from "@/lib/formatters";
+import { formatCurrency, formatDate, formatEsArAmountInput, parseEsArAmount } from "@/lib/formatters";
 import { cn } from "@/lib/utils";
 import {
   Banknote,
@@ -426,7 +426,7 @@ export default function CashPage() {
           categoryId: parseInt(r.categoryId, 10),
           localId: r.localId === "none" ? null : parseInt(r.localId, 10),
           type: r.type,
-          amount: parseFloat(String(r.amount).replace(",", ".")),
+          amount: parseEsArAmount(String(r.amount)),
         })),
       };
       const res = await apiRequest("POST", "/api/transactions/cash-batch", payload);
@@ -454,7 +454,7 @@ export default function CashPage() {
       return;
     }
     for (const r of prepared) {
-      const amt = parseFloat(String(r.amount).replace(",", "."));
+      const amt = parseEsArAmount(String(r.amount));
       if (!Number.isFinite(amt) || amt <= 0) {
         toast({ title: "Importe inválido", description: "Revisá los montos ingresados.", variant: "destructive" });
         return;
@@ -829,9 +829,12 @@ export default function CashPage() {
                     <Label className="text-xs">Importe</Label>
                     <Input
                       inputMode="decimal"
-                      placeholder="0.00"
+                      placeholder="0,00"
+                      className="font-mono"
                       value={r.amount}
-                      onChange={(e) => patchDraft(r.key, { amount: e.target.value })}
+                      onChange={(e) =>
+                        patchDraft(r.key, { amount: formatEsArAmountInput(e.target.value) })
+                      }
                     />
                   </div>
                   <div className="md:col-span-6 space-y-1">
