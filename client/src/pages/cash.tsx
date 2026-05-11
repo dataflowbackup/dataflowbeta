@@ -172,6 +172,74 @@ function CategoryPicker({
   );
 }
 
+/** Filtro de listado: opción "todos" + lista con búsqueda (cmdk). */
+function FilterSearchableSelect({
+  value,
+  onChange,
+  allLabel,
+  items,
+  searchPlaceholder,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  allLabel: string;
+  items: { id: number; name: string }[];
+  searchPlaceholder: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const selected = value === "all" ? null : items.find((x) => String(x.id) === value);
+  const label = selected?.name ?? allLabel;
+  return (
+    <Popover open={open} onOpenChange={setOpen} modal={false}>
+      <PopoverTrigger asChild>
+        <Button
+          type="button"
+          variant="outline"
+          role="combobox"
+          aria-expanded={open}
+          className="w-full justify-between font-normal min-h-9"
+        >
+          <span className="truncate text-left">{label}</span>
+          <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent className="w-[min(100vw-2rem,24rem)] p-0 z-[100]" align="start">
+        <Command>
+          <CommandInput placeholder={searchPlaceholder} />
+          <CommandList className="max-h-[280px]">
+            <CommandEmpty>Sin resultados.</CommandEmpty>
+            <CommandGroup>
+              <CommandItem
+                value={`__all__ ${allLabel}`}
+                onSelect={() => {
+                  onChange("all");
+                  setOpen(false);
+                }}
+              >
+                <Check className={cn("mr-2 h-4 w-4 shrink-0", value === "all" ? "opacity-100" : "opacity-0")} />
+                {allLabel}
+              </CommandItem>
+              {items.map((item) => (
+                <CommandItem
+                  key={item.id}
+                  value={`${item.name} ${item.id}`}
+                  onSelect={() => {
+                    onChange(String(item.id));
+                    setOpen(false);
+                  }}
+                >
+                  <Check className={cn("mr-2 h-4 w-4 shrink-0", value === String(item.id) ? "opacity-100" : "opacity-0")} />
+                  <span className="truncate">{item.name}</span>
+                </CommandItem>
+              ))}
+            </CommandGroup>
+          </CommandList>
+        </Command>
+      </PopoverContent>
+    </Popover>
+  );
+}
+
 export default function CashPage() {
   const { toast } = useToast();
   const draftRowSeqRef = useRef(0);
@@ -210,6 +278,21 @@ export default function CashPage() {
         .filter((c) => c.active !== false)
         .sort((a, b) => String(a.name).localeCompare(String(b.name), "es")),
     [categories],
+  );
+
+  const localsSorted = useMemo(
+    () => [...locals].sort((a, b) => String(a.name).localeCompare(String(b.name), "es")),
+    [locals],
+  );
+
+  const categoryFiltersItems = useMemo(
+    () => allCategoriesSorted.map((c) => ({ id: c.id, name: c.name })),
+    [allCategoriesSorted],
+  );
+
+  const localFiltersItems = useMemo(
+    () => localsSorted.map((l) => ({ id: l.id, name: l.name })),
+    [localsSorted],
   );
 
   const {
@@ -644,35 +727,23 @@ export default function CashPage() {
             </div>
             <div className="space-y-1">
               <Label className="text-xs">Local</Label>
-              <Select value={filterLocalId} onValueChange={setFilterLocalId}>
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">Todos los locales</SelectItem>
-                  {locals.map((l) => (
-                    <SelectItem key={l.id} value={String(l.id)}>
-                      {l.name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              <FilterSearchableSelect
+                value={filterLocalId}
+                onChange={setFilterLocalId}
+                allLabel="Todos los locales"
+                items={localFiltersItems}
+                searchPlaceholder="Buscar local…"
+              />
             </div>
             <div className="space-y-1">
               <Label className="text-xs">Categoría</Label>
-              <Select value={filterCategoryId} onValueChange={setFilterCategoryId}>
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent className="max-h-72">
-                  <SelectItem value="all">Todas las categorías</SelectItem>
-                  {allCategoriesSorted.map((c) => (
-                    <SelectItem key={c.id} value={String(c.id)}>
-                      {c.name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              <FilterSearchableSelect
+                value={filterCategoryId}
+                onChange={setFilterCategoryId}
+                allLabel="Todas las categorías"
+                items={categoryFiltersItems}
+                searchPlaceholder="Buscar categoría…"
+              />
             </div>
             <div className="space-y-1">
               <Label className="text-xs">Desde</Label>
