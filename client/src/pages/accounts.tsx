@@ -29,6 +29,7 @@ import {
   Download,
 } from "lucide-react";
 import type { Supplier, Local, Rubro, Invoice } from "@shared/schema";
+import { formatInvoiceVoucherDisplay } from "@shared/invoiceDisplay";
 
 interface SupplierAccount extends Supplier {
   totalDebt: number;
@@ -58,6 +59,13 @@ interface InvoiceWithSupplier extends Invoice {
   supplier?: Supplier | null;
   local?: Local | null;
 }
+
+type OverdueInvoiceRow = InvoiceWithSupplier & {
+  voucherDisplay: string;
+  invoiceSalePointSearch: string;
+  invoiceNumberSearch: string;
+  supplierSearch: string;
+};
 
 type AccountTab = "suppliers" | "overdue";
 
@@ -116,6 +124,18 @@ export default function AccountsPage() {
     })).sort((a, b) => new Date(a.dueDate!).getTime() - new Date(b.dueDate!).getTime());
   }, [invoices, accounts, locals]);
 
+  const overdueInvoiceRows: OverdueInvoiceRow[] = useMemo(
+    () =>
+      overdueInvoices.map((inv) => ({
+        ...inv,
+        voucherDisplay: formatInvoiceVoucherDisplay(inv),
+        invoiceSalePointSearch: inv.invoiceSalePoint ?? "",
+        invoiceNumberSearch: String(inv.invoiceNumber ?? ""),
+        supplierSearch: inv.supplier?.businessName ?? "",
+      })),
+    [overdueInvoices],
+  );
+
   const pieChartData = useMemo(() => {
     const withDebt = accounts
       .filter(a => a.totalDebt > 0)
@@ -143,7 +163,7 @@ export default function AccountsPage() {
     return diff;
   };
 
-  const overdueColumns: Column<InvoiceWithSupplier>[] = [
+  const overdueColumns: Column<OverdueInvoiceRow>[] = [
     {
       key: "invoiceNumber",
       header: "Comprobante",
@@ -153,7 +173,7 @@ export default function AccountsPage() {
             <FileText className="h-4 w-4 text-destructive" />
           </div>
           <div>
-            <div className="font-medium">{row.invoiceNumber}</div>
+            <div className="font-medium font-mono">{row.voucherDisplay}</div>
             <div className="text-xs text-muted-foreground">{row.invoiceType}</div>
           </div>
         </div>
@@ -530,10 +550,10 @@ export default function AccountsPage() {
 
           <DataTable
             columns={overdueColumns}
-            data={overdueInvoices}
+            data={overdueInvoiceRows}
             isLoading={isLoading}
-            searchPlaceholder="Buscar por numero de factura o proveedor..."
-            searchKeys={["invoiceNumber"]}
+            searchPlaceholder="Punto de venta, numero, 0006-00002159 o proveedor..."
+            searchKeys={["invoiceSalePointSearch", "invoiceNumberSearch", "voucherDisplay", "supplierSearch"]}
             emptyMessage="No hay facturas vencidas. Todas las cuentas estan al dia."
             pageSize={15}
           />

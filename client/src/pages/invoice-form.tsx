@@ -50,12 +50,72 @@ import {
 } from "@/components/ui/table";
 import type { Supplier, Local, Supply, Tax, Rubro, SubRubro, UnitOfMeasure } from "@shared/schema";
 import { computeInvoiceTaxes, isInternalTaxType } from "@shared/invoiceTaxComputation";
+import { formatInvoiceVoucherDisplay } from "@shared/invoiceDisplay";
 import { cn } from "@/lib/utils";
 
 interface SupplyWithUnit extends Supply {
   rubro?: Rubro | null;
   subRubro?: SubRubro | null;
   unitOfMeasure?: UnitOfMeasure | null;
+}
+
+function InvoiceSupplierCombobox({
+  suppliers,
+  value,
+  onChange,
+  disabled,
+}: {
+  suppliers: Supplier[];
+  value: number;
+  onChange: (id: number) => void;
+  disabled?: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const active = suppliers.filter((s) => s.active);
+  const selected = value ? active.find((s) => s.id === value) : undefined;
+  return (
+    <Popover open={open} onOpenChange={(o) => !disabled && setOpen(o)} modal={true}>
+      <PopoverTrigger asChild>
+        <Button
+          type="button"
+          variant="outline"
+          role="combobox"
+          aria-expanded={open}
+          disabled={disabled}
+          className="w-full justify-between font-normal min-h-9"
+          data-testid="select-supplier"
+        >
+          <span className="truncate text-left">
+            {selected ? selected.businessName : "Seleccionar proveedor"}
+          </span>
+          <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent className="w-[min(100vw-2rem,28rem)] p-0 z-50" align="start">
+        <Command>
+          <CommandInput placeholder="Buscar proveedor..." />
+          <CommandList className="max-h-[280px]">
+            <CommandEmpty>Sin resultados.</CommandEmpty>
+            <CommandGroup>
+              {active.map((s) => (
+                <CommandItem
+                  key={s.id}
+                  value={`${s.businessName} ${s.id}`}
+                  onSelect={() => {
+                    onChange(s.id);
+                    setOpen(false);
+                  }}
+                >
+                  <Check className={cn("mr-2 h-4 w-4 shrink-0", value === s.id ? "opacity-100" : "opacity-0")} />
+                  <span className="truncate">{s.businessName}</span>
+                </CommandItem>
+              ))}
+            </CommandGroup>
+          </CommandList>
+        </Command>
+      </PopoverContent>
+    </Popover>
+  );
 }
 
 const invoiceTypes = [
@@ -110,7 +170,10 @@ const formSchema = z.object({
   localId: z.coerce.number().min(1, "Seleccione un local"),
   supplierId: z.coerce.number().min(1, "Seleccione un proveedor"),
   supplierRubroId: z.coerce.number().optional(),
-  invoiceNumber: z.string().min(1, "Numero de factura requerido"),
+  invoiceSalePoint: z
+    .string()
+    .regex(/^\d{4}$/, "Exactamente 4 digitos (ej. 0006)"),
+  invoiceNumber: z.string().regex(/^\d{8}$/, "Exactamente 8 digitos (ej. 00002159)"),
   invoiceType: z.string().min(1, "Tipo de comprobante requerido"),
   invoiceDate: z.string().min(1, "Fecha requerida"),
   dueDate: z.string().optional(),
@@ -147,6 +210,7 @@ interface InvoiceDetail {
   id: number;
   localId: number;
   supplierId: number;
+  invoiceSalePoint?: string | null;
   invoiceNumber: string;
   invoiceType: string;
   invoiceDate: string;
@@ -211,6 +275,7 @@ export default function InvoiceFormPage() {
       localId: 0,
       supplierId: 0,
       supplierRubroId: undefined,
+      invoiceSalePoint: "",
       invoiceNumber: "",
       invoiceType: "A",
       invoiceDate: formatDateInput(new Date()),
@@ -262,11 +327,38 @@ export default function InvoiceFormPage() {
         (s) => s.id === existingInvoice.supplierId
       );
 
+      const rawNum = String(existingInvoice.invoiceNumber ?? "").trim();
+      const dbSale = existingInvoice.invoiceSalePoint?.trim();
+      let invoiceSalePoint = "";
+      let invoiceNumberStr = "";
+      if (dbSale && /^\d{4}$/.test(dbSale) && /^\d{8}$/.test(rawNum)) {
+        invoiceSalePoint = dbSale;
+        invoiceNumberStr = rawNum;
+      } else {
+        const compact = /^(\d{4})-(\d{8})$/.exec(rawNum);
+        if (compact) {
+          invoiceSalePoint = compact[1];
+          invoiceNumberStr = compact[2];
+        } else {
+          const parts = rawNum.split("-");
+          if (parts.length === 2 && /^\d{4}$/.test(parts[0]) && /^\d{8}$/.test(parts[1])) {
+            invoiceSalePoint = parts[0];
+            invoiceNumberStr = parts[1];
+          } else {
+            invoiceSalePoint = "0000";
+            const digits = rawNum.replace(/\D/g, "");
+            invoiceNumberStr =
+              digits.length >= 8 ? digits.slice(-8) : digits.padStart(8, "0").slice(-8);
+          }
+        }
+      }
+
       form.reset({
         localId: existingInvoice.localId,
         supplierId: existingInvoice.supplierId,
         supplierRubroId: supplierForInvoice?.rubroId || undefined,
-        invoiceNumber: existingInvoice.invoiceNumber || "",
+        invoiceSalePoint,
+        invoiceNumber: invoiceNumberStr,
         invoiceType: existingInvoice.invoiceType || "A",
         invoiceDate: existingInvoice.invoiceDate
           ? formatDateInput(new Date(existingInvoice.invoiceDate))
@@ -597,7 +689,8 @@ export default function InvoiceFormPage() {
               <div>
                 <p className="text-xs text-muted-foreground">Comprobante</p>
                 <p className="font-medium font-mono" data-testid="text-invoice-number">
-                  {invoiceTypes.find(t => t.value === existingInvoice.invoiceType)?.label} {existingInvoice.invoiceNumber}
+                  {invoiceTypes.find(t => t.value === existingInvoice.invoiceType)?.label}{" "}
+                  {formatInvoiceVoucherDisplay(existingInvoice)}
                 </p>
               </div>
               <div>
@@ -611,6 +704,7 @@ export default function InvoiceFormPage() {
         </Card>
       )}
 
+      {!isViewing && (
       <Form {...form}>
         <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-6">
           <div className="grid gap-6 lg:grid-cols-3">
@@ -651,20 +745,13 @@ export default function InvoiceFormPage() {
                       render={({ field }) => (
                         <FormItem>
                           <FormLabel>Proveedor *</FormLabel>
-                          <Select onValueChange={field.onChange} value={field.value?.toString() || ""}>
-                            <FormControl>
-                              <SelectTrigger data-testid="select-supplier">
-                                <SelectValue placeholder="Seleccionar proveedor" />
-                              </SelectTrigger>
-                            </FormControl>
-                            <SelectContent>
-                              {suppliers.filter(s => s.active).map((supplier) => (
-                                <SelectItem key={supplier.id} value={supplier.id.toString()}>
-                                  {supplier.businessName}
-                                </SelectItem>
-                              ))}
-                            </SelectContent>
-                          </Select>
+                          <FormControl>
+                            <InvoiceSupplierCombobox
+                              suppliers={suppliers}
+                              value={field.value}
+                              onChange={(id) => field.onChange(id)}
+                            />
+                          </FormControl>
                           <FormMessage />
                         </FormItem>
                       )}
@@ -705,7 +792,7 @@ export default function InvoiceFormPage() {
                     />
                   </div>
 
-                  <div className="grid gap-4 sm:grid-cols-3">
+                  <div className="grid gap-4 sm:grid-cols-4">
                     <FormField
                       control={form.control}
                       name="invoiceType"
@@ -732,12 +819,41 @@ export default function InvoiceFormPage() {
                     />
                     <FormField
                       control={form.control}
+                      name="invoiceSalePoint"
+                      render={({ field }) => (
+                        <FormItem>
+                          <FormLabel>Punto de venta *</FormLabel>
+                          <FormControl>
+                            <Input
+                              {...field}
+                              inputMode="numeric"
+                              maxLength={4}
+                              placeholder="0006"
+                              className="font-mono tracking-wider"
+                              data-testid="input-invoice-sale-point"
+                              onChange={(e) => field.onChange(e.target.value.replace(/\D/g, "").slice(0, 4))}
+                            />
+                          </FormControl>
+                          <FormMessage />
+                        </FormItem>
+                      )}
+                    />
+                    <FormField
+                      control={form.control}
                       name="invoiceNumber"
                       render={({ field }) => (
                         <FormItem>
-                          <FormLabel>Numero de Comprobante *</FormLabel>
+                          <FormLabel>Número de comprobante *</FormLabel>
                           <FormControl>
-                            <Input {...field} placeholder="0001-00000001" data-testid="input-invoice-number" />
+                            <Input
+                              {...field}
+                              inputMode="numeric"
+                              maxLength={8}
+                              placeholder="00002159"
+                              className="font-mono tracking-wider"
+                              data-testid="input-invoice-number"
+                              onChange={(e) => field.onChange(e.target.value.replace(/\D/g, "").slice(0, 8))}
+                            />
                           </FormControl>
                           <FormMessage />
                         </FormItem>
@@ -1436,6 +1552,7 @@ export default function InvoiceFormPage() {
           </div>
         </form>
       </Form>
+      )}
     </div>
   );
 }

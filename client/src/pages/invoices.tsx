@@ -22,11 +22,20 @@ import {
   DollarSign,
 } from "lucide-react";
 import type { Invoice, Supplier, Local } from "@shared/schema";
+import { formatInvoiceVoucherDisplay } from "@shared/invoiceDisplay";
 
 interface InvoiceWithRelations extends Invoice {
   supplier?: Supplier | null;
   local?: Local | null;
 }
+
+type InvoiceTableRow = InvoiceWithRelations & {
+  voucherDisplay: string;
+  /** Para busqueda cuando invoiceSalePoint es null en legacy */
+  invoiceSalePointSearch: string;
+  invoiceNumberSearch: string;
+  supplierSearch: string;
+};
 
 const invoiceTypes: Record<string, string> = {
   "A": "Factura A",
@@ -120,6 +129,18 @@ export default function InvoicesPage() {
     });
   }, [invoices, filterStatus, selectedLocalId, selectedSupplierId, selectedExpenseType, selectedActiveState]);
 
+  const invoiceRows: InvoiceTableRow[] = useMemo(
+    () =>
+      filteredInvoices.map((inv) => ({
+        ...inv,
+        voucherDisplay: formatInvoiceVoucherDisplay(inv),
+        invoiceSalePointSearch: inv.invoiceSalePoint ?? "",
+        invoiceNumberSearch: String(inv.invoiceNumber ?? ""),
+        supplierSearch: inv.supplier?.businessName ?? "",
+      })),
+    [filteredInvoices],
+  );
+
   const deleteMutation = useMutation({
     mutationFn: async (id: number) => {
       await apiRequest("DELETE", `/api/invoices/${id}`);
@@ -176,7 +197,7 @@ export default function InvoicesPage() {
     );
   };
 
-  const columns: Column<InvoiceWithRelations>[] = [
+  const columns: Column<InvoiceTableRow>[] = [
     {
       key: "invoiceNumber",
       header: "Comprobante",
@@ -186,7 +207,7 @@ export default function InvoicesPage() {
             <FileText className="h-4 w-4 text-primary" />
           </div>
           <div>
-            <div className="font-medium">{row.invoiceNumber}</div>
+            <div className="font-medium font-mono">{row.voucherDisplay}</div>
             <div className="text-xs text-muted-foreground">
               {invoiceTypes[row.invoiceType] || row.invoiceType}
             </div>
@@ -414,10 +435,10 @@ export default function InvoicesPage() {
 
       <DataTable
         columns={columns}
-        data={filteredInvoices}
+        data={invoiceRows}
         isLoading={isLoading}
-        searchPlaceholder="Buscar por numero o proveedor..."
-        searchKeys={["invoiceNumber"]}
+        searchPlaceholder="Punto de venta, numero, formato 0006-00002159 o proveedor..."
+        searchKeys={["invoiceSalePointSearch", "invoiceNumberSearch", "voucherDisplay", "supplierSearch"]}
         emptyMessage={
           filterStatus === "all" 
             ? "No hay facturas registradas. Comienza cargando tu primera factura."
@@ -430,7 +451,7 @@ export default function InvoicesPage() {
         open={!!deleteInvoice}
         onOpenChange={(open) => !open && setDeleteInvoice(null)}
         title="Eliminar Factura"
-        description={`¿Esta seguro que desea eliminar la factura "${deleteInvoice?.invoiceNumber}"? Esta accion no se puede deshacer y afectara los saldos de cuenta corriente.`}
+        description={`¿Esta seguro que desea eliminar la factura "${deleteInvoice ? formatInvoiceVoucherDisplay(deleteInvoice) : ""}"? Esta accion no se puede deshacer y afectara los saldos de cuenta corriente.`}
         confirmLabel="Eliminar"
         onConfirm={() => deleteInvoice && deleteMutation.mutate(deleteInvoice.id)}
         variant="destructive"

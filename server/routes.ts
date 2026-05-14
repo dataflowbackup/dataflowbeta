@@ -1180,10 +1180,19 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const items = Array.isArray(rawItems) ? rawItems : [];
       const invoiceLevelTaxes = Array.isArray(rawInvoiceTaxes) ? rawInvoiceTaxes : [];
 
-      if (invoice.invoiceNumber && invoice.supplierId) {
-        const existing = await storage.getInvoiceByNumber(clientId, invoice.invoiceNumber, invoice.supplierId);
+      const salePoint = String(invoice.invoiceSalePoint ?? "").trim();
+      const voucherNum = String(invoice.invoiceNumber ?? "").trim();
+      if (salePoint && voucherNum && invoice.supplierId) {
+        const existing = await storage.getInvoiceByVoucherComposite(
+          clientId,
+          invoice.supplierId,
+          salePoint,
+          voucherNum,
+        );
         if (existing) {
-          return res.status(400).json({ message: "Ya existe una factura con ese numero para este proveedor" });
+          return res.status(400).json({
+            message: "Ya existe una factura con ese punto de venta y numero para este proveedor",
+          });
         }
       }
 
@@ -1226,6 +1235,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         {
           ...invoice,
           clientId,
+          invoiceSalePoint: salePoint,
+          invoiceNumber: voucherNum,
           dueDate: dueDate.toISOString().split("T")[0],
           subtotal: String(taxComputation.itemsSubtotal),
           discount: String(parseFloat(String(invoice.discount ?? 0)) || 0),

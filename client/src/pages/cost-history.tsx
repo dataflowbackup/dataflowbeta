@@ -6,6 +6,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { formatCurrency, formatDate, formatNumber } from "@/lib/formatters";
 import { History, TrendingUp, TrendingDown, Package } from "lucide-react";
 import type { CostHistory, Supply, Invoice } from "@shared/schema";
+import { formatInvoiceVoucherDisplay } from "@shared/invoiceDisplay";
 
 interface CostHistoryWithRelations extends CostHistory {
   supply?: Supply | null;
@@ -81,7 +82,7 @@ export default function CostHistoryPage() {
       cell: (row) =>
         row.invoice ? (
           <Badge variant="secondary" className="font-mono">
-            {row.invoice.invoiceNumber}
+            {formatInvoiceVoucherDisplay(row.invoice)}
           </Badge>
         ) : (
           <span className="text-muted-foreground">-</span>

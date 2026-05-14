@@ -1,3 +1,4 @@
+import { formatInvoiceVoucherDisplay } from "@shared/invoiceDisplay";
 import { db } from "./db";
 import { eq, and, desc, asc, gte, lte, sql, isNull, isNotNull, inArray, or, lt } from "drizzle-orm";
 import {
@@ -218,7 +219,12 @@ export interface IStorage {
   
   getInvoices(clientId: number): Promise<Invoice[]>;
   getInvoice(clientId: number, id: number): Promise<Invoice | undefined>;
-  getInvoiceByNumber(clientId: number, invoiceNumber: string, supplierId: number): Promise<Invoice | undefined>;
+  getInvoiceByVoucherComposite(
+    clientId: number,
+    supplierId: number,
+    invoiceSalePoint: string,
+    invoiceNumber: string,
+  ): Promise<Invoice | undefined>;
   getInvoiceItems(invoiceId: number): Promise<InvoiceItem[]>;
   getInvoiceTaxes(invoiceId: number): Promise<InvoiceTax[]>;
   createInvoice(invoice: InsertInvoice, items: InsertInvoiceItem[], taxItems: InsertInvoiceTax[]): Promise<Invoice>;
@@ -1156,13 +1162,20 @@ export class DatabaseStorage implements IStorage {
     };
   }
 
-  async getInvoiceByNumber(clientId: number, invoiceNumber: string, supplierId: number): Promise<Invoice | undefined> {
-    const [invoice] = await db.select().from(invoices)
-      .where(and(
+  async getInvoiceByVoucherComposite(
+    clientId: number,
+    supplierId: number,
+    invoiceSalePoint: string,
+    invoiceNumber: string,
+  ): Promise<Invoice | undefined> {
+    const [invoice] = await db.select().from(invoices).where(
+      and(
         eq(invoices.clientId, clientId),
+        eq(invoices.supplierId, supplierId),
+        eq(invoices.invoiceSalePoint, invoiceSalePoint),
         eq(invoices.invoiceNumber, invoiceNumber),
-        eq(invoices.supplierId, supplierId)
-      ));
+      ),
+    );
     return invoice;
   }
 
@@ -1262,7 +1275,7 @@ export class DatabaseStorage implements IStorage {
         unitCost: String(avgUnitCost),
         referenceType: "factura",
         referenceId: newInvoice.id,
-        notes: `Compra - Factura ${invoice.invoiceNumber || ""}`,
+        notes: `Compra - Factura ${formatInvoiceVoucherDisplay(invoice)}`,
         createdBy: invoice.createdBy,
       });
     }
@@ -1374,7 +1387,7 @@ export class DatabaseStorage implements IStorage {
         unitCost: String(avgUnitCost),
         referenceType: "reversion_factura",
         referenceId: invoiceId,
-        notes: `Reversion - Factura ${invoice.invoiceNumber}: ${reason}`,
+        notes: `Reversion - Factura ${formatInvoiceVoucherDisplay(invoice)}: ${reason}`,
         createdBy: userId,
       });
     }

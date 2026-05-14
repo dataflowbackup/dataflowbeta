@@ -366,6 +366,9 @@ export const invoices = pgTable("invoices", {
   clientId: integer("client_id").notNull().references(() => clients.id, { onDelete: "cascade" }),
   localId: integer("local_id").notNull().references(() => locals.id),
   supplierId: integer("supplier_id").notNull().references(() => suppliers.id),
+  /** Punto de venta AFIP (4 dígitos). Null en facturas cargadas antes del cambio. */
+  invoiceSalePoint: varchar("invoice_sale_point", { length: 4 }),
+  /** Número de comprobante (8 dígitos en formato nuevo). */
   invoiceNumber: varchar("invoice_number", { length: 50 }).notNull(),
   invoiceType: varchar("invoice_type", { length: 20 }).notNull(),
   invoiceDate: date("invoice_date").notNull(),

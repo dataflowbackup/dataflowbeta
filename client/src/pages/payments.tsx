@@ -47,6 +47,7 @@ import { apiRequest, queryClient } from "@/lib/queryClient";
 import { formatCurrency, formatDate, formatDateInput } from "@/lib/formatters";
 import { CreditCard, Trash2, Plus, FileText } from "lucide-react";
 import type { Payment, Supplier, Local, BankAccount, Invoice } from "@shared/schema";
+import { formatInvoiceVoucherDisplay } from "@shared/invoiceDisplay";
 
 interface PaymentWithRelations extends Payment {
   supplier?: Supplier | null;
@@ -467,7 +468,7 @@ export default function PaymentsPage() {
                                     />
                                   </TableCell>
                                   <TableCell>
-                                    <span className="font-mono text-sm">{inv.invoiceNumber}</span>
+                                    <span className="font-mono text-sm">{formatInvoiceVoucherDisplay(inv)}</span>
                                   </TableCell>
                                   <TableCell className="text-sm">
                                     {formatDate(inv.invoiceDate)}
