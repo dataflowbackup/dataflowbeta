@@ -7,7 +7,7 @@ import { useLocation, useParams } from "wouter";
 import { PageHeader } from "@/components/page-header";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   Form,
   FormControl,
@@ -49,6 +49,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import type { Supplier, Local, Supply, Tax, Rubro, SubRubro, UnitOfMeasure } from "@shared/schema";
+import { computeInvoiceTaxes, isInternalTaxType } from "@shared/invoiceTaxComputation";
 import { cn } from "@/lib/utils";
 
 interface SupplyWithUnit extends Supply {
@@ -92,6 +93,11 @@ const itemSchema = z.object({
   unitPrice: z.coerce.number().min(0),
   subtotal: z.coerce.number().min(0.01, "Subtotal requerido"),
   rubroId: z.coerce.number().optional(),
+  /** IVA por insumo (catalogo tipo iva); opcional */
+  taxId: z.preprocess(
+    (v) => (v === "" || v === undefined || v === null ? undefined : v),
+    z.coerce.number().optional(),
+  ),
 });
 
 const taxItemSchema = z.object({
@@ -128,6 +134,7 @@ interface InvoiceItem {
   unitPrice: number | string;
   subtotal: number | string;
   rubroId?: number | null;
+  taxId?: number | null;
 }
 
 interface InvoiceTaxItem {
@@ -214,7 +221,17 @@ export default function InvoiceFormPage() {
       discount: 0,
       advancePayment: 0,
       notes: "",
-      items: [{ supplyId: undefined, description: "", quantity: 1, unitPrice: 0, subtotal: 0, rubroId: undefined }],
+      items: [
+        {
+          supplyId: undefined,
+          description: "",
+          quantity: 1,
+          unitPrice: 0,
+          subtotal: 0,
+          rubroId: undefined,
+          taxId: undefined,
+        },
+      ],
       taxes: [],
     },
   });
@@ -272,6 +289,7 @@ export default function InvoiceFormPage() {
                 unitPrice: parseFloat(String(item.unitPrice)) || 0,
                 subtotal: parseFloat(String(item.subtotal)) || 0,
                 rubroId: item.rubroId || undefined,
+                taxId: item.taxId ?? undefined,
               }))
             : [
                 {
@@ -281,6 +299,7 @@ export default function InvoiceFormPage() {
                   unitPrice: 0,
                   subtotal: 0,
                   rubroId: undefined,
+                  taxId: undefined,
                 },
               ],
         taxes:
@@ -328,26 +347,40 @@ export default function InvoiceFormPage() {
     });
   }, [supplies, watchSupplierId, allSupplySuppliers]);
 
-  const itemsSubtotalSum = watchItems.reduce((sum, item) => {
-    const sub = Number(item?.subtotal) || 0;
-    return sum + sub;
-  }, 0);
-  const discountVal = watchDiscount || 0;
-  const subtotalAfterDiscount = itemsSubtotalSum - discountVal;
-  const taxTotal = taxFields.reduce((sum, _, index) => {
-    const taxAmount = form.getValues(`taxes.${index}.taxAmount`) || 0;
-    return sum + taxAmount;
-  }, 0);
-  const total = subtotalAfterDiscount + taxTotal;
-  const advancePaymentVal = watchAdvancePayment || 0;
-  const balance = total - advancePaymentVal;
+  const taxesById = useMemo(() => new Map(taxes.map((t) => [t.id, t])), [taxes]);
+
+  const lineTaxSelectOptions = useMemo(
+    () => taxes.filter((t) => t.active !== false && String(t.type ?? "").toLowerCase() === "iva"),
+    [taxes],
+  );
+
+  const watchTaxesRows = useWatch({ control: form.control, name: "taxes" }) ?? [];
+
+  const taxComputation = useMemo(
+    () =>
+      computeInvoiceTaxes({
+        items: watchItems.map((item) => ({
+          subtotal: item?.subtotal,
+          taxId: item?.taxId,
+        })),
+        discount: Number(watchDiscount) || 0,
+        invoiceLevelTaxes: watchTaxesRows,
+        taxesById,
+      }),
+    [watchItems, watchDiscount, watchTaxesRows, taxesById],
+  );
+
+  const discountVal = Number(watchDiscount) || 0;
+  const advancePaymentVal = Number(watchAdvancePayment) || 0;
   const calculations = {
-    subtotal: itemsSubtotalSum,
+    subtotal: taxComputation.itemsSubtotal,
     discount: discountVal,
-    subtotalAfterDiscount,
-    taxTotal,
-    total,
-    balance,
+    subtotalAfterDiscount: taxComputation.subtotalAfterDiscount,
+    lineTaxTotal: taxComputation.lineTaxTotal,
+    invoiceLevelTaxTotal: taxComputation.invoiceLevelTaxTotal,
+    taxTotal: taxComputation.taxGrandTotal,
+    total: taxComputation.subtotalAfterDiscount + taxComputation.taxGrandTotal,
+    balance: taxComputation.subtotalAfterDiscount + taxComputation.taxGrandTotal - advancePaymentVal,
   };
 
   useEffect(() => {
@@ -434,7 +467,7 @@ export default function InvoiceFormPage() {
   }, [watchItems, supplies]);
 
   const handleAddTax = (taxId: number) => {
-    const tax = taxes.find(t => t.id === taxId);
+    const tax = taxes.find((t) => t.id === taxId);
     if (!tax) return;
 
     const existing = taxFields.find((_, i) => form.getValues(`taxes.${i}.taxId`) === taxId);
@@ -444,7 +477,11 @@ export default function InvoiceFormPage() {
     }
 
     const baseAmount = calculations.subtotalAfterDiscount;
-    const percentage = parseFloat(tax.percentage);
+    if (isInternalTaxType(tax.type)) {
+      appendTax({ taxId, baseAmount, taxAmount: 0 });
+      return;
+    }
+    const percentage = parseFloat(String(tax.percentage));
     const taxAmount = (baseAmount * percentage) / 100;
 
     appendTax({ taxId, baseAmount, taxAmount });
@@ -453,17 +490,37 @@ export default function InvoiceFormPage() {
   const recalculateTaxes = () => {
     const newTaxes = taxFields.map((_, index) => {
       const taxId = form.getValues(`taxes.${index}.taxId`);
-      const tax = taxes.find(t => t.id === taxId);
+      const tax = taxes.find((t) => t.id === taxId);
       if (!tax) return form.getValues(`taxes.${index}`);
 
+      if (isInternalTaxType(tax.type)) {
+        return form.getValues(`taxes.${index}`);
+      }
+
       const baseAmount = calculations.subtotalAfterDiscount;
-      const percentage = parseFloat(tax.percentage);
+      const percentage = parseFloat(String(tax.percentage));
       const taxAmount = (baseAmount * percentage) / 100;
 
       return { taxId, baseAmount, taxAmount };
     });
     replaceTaxes(newTaxes);
   };
+
+  useEffect(() => {
+    const sad = calculations.subtotalAfterDiscount;
+    taxFields.forEach((_, i) => {
+      const taxId = form.getValues(`taxes.${i}.taxId`);
+      const tax = taxes.find((t) => t.id === taxId);
+      if (!tax) return;
+      if (isInternalTaxType(tax.type)) {
+        form.setValue(`taxes.${i}.baseAmount`, sad, { shouldValidate: false });
+        return;
+      }
+      const pct = parseFloat(String(tax.percentage)) || 0;
+      form.setValue(`taxes.${i}.baseAmount`, sad, { shouldValidate: false });
+      form.setValue(`taxes.${i}.taxAmount`, (sad * pct) / 100, { shouldValidate: false });
+    });
+  }, [calculations.subtotalAfterDiscount, taxFields.length, taxes, form]);
 
   const createMutation = useMutation({
     mutationFn: async (data: FormData) => {
@@ -798,7 +855,17 @@ export default function InvoiceFormPage() {
                     type="button"
                     variant="outline"
                     size="sm"
-                    onClick={() => appendItem({ supplyId: undefined, description: "", quantity: 1, unitPrice: 0, subtotal: 0, rubroId: undefined })}
+                    onClick={() =>
+                      appendItem({
+                        supplyId: undefined,
+                        description: "",
+                        quantity: 1,
+                        unitPrice: 0,
+                        subtotal: 0,
+                        rubroId: undefined,
+                        taxId: undefined,
+                      })
+                    }
                     data-testid="button-add-item"
                   >
                     <Plus className="h-4 w-4 mr-1" />
@@ -1015,6 +1082,42 @@ export default function InvoiceFormPage() {
                           )}
                         />
                       </div>
+                      <FormField
+                        control={form.control}
+                        name={`items.${index}.taxId`}
+                        render={({ field: taxField }) => (
+                          <FormItem>
+                            <FormLabel>IVA por insumo</FormLabel>
+                            <Select
+                              value={
+                                taxField.value != null ? String(taxField.value) : "__none__"
+                              }
+                              onValueChange={(v) =>
+                                taxField.onChange(v === "__none__" ? undefined : parseInt(v, 10))
+                              }
+                            >
+                              <FormControl>
+                                <SelectTrigger data-testid={`select-item-tax-${index}`}>
+                                  <SelectValue placeholder="Sin IVA en esta línea" />
+                                </SelectTrigger>
+                              </FormControl>
+                              <SelectContent>
+                                <SelectItem value="__none__">Sin IVA en esta línea</SelectItem>
+                                {lineTaxSelectOptions.map((t) => (
+                                  <SelectItem key={t.id} value={String(t.id)}>
+                                    {t.name} ({t.percentage}%)
+                                  </SelectItem>
+                                ))}
+                              </SelectContent>
+                            </Select>
+                            <FormMessage />
+                          </FormItem>
+                        )}
+                      />
+                      <p className="text-xs text-muted-foreground">
+                        Opcional: alícuota por producto. Para IVA u otros impuestos sobre el subtotal del comprobante
+                        usá la sección Impuestos al total.
+                      </p>
                     </div>
                     );
                   })}
@@ -1100,15 +1203,21 @@ export default function InvoiceFormPage() {
               )}
 
               <Card>
-                <CardHeader className="flex flex-row items-center justify-between gap-2">
-                  <CardTitle>Impuestos</CardTitle>
-                  <div className="flex items-center gap-2">
-                    <Select onValueChange={(val) => handleAddTax(parseInt(val))}>
+                <CardHeader className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between gap-y-3">
+                  <div className="space-y-1">
+                    <CardTitle>Impuestos al total del comprobante</CardTitle>
+                    <CardDescription>
+                      Porcentaje sobre el subtotal neto (tras descuento). El impuesto interno es un importe manual al
+                      total. El IVA por insumo se configura en cada linea del detalle.
+                    </CardDescription>
+                  </div>
+                  <div className="flex items-center gap-2 shrink-0">
+                    <Select onValueChange={(val) => handleAddTax(parseInt(val, 10))}>
                       <SelectTrigger className="w-48" data-testid="select-add-tax">
                         <SelectValue placeholder="Agregar impuesto" />
                       </SelectTrigger>
                       <SelectContent>
-                        {taxes.filter(t => t.active).map((tax) => (
+                        {taxes.filter((t) => t.active).map((tax) => (
                           <SelectItem key={tax.id} value={tax.id.toString()}>
                             {tax.name} ({tax.percentage}%)
                           </SelectItem>
@@ -1120,7 +1229,7 @@ export default function InvoiceFormPage() {
                       variant="outline"
                       size="icon"
                       onClick={recalculateTaxes}
-                      title="Recalcular impuestos"
+                      title="Actualiza impuestos porcentuales al total (no cambia IVA por insumo ni interno manual)"
                       data-testid="button-recalculate-taxes"
                     >
                       <Calculator className="h-4 w-4" />
@@ -1130,24 +1239,57 @@ export default function InvoiceFormPage() {
                 <CardContent>
                   {taxFields.length === 0 ? (
                     <p className="text-sm text-muted-foreground text-center py-4">
-                      No hay impuestos agregados. Seleccione uno del menu superior.
+                      No hay impuestos al total. Podés combinarlos con IVA por insumo en cada linea.
                     </p>
                   ) : (
                     <div className="space-y-3">
                       {taxFields.map((field, index) => {
-                        const tax = taxes.find(t => t.id === form.getValues(`taxes.${index}.taxId`));
+                        const tax = taxes.find((t) => t.id === form.getValues(`taxes.${index}.taxId`));
+                        const internal = tax ? isInternalTaxType(tax.type) : false;
                         return (
-                          <div key={field.id} className="flex items-center justify-between p-3 rounded-lg border">
-                            <div>
+                          <div
+                            key={field.id}
+                            className="flex flex-col gap-3 p-3 rounded-lg border sm:flex-row sm:items-center sm:justify-between"
+                          >
+                            <div className="min-w-0">
                               <div className="font-medium">{tax?.name || "Impuesto"}</div>
-                              <div className="text-sm text-muted-foreground">
-                                {tax?.percentage}% sobre {formatCurrency(form.getValues(`taxes.${index}.baseAmount`))}
-                              </div>
+                              {internal ? (
+                                <p className="text-xs text-muted-foreground mt-1">
+                                  Importe fijo al total del comprobante (manual).
+                                </p>
+                              ) : (
+                                <div className="text-sm text-muted-foreground">
+                                  {tax?.percentage}% sobre {formatCurrency(form.getValues(`taxes.${index}.baseAmount`))}
+                                </div>
+                              )}
                             </div>
-                            <div className="flex items-center gap-3">
-                              <span className="font-mono font-medium">
-                                {formatCurrency(form.getValues(`taxes.${index}.taxAmount`))}
-                              </span>
+                            <div className="flex flex-wrap items-center gap-3">
+                              {internal ? (
+                                <FormField
+                                  control={form.control}
+                                  name={`taxes.${index}.taxAmount`}
+                                  render={({ field: amtField }) => (
+                                    <FormItem className="space-y-1">
+                                      <FormLabel className="text-xs">Importe</FormLabel>
+                                      <FormControl>
+                                        <Input
+                                          type="number"
+                                          step="0.01"
+                                          min="0"
+                                          className="w-36 font-mono"
+                                          {...amtField}
+                                          data-testid={`input-tax-manual-${index}`}
+                                        />
+                                      </FormControl>
+                                      <FormMessage />
+                                    </FormItem>
+                                  )}
+                                />
+                              ) : (
+                                <span className="font-mono font-medium">
+                                  {formatCurrency(form.getValues(`taxes.${index}.taxAmount`))}
+                                </span>
+                              )}
                               <Button
                                 type="button"
                                 variant="ghost"
@@ -1219,6 +1361,18 @@ export default function InvoiceFormPage() {
                       <span className="text-muted-foreground">Subtotal c/Desc.</span>
                       <span className="font-mono">{formatCurrency(calculations.subtotalAfterDiscount)}</span>
                     </div>
+                    {calculations.lineTaxTotal > 0 && (
+                      <div className="flex justify-between text-xs text-muted-foreground">
+                        <span>Incluye IVA por insumo</span>
+                        <span className="font-mono">{formatCurrency(calculations.lineTaxTotal)}</span>
+                      </div>
+                    )}
+                    {calculations.invoiceLevelTaxTotal > 0 && (
+                      <div className="flex justify-between text-xs text-muted-foreground">
+                        <span>Incluye impuestos al total</span>
+                        <span className="font-mono">{formatCurrency(calculations.invoiceLevelTaxTotal)}</span>
+                      </div>
+                    )}
                     <div className="flex justify-between text-sm">
                       <span className="text-muted-foreground">Impuestos</span>
                       <span className="font-mono">{formatCurrency(calculations.taxTotal)}</span>

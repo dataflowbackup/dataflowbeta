@@ -23,6 +23,7 @@ import type {
   InsertCounterparty,
   InsertCounterpartyIdentifier,
 } from "@shared/schema";
+import { computeInvoiceTaxes } from "@shared/invoiceTaxComputation";
 
 const upload = multer({ 
   storage: multer.memoryStorage(),
@@ -1175,24 +1176,65 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.post("/api/invoices", isAuthenticated, async (req, res) => {
     try {
       const clientId = await getClientId(req);
-      const { items, taxes, ...invoice } = req.body;
-      
+      const { items: rawItems, taxes: rawInvoiceTaxes, ...invoice } = req.body;
+      const items = Array.isArray(rawItems) ? rawItems : [];
+      const invoiceLevelTaxes = Array.isArray(rawInvoiceTaxes) ? rawInvoiceTaxes : [];
+
       if (invoice.invoiceNumber && invoice.supplierId) {
         const existing = await storage.getInvoiceByNumber(clientId, invoice.invoiceNumber, invoice.supplierId);
         if (existing) {
           return res.status(400).json({ message: "Ya existe una factura con ese numero para este proveedor" });
         }
       }
-      
+
+      const allTaxes = await storage.getTaxes(clientId);
+      const taxesById = new Map(allTaxes.map((t) => [t.id, t]));
+
+      const taxComputation = computeInvoiceTaxes({
+        items,
+        discount: parseFloat(String(invoice.discount ?? 0)) || 0,
+        invoiceLevelTaxes,
+        taxesById,
+      });
+
+      const advancePayment = parseFloat(String(invoice.advancePayment ?? 0)) || 0;
+      const total = taxComputation.subtotalAfterDiscount + taxComputation.taxGrandTotal;
+      const balance = total - advancePayment;
+
       const invoiceDate = new Date(invoice.invoiceDate);
       const paymentDays = invoice.paymentDays || 0;
       const dueDate = new Date(invoiceDate);
       dueDate.setDate(dueDate.getDate() + paymentDays);
-      
+
+      const normalizedItems = items.map((item: Record<string, unknown>) => {
+        const tid = item.taxId;
+        let taxId: number | undefined;
+        if (tid !== undefined && tid !== null && tid !== "") {
+          const n = typeof tid === "number" ? tid : parseInt(String(tid), 10);
+          taxId = Number.isFinite(n) && n > 0 ? n : undefined;
+        }
+        return { ...item, taxId };
+      });
+
+      const persistedTaxRows = taxComputation.rows.map((r) => ({
+        taxId: r.taxId,
+        baseAmount: String(r.baseAmount),
+        taxAmount: String(r.taxAmount),
+      }));
+
       const data = await storage.createInvoice(
-        { ...invoice, clientId, dueDate: dueDate.toISOString().split("T")[0] },
-        items || [],
-        taxes || []
+        {
+          ...invoice,
+          clientId,
+          dueDate: dueDate.toISOString().split("T")[0],
+          subtotal: String(taxComputation.itemsSubtotal),
+          discount: String(parseFloat(String(invoice.discount ?? 0)) || 0),
+          taxTotal: String(taxComputation.taxGrandTotal),
+          total: String(total),
+          balance: String(balance),
+        },
+        normalizedItems as unknown as Parameters<typeof storage.createInvoice>[1],
+        persistedTaxRows as unknown as Parameters<typeof storage.createInvoice>[2],
       );
       res.json(data);
     } catch (e: any) {

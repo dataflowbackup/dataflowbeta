@@ -405,6 +405,8 @@ export const invoiceItems = pgTable("invoice_items", {
   unitPrice: decimal("unit_price", { precision: 12, scale: 4 }).notNull(),
   subtotal: decimal("subtotal", { precision: 12, scale: 2 }).notNull(),
   rubroId: integer("rubro_id").references(() => rubros.id),
+  /** IVA u otro impuesto tipo IVA aplicado a esta línea (base = subtotal prorrateado por descuento global). */
+  taxId: integer("tax_id").references(() => taxes.id),
 });
 
 export const insertInvoiceItemSchema = createInsertSchema(invoiceItems).omit({ id: true });
