@@ -1,6 +1,6 @@
 # Roadmap y mapa del sistema Data Flow
 
-**Última actualización:** 2026-05-07 (sesión extractos MP: async import, paginación cliente, **502 en listado movimientos — abierto**)  
+**Última actualización:** 2026-05-14 (roadmap alineado a código: cursor en `GET /api/transactions`, UI Extractos/Efectivo reciente)  
 **Alcance:** producto completo según código en repo (`client/`, `server/`, `shared/schema.ts`). Este archivo sustituye la versión que cubría solo extractos; conviene **mantenerlo al día** tras cambios de alcance.
 
 **Otros documentos del repo:** `ANALISIS_EXHAUSTIVO_DATA_FLOW.md`, `PLAN_DE_ACCION_DATA_FLOW.md`, `AVANCES_PARA_SOCIOS.md`, `docs/NETLIFY-TURSO.md`, `docs/WORKFLOW.md` (complementarios; pueden quedar desfasados respecto al código).
@@ -53,6 +53,7 @@ Rutas definidas en `client/src/App.tsx`. Menú lateral en `client/src/components
 | `/categorias-movimientos` | Categorías mov. | Clasificación financiera de transacciones |
 | `/grupos-financieros` | Grupos financieros | Agrupadores para reporting |
 | `/balance` | Balances financieros | Vista de balances (mensualidades vía API) |
+| `/efectivo` | Efectivo | Movimientos manuales ingreso/egreso por lotes (`bankSource` `cash`; API `POST /api/transactions/cash-batch`) |
 | `/dashboard` | Dashboard | Estadísticas agregadas |
 | `/stock` | Control stock | Niveles, movimientos, ajustes |
 | `/auditorias` | Auditorías | Plantillas y auditorías operativas |
@@ -125,12 +126,13 @@ Rutas definidas en `client/src/App.tsx`. Menú lateral en `client/src/components
 - **Transacciones** (`transactions`): movimientos manuales e importados; categoría, local, cuenta, contrapartes, splits (`parent_transaction_id`).
 - ** counterparties + identifiers**: agenda para matcheo / CRM liviano.
 - **Balances mensuales** (`monthly_balances`): API `GET /api/monthly-balances`.
-- **Vistas guardadas** extractos: `financial_saved_views` per usuario.
+- **Efectivo:** pantalla `/efectivo` para cargar movimientos sin extracto bancario; persisten como transacciones con `bankSource: "cash"` y `POST /api/transactions/cash-batch` (validación de categoría vs tipo ingreso/egreso en storage).
+- **Vistas guardadas** extractos (`financial_saved_views`): modelo y API pueden seguir existiendo; **la pantalla Extractos ya no expone** selector de cuenta ni guardado de vistas (simplificación UI; ver §8).
 - **Seed financiero**: `POST /api/financial-groups/seed` y datos semilla vía `seedFinancialDataForClient` (según ruta).
 
 ### 5.6 Extractos bancarios (detalle de evolución reciente)
 
-> Trabajo intensivo en sesiones recientes; funcionalidad crítica para conciliación. **Estado al 2026-05-07:** import MP grande operativo vía cola + background; **listado global de movimientos** puede fallar con **502** al avanzar páginas (§5.6.4 y §9).
+> Trabajo intensivo en sesiones recientes; funcionalidad crítica para conciliación. **Estado al 2026-05-14:** import MP grande operativo vía cola + background; **listado global de movimientos** usa **paginación por cursor** en API + cliente (§5.6.4) para evitar el problema histórico de **502** por `OFFSET` profundo en consultas grandes.
 
 #### 5.6.0 Núcleo de import (todos los bancos; MP además puede encolar)
 
@@ -169,19 +171,34 @@ Rutas definidas en `client/src/App.tsx`. Menú lateral en `client/src/components
 - Inserts en serie, **`BATCH_SIZE = 1200`**, sin una única transacción monolítica (menos presión sobre tiempo de lock / remoto).
 - Error a mitad: borrado de filas del mismo `import_batch_id` y relanzamiento.
 
-#### 5.6.4 Frontend — paginación de `GET /api/transactions` en `bank-statements.tsx`
+#### 5.6.4 `GET /api/transactions` — paginación por cursor (cliente + servidor)
 
-- `queryFn` pide páginas de **800** filas hasta **250** páginas máximo.
-- **Bug histórico (corregido `d0e74db`):** cortar cuando `mergedById.size >= total` si `total` venía bajo dejaba de paginar antes de tiempo → pestaña MP vacía con lote mostrando miles de movimientos.
-- **Lógica actual:** salir si la página viene vacía, si trae menos de 800 ítems, o si **no se agregó ningún id nuevo** (offset duplicado).
-- **Consecuencia:** con ~15k+ movimientos son **muchas** llamadas HTTP secuenciales. Un **502** en una (ej. consola: `api/transactions?page=9&pageSize=800`) **tira abajo toda la query** → la tabla queda sin datos y el resto de KPIs que dependen de `transactions` pueden verse en cero / error.
+**Objetivo:** evitar consultas con **`OFFSET` alto** sobre millones de filas ordenadas (`transaction_date DESC`, `id DESC`), que en Netlify/Turso podían superar el tiempo de la función y producir **502** en páginas intermedias.
+
+**Servidor** (`server/routes.ts`, `server/storage.ts`, commit **`723cfab`**):
+
+- Query params: `pageSize` (por defecto **800**, máx. **2000**). Modo principal del cliente: **`afterDate`** (`YYYY-MM-DD`) + **`afterId`** (entero), **siempre juntos**; filtro opcional `bankSource`.
+- `storage.getTransactions`: con cursor aplica `WHERE` *(fecha más antigua que la del cursor, o misma fecha e id menor)* + `ORDER BY` fecha/id descendente + `LIMIT` — **sin** `OFFSET` en ese modo.
+- Primera página (sin cursor): respuesta incluye **`total`** vía `getTransactionCount`. Páginas siguientes con cursor **omitien el COUNT** (menos carga).
+- Compatibilidad: respuesta plana con `?limit=` sin `page`/`pageSize`/cursor; modo **`page` + `pageSize`** con offset sigue existiendo si se invoca explícitamente.
+
+**Índice:** `transactions_client_id_txn_date_id_idx` en `(client_id, transaction_date, id)` (`shared/schema.ts`, mismo commit).
+
+**Cliente** (`bank-statements.tsx`): bucle hasta **250** páginas de **800** ítems; tras cada página usa la última fila para armar el siguiente `afterDate` / `afterId`. Parada: página vacía, página corta, o **ningún id nuevo** (protege contra duplicados).
+
+**Bug histórico (`d0e74db`):** no usar solo `mergedById.size >= total` como condición de parada cuando `total` podía subestimar filas.
+
+**502 residual:** el cliente sigue mostrando un mensaje claro si una página devuelve **502** (fallo puntual de red/origin). No es el escenario sistemático anterior por offset profundo.
 
 #### 5.6.5 UI: pestaña “Extractos importados” vs tabla
 
 - `Tabs` usa un solo estado `bankFilter` también para **`extractos`** y **`breakdown`**.
 - La **DataTable** de movimientos solo se muestra si `bankFilter` es `all`, un banco de `banksForTabs`, o está en `PINNED_BANK_TAB_IDS` (`galicia`, `mercadopago`, `frances`, `bbva`). En **`extractos`** no se ve la grilla (solo lotes importados).
+- **Listado:** filtros por **local**, **categoría**, **tipo** (ingreso/egreso), **desde/hasta**; columna **Local** en la tabla (`8045866`).
+- **Clasificación masiva:** buscadores en descripciones 1 y 2; categoría y local con combobox buscable; modal con **scroll** y **pie fijo** para botones (`a0dc670`).
+- **Removido en pantalla:** bloque “vista por cuenta” / vistas guardadas en Extractos (`8045866`); no implica borrar datos de `financial_saved_views` en BD.
 
-**Referencia de commits en esta línea:** `e45feda` (MP parser + conciliación neta + UI), `7c8b12f` (batch insert), `85be022` (async jobs + background), `d0e74db` (paginación cliente).
+**Referencia de commits en esta línea:** `e45feda` (MP parser + conciliación neta + UI), `7c8b12f` (batch insert), `85be022` (async jobs + background), `d0e74db` (parada paginación cliente), **`723cfab`** (cursor + índice + API), **`8045866`** / **`a0dc670`** (UI extractos).
 
 ### 5.7 Stock
 
@@ -226,7 +243,7 @@ Casi todo el contrato REST está en **`server/routes.ts`** (miles de líneas). L
 - Recetas (export, stats, foto, parent-usages), cost-history, category-groups
 - Financial groups (seed), client-banks, transaction-categories, bank-accounts (purge-imports)
 - Financial saved views
-- Transactions (paginado **`GET /api/transactions?page=&pageSize=`** — ver §5.6.4), import síncrono y **async MP** (**`POST /api/transactions/import`**, **`GET /api/transactions/import-jobs/:jobToken`**, **`POST /api/transactions/import/execute-job`**), batch delete, batch-categorize, split…
+- Transactions (paginado **`GET /api/transactions`** con **`afterDate` + `afterId`** o `page`/`pageSize`/`limit` legacy — ver §5.6.4), **`POST /api/transactions/cash-batch`** (Efectivo), import síncrono y **async MP** (**`POST /api/transactions/import`**, **`GET /api/transactions/import-jobs/:jobToken`**, **`POST /api/transactions/import/execute-job`**), batch delete, batch-categorize, split…
 - Business names, counterparties + identifiers
 - Monthly balances
 - Dashboard stats
@@ -253,8 +270,9 @@ Tablas representativas (no lista completa): `sessions`, `users`, `user_credentia
 
 | Periodo / tema | Qué se hizo |
 |----------------|-------------|
-| **2026-05-07 — Bloqueador abierto: `GET /api/transactions` → 502 al paginar** | Tras import masivo (~10k+ filas), el front hace muchas páginas (`pageSize=800`). El navegador reporta fallo tipo **`/api/transactions?page=9&pageSize=800` → 502** antes de completar la hidratación de `transactions` → **pantalla Extractos sin filas en ningún banco**. Causa raíz por confirmar (§9). |
-| **2026-05-07 — Paginación cliente extractos (`d0e74db`)** | Se dejó de usar `mergedById.size >= total` como condición de parada (total del servidor podía subestimar filas reales → pestaña MP “vacía” con lote OK). Parada por página corta o sin ids nuevos. Efecto: más requests en series. |
+| **2026-05-11 — Listados grandes: cursor + índice en transacciones (`723cfab`)** | Mitiga **502** sistemáticos por **`OFFSET` profundo**: API `afterDate`/`afterId`, `getTransactions` sin offset en modo cursor, **COUNT omitido** en páginas de continuación, índice `(client_id, transaction_date, id)`. Cliente en `bank-statements.tsx` hidrata en bucle por cursor. |
+| **2026-05-07 — Síntoma histórico (previo a cursor): `GET /api/transactions` → 502 al paginar con offset** | Con ~10k+ filas y muchas páginas `page`/`pageSize`, una página podía **timeout** en origin → fallaba toda la query de movimientos. **Quedó resuelto** por el enfoque de §5.6.4 / `723cfab` (no mantener como bloqueador). |
+| **2026-05-07 — Paginación cliente extractos (`d0e74db`)** | Se dejó de usar `mergedById.size >= total` como condición de parada (total del servidor podía subestimar filas reales → pestaña MP “vacía” con lote OK). Parada por página corta o sin ids nuevos. Sigue aplicando encima del cursor. |
 | **2026-05-07 — Import MP async + `financial_import_jobs` (`85be022`)** | Encolado en primer request; worker **`process-financial-import-background`** (Netlify Background) o **`/api/transactions/import/execute-job`** en local; polling **`/api/transactions/import-jobs/:jobToken`**. Evita 504 en import. |
 | **2026-05-07 — Batch insert sin transacción única (`7c8b12f`)** | `createTransactionsBatch`: lotes 1200, inserts en serie, rollback parcial por `import_batch_id`. |
 | **2026-05-07 — MP desglose ×3 + comisión fija + conciliación neta (`e45feda`)** | Parser: bruto/comisión/IIBB/ajuste; conciliación `sumNetImportable`; UI diagnóstico; descripción fija «Comisión Mercado Pago». |
@@ -262,6 +280,9 @@ Tablas representativas (no lista completa): `sessions`, `users`, `user_credentia
 | 2026-05-07 — Iteraciones previas MP bruto en 0 | Commits `f6f833a` y `2288fe4`: panel candidatos / forzar panel — reemplazados por fallback F−G. |
 | Extractos MP/Galicia | Parsers, multipart, purge por lotes, paginación GET, orden estable `fecha+id` |
 | Identidad movimientos | `bankId` cuenta + inferencia nombre + envío desde cliente |
+| **2026-05 — Extractos: filtros de listado y columna Local (`8045866`)** | Sin “vista por cuenta” / vistas guardadas en pantalla; filtros local, categoría, tipo, fechas; columna **Local** en la grilla. |
+| **2026-05 — Extractos: clasificación masiva UX (`a0dc670`)** | Buscadores en descripciones; categoría/local combobox con búsqueda; modal con scroll + botones fijos. |
+| **2026-05 — Módulo Efectivo** | Ruta `/efectivo`, sidebar Financiero; alta por lotes vía `POST /api/transactions/cash-batch` (`bankSource` `cash`). Commits `b1c2f5c` y siguientes en la línea efectivo/KPIs/modales. |
 
 ### Backups y red de seguridad (2026-05-07)
 
@@ -274,7 +295,7 @@ Antes de iniciar pruebas drásticas se generaron:
 | Turso producción (`dataflow-db-mbeduzzi`) | `backups/turso_2026-05-07_114409.sql` (5,4 MB, 9.762 filas, 55 tablas) |
 | Git tag | `backup-pre-pruebas-drasticas-2026-05-07` (apunta a commit `aa82ca3`, pusheado al remoto) |
 
-El backup de Turso se generó con **`script/backup-turso.ts`** (ver §13). Requiere `env.turso` con `DATABASE_URL` y `TURSO_AUTH_TOKEN` (archivo en `.gitignore`).
+El backup de Turso se generó con **`script/backup-turso.ts`** (ver §12.3). Requiere `env.turso` con `DATABASE_URL` y `TURSO_AUTH_TOKEN` (archivo en `.gitignore`).
 
 ---
 
@@ -285,12 +306,13 @@ El backup de Turso se generó con **`script/backup-turso.ts`** (ver §13). Requi
 | Fecha | Problema | Solución |
 |-------|----------|----------|
 | 2026-05-07 | MP `reserve-release`: filas con H=0 que aportan al saldo (ej. devolución de comisión) eran descartadas → saldo final $5.352,48 menor al real | Fallback `net = F − G` en parser cuando H=0 y F/G ≠ 0 (commit `aa82ca3`) |
+| 2026-05-11 | **`GET /api/transactions`**: con volumen alto, paginación por **`page` + offset** podía provocar **502** (timeouts en función Netlify / consulta costosa) y dejar la tabla de Extractos vacía | Paginación por **cursor** (`afterDate`/`afterId`), consulta sin offset profundo, **índice** `(client_id, transaction_date, id)`, menos trabajo en páginas siguientes (sin recount). Commit **`723cfab`**. |
 
 ### Abiertas
 
 | Área | Problema |
 |------|-----------|
-| **`GET /api/transactions` (502 en paginación)** | **Síntoma:** en prod (Netlify), consola del navegador: `Failed to load resource: … /api/transactions?page=9&pageSize=800 … 502`. Ocurre **durante** el bucle de páginas del `useQuery` en `bank-statements.tsx` (carga **todos** los movimientos del cliente, 800 por página, hasta ~200k filas teóricas). Un solo 502 hace fallar **toda** la query → **ningún banco muestra filas** en la tabla (aunque import y lotes en “Extractos importados” muestren miles). **Hipótesis a verificar próxima sesión:** (1) timeout interno del **origin** (Netlify function `api` 26 s) si una sola página tarda demasiado en Turso con offset alto + `ORDER BY transaction_date DESC, id DESC`; (2) **límite de tiempo o tamaño** en **Turso / HTTP** o proxy entre Lambda y LibSQL; (3) **cold start + query pesada** acumulada; (4) error no logueado en cliente (solo 502 genérico). **Pasos sugeridos:** reproducir con `curl` / DevTools repitiendo `page=8,9,10` con sesión; revisar **Netlify Functions log** para la invocación que coincide en tiempo; en Turso dashboard ver latencias; valorar **índice compuesto** `(client_id, transaction_date DESC, id DESC)` si no existe; valorar **API server-side** que devuelva “página siguiente” con **cursor** (`id` / fecha) en lugar de `OFFSET` para estabilidad y coste; o **reducir** datos cargados al front (filtro por cuenta/fecha obligatorio, o virtualización con server sorting). |
+| **`GET /api/transactions` (502 puntual)** | Tras el cursor, un **502 aislado** (red, cold start, incidente Turso) puede seguir ocurriendo; el cliente muestra mensaje orientativo y falla la query completa hasta **reintentar**. Si fuera frecuente, revisar logs Netlify y latencias por página. |
 | Conciliación MP | Si el Excel no trae fila reconocible para «saldo disponible total», import 400 |
 | Conciliación MP | Overrides de bruto vía multipart ya no resuelven descuadre neto; usar archivo corregido o investigar omisiones/duplicados |
 | Jobs import MP | Limpiar `financial_import_jobs` antiguos (`pending` colgados, filas grandes en texto) si crece la tabla; considerar TTL o cron |
@@ -298,19 +320,17 @@ El backup de Turso se generó con **`script/backup-turso.ts`** (ver §13). Requi
 | Tooling | Posibles errores TypeScript globales no resueltos |
 | Docs legacy | Otros `.md` pueden contradecir el código actual |
 
-### Retomar próxima sesión (checklist express — extractos / 502)
+### Si reaparece error al cargar movimientos (monitorización)
 
-1. Confirmar en **Network** si 502 afecta siempre el mismo `page` u offset creciente.
-2. **Logs Netlify** de función `api` en la ventana del fallo; buscar `GET /api/transactions` y stack.
-3. Probar **`storage.getTransactions`** equivalente en script local contra Turso con `limit 800 offset 6400` (page 8) y medir ms.
-4. Revisar en schema/drizzle si hace falta **índice** alineado al `orderBy` usado en listado.
-5. Decidir si el fix es **infra** (subir tope / caché) o **producto** (paginación con cursor, menos filas en cliente, filtros obligatorios).
+1. En **Network**, confirmar si la URL usa **`afterDate`/`afterId`** (camino actual) o solo `page` (legacy / otros clientes).
+2. **Logs Netlify** para la invocación que coincide en tiempo con el fallo.
+3. Valorar **producto**: seguir cargando **todo** el cliente en memoria puede pesar en navegadores con datasets enormes (filtros server-side o páginas virtuales serían evolución futura).
 
 ---
 
 ## 10. Pendientes sugeridos (backlog)
 
-- **Crítico — Extractos:** resolver **502 en `GET /api/transactions`** con volumen alto (ver §9 y §5.6.4); sin esto la pantalla de movimientos puede quedar inutilizable tras imports masivos.
+- **Extractos / rendimiento:** con **muchos miles** de movimientos, seguir hidratando **todas** las filas en el cliente puede ser pesado (RAM/tiempo total de N requests); valorar filtros obligatorios por fecha o paginación solo-server cuando el volumen lo exija.
 - Documentar **fórmulas de dashboard** y origen de cada KPI en `dashboard/stats`.
 - Inventario de **permisos** vs pantallas (matriz rol ↔ ruta).
 - **Ventas** (`sales`): tabla existe; revisar flujo UI si aún no hay página dedicada.
