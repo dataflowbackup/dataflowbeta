@@ -24,6 +24,7 @@ import type {
   InsertCounterpartyIdentifier,
 } from "@shared/schema";
 import { computeInvoiceTaxes } from "@shared/invoiceTaxComputation";
+import { registerBulkInvoiceImportRoutes } from "./routesBulkInvoiceImport";
 
 const upload = multer({ 
   storage: multer.memoryStorage(),
@@ -3828,6 +3829,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       res.status(500).json({ message: e.message });
     }
   });
+
+  registerBulkInvoiceImportRoutes(app);
 
   app.use("/api", (req, res) => {
     if (req.method === "OPTIONS") {

@@ -34,3 +34,9 @@ Thumbs.db
 
 # Cache local (import SQL sanitizado, etc.)
 .cache/
+
+# Parser facturas OCR — imágenes locales y Excel generado (no subir)
+docs/Parser Facturas y Documentacion/facturas_entrada/**
+!docs/Parser Facturas y Documentacion/facturas_entrada/README.md
+docs/Parser Facturas y Documentacion/salida_parser/**
+!docs/Parser Facturas y Documentacion/salida_parser/README.md
