@@ -270,7 +270,7 @@ Tablas representativas (no lista completa): `sessions`, `users`, `user_credentia
 
 | Periodo / tema | Qué se hizo |
 |----------------|-------------|
-| **2026-05-19 — Arranque jornada pruebas** | `git pull`/árbol limpio; backup Turso `backups/turso_2026-05-19_094852.sql` (~11,7 MB, 16.439 filas, 56 tablas); tag `backup-pre-pruebas-2026-05-19`. |
+| **2026-05-19 — Arranque jornada pruebas (`bf87a7f`)** | `git pull`/árbol limpio; backup Turso `backups/turso_2026-05-19_094852.sql` (~11,7 MB, 16.439 filas, 56 tablas); tag `backup-pre-pruebas-2026-05-19`. |
 | **2026-05-11 — Listados grandes: cursor + índice en transacciones (`723cfab`)** | Mitiga **502** sistemáticos por **`OFFSET` profundo**: API `afterDate`/`afterId`, `getTransactions` sin offset en modo cursor, **COUNT omitido** en páginas de continuación, índice `(client_id, transaction_date, id)`. Cliente en `bank-statements.tsx` hidrata en bucle por cursor. |
 | **2026-05-07 — Síntoma histórico (previo a cursor): `GET /api/transactions` → 502 al paginar con offset** | Con ~10k+ filas y muchas páginas `page`/`pageSize`, una página podía **timeout** en origin → fallaba toda la query de movimientos. **Quedó resuelto** por el enfoque de §5.6.4 / `723cfab` (no mantener como bloqueador). |
 | **2026-05-07 — Paginación cliente extractos (`d0e74db`)** | Se dejó de usar `mergedById.size >= total` como condición de parada (total del servidor podía subestimar filas reales → pestaña MP “vacía” con lote OK). Parada por página corta o sin ids nuevos. Sigue aplicando encima del cursor. |
