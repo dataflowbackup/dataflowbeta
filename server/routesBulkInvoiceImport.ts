@@ -50,30 +50,100 @@ async function getClientId(req: any): Promise<number> {
   return client.id;
 }
 
+async function getAuthenticatedUserId(req: any): Promise<string | undefined> {
+  const session = req.session as any;
+  if (session?.userId) return String(session.userId);
+  const user = req.user as any;
+  if (!user?.claims?.sub) return undefined;
+  let dbUser = await storage.getUser(user.claims.sub);
+  if (!dbUser && user.claims.email) {
+    dbUser = await storage.getUserByEmail(user.claims.email);
+  }
+  return dbUser?.id;
+}
+
+type BulkAccessDenied = {
+  allowed: false;
+  status: number;
+  message: string;
+};
+
+type BulkAccessAllowed = {
+  allowed: true;
+  mode: "email_allowlist" | "role_socio_admin";
+  hint?: string;
+};
+
+async function resolveBulkInvoiceAccess(req: any): Promise<BulkAccessAllowed | BulkAccessDenied> {
+  const userId = await getAuthenticatedUserId(req);
+  if (!userId) {
+    return { allowed: false, status: 401, message: "Tenés que iniciar sesión." };
+  }
+
+  let clientId: number;
+  try {
+    clientId = await getClientId(req);
+  } catch {
+    return { allowed: false, status: 400, message: "No encontramos la empresa asociada a tu usuario." };
+  }
+
+  let email: string | undefined;
+  const session = req.session as any;
+  if (session?.userId) {
+    const u = await storage.getUser(session.userId);
+    email = u?.email?.toLowerCase();
+  }
+  if (!email) {
+    const user = req.user as any;
+    email = user?.claims?.email?.toLowerCase?.();
+  }
+
+  const allowlist = (process.env.BULK_INVOICE_ADMIN_EMAILS ?? "")
+    .split(",")
+    .map((s) => s.trim().toLowerCase())
+    .filter(Boolean);
+
+  if (allowlist.length > 0) {
+    if (!email || !allowlist.includes(email)) {
+      return {
+        allowed: false,
+        status: 403,
+        message:
+          "En este servidor la importación masiva está limitada a una lista de correos. Tu cuenta no está en esa lista (pedí que agreguen tu email en Netlify → Environment variables → BULK_INVOICE_ADMIN_EMAILS).",
+      };
+    }
+    return {
+      allowed: true,
+      mode: "email_allowlist",
+      hint: "Lista restrictiva de correos activa en el servidor.",
+    };
+  }
+
+  const roleRaw = await storage.getUserRoleInClient(userId, clientId);
+  const role = String(roleRaw ?? "").trim().toLowerCase();
+  const privilegedRoles = new Set(["socio", "admin", "manager"]);
+
+  if (!privilegedRoles.has(role)) {
+    return {
+      allowed: false,
+      status: 403,
+      message:
+        "Solo perfil Socio, Administrador o Gerente puede usar esta herramienta. Entrá a Equipo y pedí que te asignen ese rol, o que otro usuario autorizado haga la importación.",
+    };
+  }
+
+  return {
+    allowed: true,
+    mode: "role_socio_admin",
+    hint: "Activado por tu rol en la empresa. Opcional en Netlify: BULK_INVOICE_ADMIN_EMAILS para acotar solo a ciertos correos.",
+  };
+}
+
 async function requireBulkInvoiceAdmin(req: any, res: any, next: any) {
   try {
-    const allowed = (process.env.BULK_INVOICE_ADMIN_EMAILS ?? "")
-      .split(",")
-      .map((s) => s.trim().toLowerCase())
-      .filter(Boolean);
-    if (!allowed.length) {
-      return res.status(503).json({
-        message:
-          "Import masivo deshabilitado: falta BULK_INVOICE_ADMIN_EMAILS en el servidor (.env / Netlify).",
-      });
-    }
-    let email: string | undefined;
-    const session = req.session as any;
-    if (session?.userId) {
-      const u = await storage.getUser(session.userId);
-      email = u?.email?.toLowerCase();
-    }
-    if (!email) {
-      const user = req.user as any;
-      email = user?.claims?.email?.toLowerCase?.();
-    }
-    if (!email || !allowed.includes(email)) {
-      return res.status(403).json({ message: "No autorizado para import masivo de facturas." });
+    const r = await resolveBulkInvoiceAccess(req);
+    if (!r.allowed) {
+      return res.status(r.status).json({ message: r.message });
     }
     next();
   } catch (e: any) {
@@ -311,6 +381,23 @@ export function registerBulkInvoiceImportRoutes(app: Express) {
     { name: "file", maxCount: 1 },
     { name: "revision", maxCount: 1 },
   ]);
+
+  /** Para la barra lateral / pantalla: siempre JSON 200 si hay sesión (sin tirar 403). */
+  app.get("/api/admin/bulk-invoices/access", isAuthenticated, async (req, res) => {
+    try {
+      const r = await resolveBulkInvoiceAccess(req);
+      if (!r.allowed) {
+        return res.json({ allowed: false, message: r.message });
+      }
+      res.json({
+        allowed: true,
+        mode: r.mode,
+        hint: r.hint,
+      });
+    } catch (e: any) {
+      res.json({ allowed: false, message: e?.message ?? String(e) });
+    }
+  });
 
   app.post(
     "/api/admin/bulk-invoices/precheck-supplies",

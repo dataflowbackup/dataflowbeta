@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useLocation, Link } from "wouter";
 import {
@@ -30,6 +30,7 @@ import {
   Layers,
   Briefcase,
   Banknote,
+  Upload,
 } from "lucide-react";
 import { useAuth } from "@/hooks/useAuth";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
@@ -199,6 +200,26 @@ export function AppSidebar() {
     staleTime: 5 * 60_000,
   });
 
+  const { data: bulkImportAccess } = useQuery<{ allowed: boolean }>({
+    queryKey: ["/api/admin/bulk-invoices/access"],
+    enabled: !!user,
+    staleTime: 60_000,
+  });
+
+  const sidebarSections = useMemo(() => {
+    if (bulkImportAccess?.allowed !== true) return menuSections;
+    const bulkItem = {
+      title: "Importar Excel (facturas)",
+      url: "/facturas/importacion-excel",
+      icon: Upload,
+    };
+    return menuSections.map((section) =>
+      section.title === "Facturacion"
+        ? { ...section, items: [...section.items, bulkItem] }
+        : section,
+    );
+  }, [bulkImportAccess?.allowed]);
+
   const isActive = (url: string) => location === url;
 
   const getInitials = () => {
@@ -263,7 +284,7 @@ export function AppSidebar() {
           </SidebarGroupContent>
         </SidebarGroup>
 
-        {menuSections
+        {sidebarSections
           .filter(
             (section) =>
               SHOW_OPERACIONES_SIDEBAR || section.title !== "Operaciones",

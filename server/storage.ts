@@ -163,6 +163,8 @@ export interface IStorage {
   getUserByEmail(email: string): Promise<User | undefined>;
   
   getClientByUserId(userId: string): Promise<Client | undefined>;
+  /** Rol del usuario en esa empresa (tabla user_clients), ej. socio / admin / encargado */
+  getUserRoleInClient(userId: string, clientId: number): Promise<string | null>;
   createClient(client: InsertClient): Promise<Client>;
   
   getLocals(clientId: number): Promise<Local[]>;
@@ -773,6 +775,15 @@ export class DatabaseStorage implements IStorage {
       .innerJoin(clients, eq(userClients.clientId, clients.id))
       .where(eq(userClients.userId, userId));
     return result?.client;
+  }
+
+  async getUserRoleInClient(userId: string, clientId: number): Promise<string | null> {
+    const [row] = await db
+      .select({ role: userClients.role })
+      .from(userClients)
+      .where(and(eq(userClients.userId, userId), eq(userClients.clientId, clientId)));
+    const r = row?.role;
+    return r != null && String(r).trim() !== "" ? String(r) : null;
   }
 
   async createClient(client: InsertClient): Promise<Client> {
