@@ -270,6 +270,7 @@ Tablas representativas (no lista completa): `sessions`, `users`, `user_credentia
 
 | Periodo / tema | Qué se hizo |
 |----------------|-------------|
+| **2026-05-19 — Arranque jornada pruebas** | `git pull`/árbol limpio; backup Turso `backups/turso_2026-05-19_094852.sql` (~11,7 MB, 16.439 filas, 56 tablas); tag `backup-pre-pruebas-2026-05-19`. |
 | **2026-05-11 — Listados grandes: cursor + índice en transacciones (`723cfab`)** | Mitiga **502** sistemáticos por **`OFFSET` profundo**: API `afterDate`/`afterId`, `getTransactions` sin offset en modo cursor, **COUNT omitido** en páginas de continuación, índice `(client_id, transaction_date, id)`. Cliente en `bank-statements.tsx` hidrata en bucle por cursor. |
 | **2026-05-07 — Síntoma histórico (previo a cursor): `GET /api/transactions` → 502 al paginar con offset** | Con ~10k+ filas y muchas páginas `page`/`pageSize`, una página podía **timeout** en origin → fallaba toda la query de movimientos. **Quedó resuelto** por el enfoque de §5.6.4 / `723cfab` (no mantener como bloqueador). |
 | **2026-05-07 — Paginación cliente extractos (`d0e74db`)** | Se dejó de usar `mergedById.size >= total` como condición de parada (total del servidor podía subestimar filas reales → pestaña MP “vacía” con lote OK). Parada por página corta o sin ids nuevos. Sigue aplicando encima del cursor. |
@@ -296,6 +297,17 @@ Antes de iniciar pruebas drásticas se generaron:
 | Git tag | `backup-pre-pruebas-drasticas-2026-05-07` (apunta a commit `aa82ca3`, pusheado al remoto) |
 
 El backup de Turso se generó con **`script/backup-turso.ts`** (ver §12.3). Requiere `env.turso` con `DATABASE_URL` y `TURSO_AUTH_TOKEN` (archivo en `.gitignore`).
+
+### Backups y red de seguridad (2026-05-19)
+
+Antes de la jornada de pruebas se generó:
+
+| Origen | Archivo / referencia |
+|--------|----------------------|
+| Turso producción (`dataflow-db-mbeduzzi`) | `backups/turso_2026-05-19_094852.sql` (~11,7 MB, 16.439 filas, 56 tablas, vía `npx tsx script/backup-turso.ts`) |
+| Git tag | `backup-pre-pruebas-2026-05-19` (anotado y pusheado a `origin`) |
+
+Postgres local / SQLite legacy: no se repitieron en esta sesión (sin `data/dev.db` en repo; `pg_dump` opcional si trabajás contra `dataflow_dev` en esta máquina — ver §12.1).
 
 ---
 
@@ -353,7 +365,7 @@ El backup de Turso se generó con **`script/backup-turso.ts`** (ver §12.3). Req
 
 **Este apartado es la referencia única** para no volver a perderse con Turso, credenciales o dónde quedan los archivos. Antes de `db:push:turso`, migraciones manuales, `npm run seed:bootstrap` contra prod, o **cualquier prueba drástica**, seguir el **checklist §12.0**.
 
-> Última ejecución documentada en roadmap: **2026-05-07** (ver §8).
+> Última ejecución documentada en roadmap: **2026-05-19** (Turso + tag; ver §8).
 
 ### 12.0 Checklist completo (orden recomendado)
 
