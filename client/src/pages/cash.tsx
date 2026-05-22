@@ -49,7 +49,7 @@ import {
   Banknote,
   Plus,
   Trash2,
-  Tag,
+  Pencil,
   ArrowUpRight,
   ArrowDownRight,
   TrendingUp,
@@ -638,13 +638,30 @@ export default function CashPage() {
     },
     {
       key: "actions",
-      header: "",
+      header: "Acciones",
+      className:
+        "sticky right-0 z-10 bg-background border-l border-border shadow-[inset_-6px_0_8px_-8px_rgb(0_0_0/0.12)] whitespace-nowrap w-[1%]",
       cell: (row) => (
-        <div className="flex gap-1">
-          <Button size="icon" variant="ghost" title="Editar movimiento" onClick={() => openEdit(row)}>
-            <Tag className="h-4 w-4" />
+        <div className="flex items-center justify-end gap-1 pr-1">
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            title="Editar movimiento"
+            className="h-8 gap-1 px-2"
+            onClick={() => openEdit(row)}
+          >
+            <Pencil className="h-3.5 w-3.5 shrink-0" />
+            <span className="text-xs font-medium">Editar</span>
           </Button>
-          <Button size="icon" variant="ghost" title="Eliminar" onClick={() => setDeleteTarget(row)}>
+          <Button
+            type="button"
+            size="icon"
+            variant="ghost"
+            className="h-8 w-8 shrink-0"
+            title="Eliminar"
+            onClick={() => setDeleteTarget(row)}
+          >
             <Trash2 className="h-4 w-4 text-destructive" />
           </Button>
         </div>
