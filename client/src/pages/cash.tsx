@@ -58,6 +58,7 @@ import {
   ChevronsUpDown,
   Filter,
   Scale,
+  CalendarDays,
 } from "lucide-react";
 import type { Transaction, BankAccount, TransactionCategory, Local } from "@shared/schema";
 
@@ -68,6 +69,27 @@ interface TransactionWithRelations extends Transaction {
 }
 
 const CASH_BANK_SOURCE = "cash";
+
+function isoDateParts(s: string): { y: number; m: number; d: number } | null {
+  const slice = String(s ?? "").slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(slice)) return null;
+  const [y, m, d] = slice.split("-").map(Number);
+  if (!y || !m || !d) return null;
+  return { y, m: m - 1, d };
+}
+
+/** Días inclusivos entre dos ISO YYYY-MM-DD (consistente con inputs type=date). */
+function inclusiveCalendarDays(fromStr: string, toStr: string): number {
+  const pa = isoDateParts(fromStr);
+  const pb = isoDateParts(toStr);
+  if (!pa || !pb) return 1;
+  const a = new Date(pa.y, pa.m, pa.d).getTime();
+  const b = new Date(pb.y, pb.m, pb.d).getTime();
+  const msDay = 86_400_000;
+  const lo = Math.min(a, b);
+  const hi = Math.max(a, b);
+  return Math.max(1, Math.round((hi - lo) / msDay) + 1);
+}
 
 type DraftRow = {
   key: string;
@@ -403,6 +425,44 @@ export default function CashPage() {
 
   const saldoFiltered = useMemo(() => totalIncome - totalExpense, [totalIncome, totalExpense]);
 
+  /** Promedio diario de ingresos: total ingresos filtrados ÷ días del período (filtros de fecha o rango de fechas visibles). */
+  const dailyIncomeAverage = useMemo(() => {
+    const uniqueSortedDates = [
+      ...new Set(
+        filteredTransactions
+          .map((t) => String(t.transactionDate ?? "").slice(0, 10))
+          .filter((d) => /^\d{4}-\d{2}-\d{2}$/.test(d)),
+      ),
+    ].sort();
+
+    const fromInput = filterDateFrom.trim();
+    const toInput = filterDateTo.trim();
+
+    let from = fromInput;
+    let to = toInput;
+
+    if (from && to) {
+      /* usar rango explícito del usuario */
+    } else if (from && !to) {
+      to = uniqueSortedDates.length ? uniqueSortedDates[uniqueSortedDates.length - 1]! : from;
+    } else if (!from && to) {
+      from = uniqueSortedDates.length ? uniqueSortedDates[0]! : to;
+    } else {
+      if (uniqueSortedDates.length === 0) {
+        return { amount: 0, days: 1, periodNote: "Sin fechas en la vista" };
+      }
+      from = uniqueSortedDates[0]!;
+      to = uniqueSortedDates[uniqueSortedDates.length - 1]!;
+    }
+
+    const days = inclusiveCalendarDays(from, to);
+    return {
+      amount: totalIncome / days,
+      days,
+      periodNote: `${from} → ${to} · ${days} día${days === 1 ? "" : "s"}`,
+    };
+  }, [filteredTransactions, filterDateFrom, filterDateTo, totalIncome]);
+
   const openBatch = () => {
     draftRowSeqRef.current = 0;
     setDraftRows([makeDraftRow(draftRowSeqRef)]);
@@ -617,7 +677,7 @@ export default function CashPage() {
         }
       />
 
-      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
         <Card>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
             <div>
@@ -630,6 +690,25 @@ export default function CashPage() {
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold font-mono text-green-600">{formatCurrency(totalIncome)}</div>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+            <div>
+              <CardTitle className="text-sm font-medium">Promedio</CardTitle>
+              <p className="text-xs text-muted-foreground font-normal mt-0.5">Ingreso diario promedio</p>
+              {filteredTransactions.length !== transactions.length && (
+                <p className="text-xs text-muted-foreground font-normal mt-0.5">Filtrado</p>
+              )}
+            </div>
+            <CalendarDays className="h-4 w-4 text-emerald-600" />
+          </CardHeader>
+          <CardContent>
+            <div className="text-2xl font-bold font-mono text-emerald-700">{formatCurrency(dailyIncomeAverage.amount)}</div>
+            <p className="text-xs text-muted-foreground mt-1 leading-snug">{dailyIncomeAverage.periodNote}</p>
+            {filtersActive && (
+              <p className="text-xs text-muted-foreground mt-0.5">Según filtros aplicados</p>
+            )}
           </CardContent>
         </Card>
         <Card>
