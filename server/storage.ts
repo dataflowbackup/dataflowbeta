@@ -2250,9 +2250,12 @@ export class DatabaseStorage implements IStorage {
   }
 
   async deleteTransaction(clientId: number, id: number): Promise<boolean> {
-    const result = await db.delete(transactions)
-      .where(and(eq(transactions.id, id), eq(transactions.clientId, clientId)));
-    return (result.rowCount ?? 0) > 0;
+    // SQLite/libSQL: el resultado del DELETE no garantiza rowCount útil con este driver.
+    const deletedRows = await db
+      .delete(transactions)
+      .where(and(eq(transactions.id, id), eq(transactions.clientId, clientId)))
+      .returning({ id: transactions.id });
+    return deletedRows.length > 0;
   }
 
   async deleteTransactionBatch(clientId: number, importBatchId: string): Promise<number> {

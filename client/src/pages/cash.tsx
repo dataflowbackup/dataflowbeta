@@ -429,7 +429,10 @@ export default function CashPage() {
 
   const saldoFiltered = useMemo(() => totalIncome - totalExpense, [totalIncome, totalExpense]);
 
-  /** Promedio diario de ingresos: total ingresos filtrados ÷ días del período (filtros de fecha o rango de fechas visibles). */
+  /**
+   * Promedio diario de ingresos: Σ ingresos en la vista ÷ días calendario entre la primera y última fecha
+   * con ingreso (siempre usando solo ingresos; egresos no ensanchan el denominador aunque tengas rango desde/hasta amplio).
+   */
   const dailyIncomeAverage = useMemo(() => {
     const incomeSortedDates = Array.from(
       new Set(
@@ -440,37 +443,19 @@ export default function CashPage() {
       ),
     ).sort();
 
-    const fromInput = filterDateFrom.trim();
-    const toInput = filterDateTo.trim();
-    const explicitRange = Boolean(fromInput && toInput);
-
-    let from = fromInput;
-    let to = toInput;
-
-    if (from && to) {
-      /* usar rango explícito del usuario */
-    } else if (from && !to) {
-      to = incomeSortedDates.length ? incomeSortedDates[incomeSortedDates.length - 1]! : from;
-    } else if (!from && to) {
-      from = incomeSortedDates.length ? incomeSortedDates[0]! : to;
-    } else {
-      if (incomeSortedDates.length === 0) {
-        return { amount: 0, days: 1, periodNote: "Sin ingresos en los filtros" };
-      }
-      from = incomeSortedDates[0]!;
-      to = incomeSortedDates[incomeSortedDates.length - 1]!;
+    if (incomeSortedDates.length === 0) {
+      return { amount: 0, days: 1, periodNote: "Sin ingresos en los filtros" };
     }
 
+    const from = incomeSortedDates[0]!;
+    const to = incomeSortedDates[incomeSortedDates.length - 1]!;
     const days = inclusiveCalendarDays(from, to);
-    const rangeNote = explicitRange
-      ? ""
-      : " · del primero al último día con ingreso (solo ingresos acotan el rango)";
     return {
       amount: totalIncome / days,
       days,
-      periodNote: `${from} → ${to} · ${days} día${days === 1 ? "" : "s"}${rangeNote}`,
+      periodNote: `${from} → ${to} · ${days} día${days === 1 ? "" : "s"} · promedio diario desde el primer al último ingreso (filtros aplicados; los egresos no alargan el período).`,
     };
-  }, [filteredTransactions, filterDateFrom, filterDateTo, totalIncome]);
+  }, [filteredTransactions, totalIncome]);
 
   const openBatch = () => {
     draftRowSeqRef.current = 0;
