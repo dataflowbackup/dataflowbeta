@@ -1,6 +1,6 @@
 # Roadmap y mapa del sistema Data Flow
 
-**Última actualización:** 2026-05-14 (roadmap alineado a código: cursor en `GET /api/transactions`, UI Extractos/Efectivo reciente)  
+**Última actualización:** 2026-05-19 (roadmap al día: **`DataEntryCombobox`** extendido en casi todo el cliente; historial §8 — commits `ea86f4a` + `24dde1f`; Extractos/Efectivo/cursor en §5.6 sin cambios de API)  
 **Alcance:** producto completo según código en repo (`client/`, `server/`, `shared/schema.ts`). Este archivo sustituye la versión que cubría solo extractos; conviene **mantenerlo al día** tras cambios de alcance.
 
 **Otros documentos del repo:** `ANALISIS_EXHAUSTIVO_DATA_FLOW.md`, `PLAN_DE_ACCION_DATA_FLOW.md`, `AVANCES_PARA_SOCIOS.md`, `docs/NETLIFY-TURSO.md`, `docs/WORKFLOW.md` (complementarios; pueden quedar desfasados respecto al código).
@@ -21,7 +21,7 @@
 
 | Capa | Tecnología |
 |------|------------|
-| Frontend | React (Vite), Wouter, TanStack Query, UI (Radix/shadcn) |
+| Frontend | React (Vite), Wouter, TanStack Query, UI (Radix/shadcn). **Desplegables “data entry”:** `client/src/components/data-entry-combobox.tsx` (**Popover + cmdk**) para búsqueda, flechas teclado y foco consistente — sustituye al `Select` de shadcn en la mayoría de filtros/formularios (2026-05). |
 | Backend | Express; registro de rutas en `server/routes.ts` |
 | Datos | Drizzle ORM; esquema en `shared/schema.ts` (SQLite/Turso en prod) |
 | Auth | Sesiones + usuario (`users`, `user_credentials`); multi-tenant por `clientId` |
@@ -66,6 +66,12 @@ Rutas definidas en `client/src/App.tsx`. Menú lateral en `client/src/components
 | `/equipo` | Equipo | Usuarios del cliente; invitaciones (`/join`) |
 
 **Nota:** En sidebar, `SHOW_OPERACIONES_SIDEBAR = false` oculta la sección **Operaciones** hasta activarla en código (stock/auditorías/empleados/asistencia/liquidaciones siguen existiendo por URL si se conocen).
+
+### 3.1 Patrón UI: combobox para catálogo y filtros (2026-05)
+
+- **Componente:** `DataEntryCombobox` (`client/src/components/data-entry-combobox.tsx`): combina **Popover** + **Command** (cmdk), ítem activo con foco visible, `defaultValue` alineado a la opción seleccionada, `emptyOptionLabel` opcional para “limpiar” valor.
+- **Alcance en código:** además de **Facturas**, se usa en **DataTable** (filtros por columna), **Dashboard**, **Balance**, **Cuentas** (ABM cuenta corriente), **Stock**, **Pagos**, **Proveedores / Locales / Impuestos / Sociedades / Sub-rubros / Grupos financieros / Categorías de movimientos**, **Recetas / Sub-recetas / formulario de receta**, **Efectivo**, **Extractos bancarios** (tipo listado, import, nueva cuenta/caja, clasificar movimiento, split por local, mapeo de sucursales), **RRHH** (empleados, asistencia, liquidaciones), **Auditorías**, **Equipo** (roles en invitación y cambio de rol).
+- **Commits de referencia:** `ea86f4a` (facturas + mejoras cmdk); `24dde1f` (rollout cliente + tablas).
 
 ---
 
@@ -126,7 +132,7 @@ Rutas definidas en `client/src/App.tsx`. Menú lateral en `client/src/components
 - **Transacciones** (`transactions`): movimientos manuales e importados; categoría, local, cuenta, contrapartes, splits (`parent_transaction_id`).
 - ** counterparties + identifiers**: agenda para matcheo / CRM liviano.
 - **Balances mensuales** (`monthly_balances`): API `GET /api/monthly-balances`.
-- **Efectivo:** pantalla `/efectivo` para cargar movimientos sin extracto bancario; persisten como transacciones con `bankSource: "cash"` y `POST /api/transactions/cash-batch` (validación de categoría vs tipo ingreso/egreso en storage).
+- **Efectivo:** pantalla `/efectivo` para cargar movimientos sin extracto bancario; persisten como transacciones con `bankSource: "cash"` y `POST /api/transactions/cash-batch` (validación de categoría vs tipo ingreso/egreso en storage). **UI:** filtros y modales de lote/edición usan **`DataEntryCombobox`** para tipo y local (`24dde1f`).
 - **Vistas guardadas** extractos (`financial_saved_views`): modelo y API pueden seguir existiendo; **la pantalla Extractos ya no expone** selector de cuenta ni guardado de vistas (simplificación UI; ver §8).
 - **Seed financiero**: `POST /api/financial-groups/seed` y datos semilla vía `seedFinancialDataForClient` (según ruta).
 
@@ -194,8 +200,9 @@ Rutas definidas en `client/src/App.tsx`. Menú lateral en `client/src/components
 
 - `Tabs` usa un solo estado `bankFilter` también para **`extractos`** y **`breakdown`**.
 - La **DataTable** de movimientos solo se muestra si `bankFilter` es `all`, un banco de `banksForTabs`, o está en `PINNED_BANK_TAB_IDS` (`galicia`, `mercadopago`, `frances`, `bbva`). En **`extractos`** no se ve la grilla (solo lotes importados).
-- **Listado:** filtros por **local**, **categoría**, **tipo** (ingreso/egreso), **desde/hasta**; columna **Local** en la tabla (`8045866`).
+- **Listado:** filtros por **local**, **categoría**, **tipo** (ingreso/egreso), **desde/hasta**; columna **Local** en la tabla (`8045866`). Desde **2026-05-19**, tipo de movimiento en listado usa **`DataEntryCombobox`** (antes `Select`).
 - **Clasificación masiva:** buscadores en descripciones 1 y 2; categoría y local con combobox buscable; modal con **scroll** y **pie fijo** para botones (`a0dc670`).
+- **Diálogos extractos (2026-05):** import (cuenta/caja, local por defecto), alta de cuenta/caja, **clasificar** (categoría/local), **split** y **vincular sucursales** usan **`DataEntryCombobox`** donde antes había `Select`.
 - **Removido en pantalla:** bloque “vista por cuenta” / vistas guardadas en Extractos (`8045866`); no implica borrar datos de `financial_saved_views` en BD.
 
 **Referencia de commits en esta línea:** `e45feda` (MP parser + conciliación neta + UI), `7c8b12f` (batch insert), `85be022` (async jobs + background), `d0e74db` (parada paginación cliente), **`723cfab`** (cursor + índice + API), **`8045866`** / **`a0dc670`** (UI extractos).
@@ -270,6 +277,7 @@ Tablas representativas (no lista completa): `sessions`, `users`, `user_credentia
 
 | Periodo / tema | Qué se hizo |
 |----------------|-------------|
+| **2026-05-19 — UI data entry unificada (`ea86f4a` → `24dde1f`)** | **Facturas** (`ea86f4a`): combobox con teclado/búsqueda y orden de ítems. **Resto del cliente** (`24dde1f`): reemplazo masivo de `Select` shadcn por **`DataEntryCombobox`** en ~25 archivos (`data-table` filtros, dashboard, balance, cuentas, stock, pagos, catálogos varios, recetas, financiero, efectivo, extractos, RRHH, auditorías, equipo). Sin cambio de contrato API. Pusheado a `origin/main`. |
 | **2026-05-19 — Arranque jornada pruebas (`bf87a7f`)** | `git pull`/árbol limpio; backup Turso `backups/turso_2026-05-19_094852.sql` (~11,7 MB, 16.439 filas, 56 tablas); tag `backup-pre-pruebas-2026-05-19`. |
 | **2026-05-11 — Listados grandes: cursor + índice en transacciones (`723cfab`)** | Mitiga **502** sistemáticos por **`OFFSET` profundo**: API `afterDate`/`afterId`, `getTransactions` sin offset en modo cursor, **COUNT omitido** en páginas de continuación, índice `(client_id, transaction_date, id)`. Cliente en `bank-statements.tsx` hidrata en bucle por cursor. |
 | **2026-05-07 — Síntoma histórico (previo a cursor): `GET /api/transactions` → 502 al paginar con offset** | Con ~10k+ filas y muchas páginas `page`/`pageSize`, una página podía **timeout** en origin → fallaba toda la query de movimientos. **Quedó resuelto** por el enfoque de §5.6.4 / `723cfab` (no mantener como bloqueador). |
@@ -284,6 +292,7 @@ Tablas representativas (no lista completa): `sessions`, `users`, `user_credentia
 | **2026-05 — Extractos: filtros de listado y columna Local (`8045866`)** | Sin “vista por cuenta” / vistas guardadas en pantalla; filtros local, categoría, tipo, fechas; columna **Local** en la grilla. |
 | **2026-05 — Extractos: clasificación masiva UX (`a0dc670`)** | Buscadores en descripciones; categoría/local combobox con búsqueda; modal con scroll + botones fijos. |
 | **2026-05 — Módulo Efectivo** | Ruta `/efectivo`, sidebar Financiero; alta por lotes vía `POST /api/transactions/cash-batch` (`bankSource` `cash`). Commits `b1c2f5c` y siguientes en la línea efectivo/KPIs/modales. |
+| **2026-05-19 — Correcciones de cierre rollout UI** | `bank-statements`: eliminada llamada huérfana a `setAccountContextFilter`; `audits`: restaurado `completedAudits` tras refactor; `employees`: `ConfirmDialog` usa `isLoading` (antes `loading`). |
 
 ### Backups y red de seguridad (2026-05-07)
 
@@ -329,7 +338,7 @@ Postgres local / SQLite legacy: no se repitieron en esta sesión (sin `data/dev.
 | Conciliación MP | Overrides de bruto vía multipart ya no resuelven descuadre neto; usar archivo corregido o investigar omisiones/duplicados |
 | Jobs import MP | Limpiar `financial_import_jobs` antiguos (`pending` colgados, filas grandes en texto) si crece la tabla; considerar TTL o cron |
 | Sidebar | Sección Operaciones oculta por flag hasta activar |
-| Tooling | Posibles errores TypeScript globales no resueltos |
+| Tooling | `npm run check` puede seguir reportando errores **fuera del alcance UI** (p. ej. mezcla de tipos Drizzle SQLite/PG en `server/`, interfaz `SupplyWithRelations` vs schema, variantes `Button` en `home.tsx`) — verificar antes de asumir regresión por el rollout de combobox. |
 | Docs legacy | Otros `.md` pueden contradecir el código actual |
 
 ### Si reaparece error al cargar movimientos (monitorización)
@@ -341,6 +350,8 @@ Postgres local / SQLite legacy: no se repitieron en esta sesión (sin `data/dev.
 ---
 
 ## 10. Pendientes sugeridos (backlog)
+
+**Recién cerrado en código (documentar uso; no backlog):** desplegables de **data entry** unificados con **`DataEntryCombobox`** en casi todo el cliente (2026-05-19, `24dde1f`; facturas previas `ea86f4a`).
 
 - **Extractos / rendimiento:** con **muchos miles** de movimientos, seguir hidratando **todas** las filas en el cliente puede ser pesado (RAM/tiempo total de N requests); valorar filtros obligatorios por fecha o paginación solo-server cuando el volumen lo exija.
 - Documentar **fórmulas de dashboard** y origen de cada KPI en `dashboard/stats`.
