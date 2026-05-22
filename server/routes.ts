@@ -3883,16 +3883,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const gate = await assertTeamPrivileged(req, res);
       if (!gate.ok) return;
 
-      if (!isMailConfigured()) {
-        return res.status(503).json({
-          message:
-            "Falta SMTP (SMTP_HOST, SMTP_USER, SMTP_PASS, etc.). No podemos enviar la nueva contraseña por correo.",
-        });
-      }
-
       const member = await storage.getUser(req.params.targetUserId);
       if (!member?.email?.trim()) {
-        return res.status(400).json({ message: "El usuario no tiene email; no se puede resetear por correo" });
+        return res.status(400).json({ message: "El usuario no tiene email; cargá uno para que puedan ingresar" });
       }
 
       const inClient = await storage.getUserRoleInClient(member.id, gate.clientId);
@@ -3904,26 +3897,36 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const passwordHash = await hashPassword(provisionalPassword);
       await storage.setUserPasswordHash(member.id, passwordHash, true);
 
-      const [company] = await db
-        .select({ name: clients.name })
-        .from(clients)
-        .where(eq(clients.id, gate.clientId))
-        .limit(1);
+      const loginEmail = member.email.trim().toLowerCase();
+      let mailSent = false;
 
-      try {
-        await sendTeamWelcomeEmail({
-          to: member.email.trim().toLowerCase(),
-          provisionalPassword,
-          companyName: company?.name ?? null,
-        });
-      } catch (mailErr: any) {
-        console.error("SMTP reset-password:", mailErr);
-        return res.status(502).json({
-          message: "La contraseña se actualizó pero falló el envío por correo. Revisá la configuración SMTP.",
-        });
+      if (isMailConfigured()) {
+        try {
+          const [company] = await db
+            .select({ name: clients.name })
+            .from(clients)
+            .where(eq(clients.id, gate.clientId))
+            .limit(1);
+          await sendTeamWelcomeEmail({
+            to: loginEmail,
+            provisionalPassword,
+            companyName: company?.name ?? null,
+          });
+          mailSent = true;
+        } catch (mailErr: any) {
+          console.error("SMTP reset-password:", mailErr);
+        }
       }
 
-      res.json({ success: true, message: "Se envió una contraseña provisoria por correo." });
+      res.json({
+        success: true,
+        loginEmail,
+        provisionalPassword,
+        mailSent,
+        message: mailSent
+          ? "Se envió también un correo con la nueva contraseña."
+          : "Contraseña provisoria generada: copiala y pasáselo al usuario (no hay SMTP o falló el envío).",
+      });
     } catch (e: any) {
       res.status(500).json({ message: e.message });
     }
@@ -3997,13 +4000,6 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         return res.status(400).json({ message: parsed.error.errors[0]?.message || "Datos inválidos" });
       }
 
-      if (!isMailConfigured()) {
-        return res.status(503).json({
-          message:
-            "Falta configurar el correo SMTP (SMTP_HOST, SMTP_USER, SMTP_PASS, MAIL_FROM, etc.). No podemos enviar la bienvenida con la contraseña provisoria.",
-        });
-      }
-
       const normalizedEmail = parsed.data.email.toLowerCase().trim();
       const role = normalizeTeamRole(parsed.data.role);
       const fn = parsed.data.firstName?.trim() || "";
@@ -4070,24 +4066,29 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         await storage.addUserToClient(targetUserId, gate.clientId, role);
       }
 
-      try {
-        await sendTeamWelcomeEmail({
-          to: normalizedEmail,
-          provisionalPassword,
-          companyName: company?.name ?? null,
-        });
-      } catch (mailErr: any) {
-        console.error("SMTP invitation:", mailErr);
-        return res.status(502).json({
-          message:
-            "Se creó o actualizó el usuario pero falló el envío del correo. Revisá SMTP y reintentá, o reseteá la contraseña desde Equipo.",
-        });
+      let mailSent = false;
+      if (isMailConfigured()) {
+        try {
+          await sendTeamWelcomeEmail({
+            to: normalizedEmail,
+            provisionalPassword,
+            companyName: company?.name ?? null,
+          });
+          mailSent = true;
+        } catch (mailErr: any) {
+          console.error("SMTP invitation:", mailErr);
+        }
       }
 
       res.json({
         success: true,
-        message: `Se envió un correo de bienvenida con la contraseña provisoria a ${normalizedEmail}.`,
         userId: targetUserId,
+        loginEmail: normalizedEmail,
+        provisionalPassword,
+        mailSent,
+        message: mailSent
+          ? "Usuario creado; también se intentó enviar el correo con la bienvenida."
+          : "Usuario listo: copiá email y contraseña y pasáselo por WhatsApp/correo (sin SMTP configurado no se envía automático).",
       });
     } catch (e: any) {
       console.error("POST /api/invitations:", e);

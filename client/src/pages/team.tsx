@@ -85,6 +85,22 @@ function parseApiError(err: unknown): string {
   return raw || "Error desconocido";
 }
 
+type InviteApiResponse = {
+  success?: boolean;
+  message?: string;
+  userId?: string;
+  loginEmail?: string;
+  provisionalPassword?: string;
+  mailSent?: boolean;
+};
+
+type CredentialsPayload = {
+  email: string;
+  password: string;
+  mailSent: boolean;
+  contextTitle: string;
+};
+
 export default function TeamPage() {
   const { toast } = useToast();
   const [inviteDialogOpen, setInviteDialogOpen] = useState(false);
@@ -103,6 +119,7 @@ export default function TeamPage() {
 
   const [confirmDeleteUser, setConfirmDeleteUser] = useState<UserWithRole | null>(null);
   const [confirmResetUser, setConfirmResetUser] = useState<UserWithRole | null>(null);
+  const [credentialsPayload, setCredentialsPayload] = useState<CredentialsPayload | null>(null);
 
   const { data: users = [], isLoading: usersLoading } = useQuery<UserWithRole[]>({
     queryKey: ["/api/team/users"],
@@ -120,7 +137,7 @@ export default function TeamPage() {
       lastName?: string;
     }) => {
       const res = await apiRequest("POST", "/api/invitations", data);
-      return res.json() as Promise<{ success?: boolean; message?: string; userId?: string }>;
+      return res.json() as Promise<InviteApiResponse>;
     },
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ["/api/invitations"] });
@@ -129,9 +146,19 @@ export default function TeamPage() {
       setInviteEmail("");
       setInviteFirstName("");
       setInviteLastName("");
+      const email = data.loginEmail ?? "";
+      const pwd = data.provisionalPassword ?? "";
+      if (email && pwd) {
+        setCredentialsPayload({
+          email,
+          password: pwd,
+          mailSent: Boolean(data.mailSent),
+          contextTitle: "Usuario nuevo listo",
+        });
+      }
       toast({
-        title: "Invitación enviada",
-        description: data.message || "Correo con contraseña provisoria enviado.",
+        title: "Usuario creado",
+        description: data.message || "Copiá email y contraseña en la ventana que se abrió.",
       });
     },
     onError: (err: unknown) => {
@@ -185,12 +212,27 @@ export default function TeamPage() {
   const resetPasswordMutation = useMutation({
     mutationFn: async (userId: string) => {
       const res = await apiRequest("POST", `/api/team/users/${userId}/reset-password`, {});
-      return res.json() as Promise<{ message?: string }>;
+      return res.json() as Promise<{
+        message?: string;
+        loginEmail?: string;
+        provisionalPassword?: string;
+        mailSent?: boolean;
+      }>;
     },
     onSuccess: (data) => {
+      const email = data.loginEmail ?? "";
+      const pwd = data.provisionalPassword ?? "";
+      if (email && pwd) {
+        setCredentialsPayload({
+          email,
+          password: pwd,
+          mailSent: Boolean(data.mailSent),
+          contextTitle: "Nueva contraseña provisoria",
+        });
+      }
       toast({
         title: "Contraseña reiniciada",
-        description: data.message || "Se envió correo con contraseña provisoria.",
+        description: data.message || "Copiá los datos de la ventana y pasaselos al usuario.",
       });
       setConfirmResetUser(null);
     },
@@ -225,6 +267,20 @@ export default function TeamPage() {
   const openChangeRole = (user: UserWithRole) => {
     setRoleTarget(user);
     setNewRole(user.role ?? "encargado");
+  };
+
+  const copyField = (value: string, label: string) => {
+    navigator.clipboard.writeText(value);
+    toast({ title: `${label} copiado` });
+  };
+
+  const copyAllCredentials = (p: CredentialsPayload) => {
+    const base = `${window.location.origin}/auth`;
+    const extra = p.mailSent ? "\n(Puede haber llegado también un correo con los mismos datos.)" : "";
+    navigator.clipboard.writeText(
+      `Acceso Dataflow (${window.location.hostname})\nEntrá en: ${base}\nEmail: ${p.email}\nContraseña: ${p.password}\nAl entrar vas a tener que cambiar la contraseña.${extra}`.trim(),
+    );
+    toast({ title: "Copiado", description: "Pegalo donde quieras enviar los datos." });
   };
 
   const copyToClipboard = (code: string) => {
@@ -362,23 +418,24 @@ export default function TeamPage() {
               <div>
                 <CardTitle className="text-lg">Invitaciones</CardTitle>
                 <CardDescription>
-                  Invitación por correo (obligatorio): se crea el usuario, se asigna a tu empresa y recibe por email una
-                  contraseña provisoria. Las invitaciones antiguas «solo con link» siguen apareciendo abajo si existen.
+                  Con el mail del colega se crea el usuario ya asignado a tu empresa y te muestra contraseña provisoria para
+                  copiar (WhatsApp/correo). Si después configurás SMTP en Netlify, puede enviarse el mail solo.
+                  Abajo pueden seguir apareciendo invitaciones viejas solo con código/link.
                 </CardDescription>
               </div>
               <Dialog open={inviteDialogOpen} onOpenChange={setInviteDialogOpen}>
                 <DialogTrigger asChild>
                   <Button data-testid="button-new-invitation">
                     <UserPlus className="h-4 w-4 mr-2" />
-                    Invitar por email
+                    Invitar usuario
                   </Button>
                 </DialogTrigger>
                 <DialogContent>
                   <DialogHeader>
-                    <DialogTitle>Invitar por email</DialogTitle>
+                    <DialogTitle>Nuevo usuario</DialogTitle>
                     <DialogDescription>
-                      El correo es obligatorio. La persona recibirá bienvenida, contraseña provisoria y deberá cambiarla al
-                      entrar.
+                      Solo necesitamos el correo para el acceso y el sistema te da la contraseña para copiar y enviar por tu
+                      cuenta. Opcional SMTP en Netlify manda bienvenida automática.
                     </DialogDescription>
                   </DialogHeader>
                   <div className="space-y-4 py-4">
@@ -449,7 +506,7 @@ export default function TeamPage() {
                       disabled={createInvitationMutation.isPending}
                       data-testid="button-create-invitation"
                     >
-                      {createInvitationMutation.isPending ? "Enviando..." : "Enviar invitación"}
+                      {createInvitationMutation.isPending ? "Creando..." : "Crear usuario"}
                     </Button>
                   </DialogFooter>
                 </DialogContent>
@@ -620,9 +677,9 @@ export default function TeamPage() {
           <AlertDialogHeader>
             <AlertDialogTitle>¿Resetear contraseña?</AlertDialogTitle>
             <AlertDialogDescription>
-              Se generará una contraseña provisoria y se enviará por correo a{" "}
-              <strong>{confirmResetUser?.email}</strong>. Deberá cambiarla al iniciar sesión (si el SMTP está bien
-              configurado).
+              Se genera una clave nueva (provisoria) y después podés copiarla para pasárselo a{" "}
+              <strong>{confirmResetUser?.email}</strong>. Si configuraste SMTP también puede llegar por correo. Deben
+              cambiarla al iniciar sesión.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
@@ -633,7 +690,7 @@ export default function TeamPage() {
                 if (confirmResetUser) resetPasswordMutation.mutate(confirmResetUser.id);
               }}
             >
-              Confirmar envío
+              Confirmar
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
@@ -662,6 +719,53 @@ export default function TeamPage() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      <Dialog open={!!credentialsPayload} onOpenChange={(open) => !open && setCredentialsPayload(null)}>
+        <DialogContent className="sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>{credentialsPayload?.contextTitle ?? "Credenciales"}</DialogTitle>
+            <DialogDescription className="text-left">
+              <span className="font-medium text-foreground">Este cuadro no se puede recuperar después.</span> Copiá datos y
+              enviálos por WhatsApp o lo que prefieras.
+              {credentialsPayload?.mailSent ? (
+                <span className="block mt-1">Si el servidor envió bien el correo, puede que ya tengan una copia también.</span>
+              ) : null}
+            </DialogDescription>
+          </DialogHeader>
+          {credentialsPayload ? (
+            <div className="space-y-3 py-2">
+              <div className="flex gap-2 items-end flex-wrap">
+                <div className="flex-1 min-w-[200px] space-y-1">
+                  <Label>Email para ingresar</Label>
+                  <Input readOnly value={credentialsPayload.email} />
+                </div>
+                <Button variant="outline" size="sm" type="button" onClick={() => copyField(credentialsPayload.email, "Email")}>
+                  <Copy className="h-4 w-4 mr-1" />
+                  Copiar
+                </Button>
+              </div>
+              <div className="flex gap-2 items-end flex-wrap">
+                <div className="flex-1 min-w-[200px] space-y-1">
+                  <Label>Contraseña provisoria</Label>
+                  <Input readOnly className="font-mono text-sm" value={credentialsPayload.password} />
+                </div>
+                <Button variant="outline" size="sm" type="button" onClick={() => copyField(credentialsPayload.password, "Contraseña")}>
+                  <Copy className="h-4 w-4 mr-1" />
+                  Copiar
+                </Button>
+              </div>
+              <Button className="w-full" variant="secondary" type="button" onClick={() => copyAllCredentials(credentialsPayload)}>
+                Copiar texto completo (link + usuario + contraseña)
+              </Button>
+            </div>
+          ) : null}
+          <DialogFooter>
+            <Button onClick={() => setCredentialsPayload(null)} type="button">
+              Entendido, cerrar
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
