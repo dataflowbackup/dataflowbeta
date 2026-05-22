@@ -43,7 +43,7 @@ import {
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
-import { formatCurrency, formatDate, formatEsArAmountInput, parseEsArAmount } from "@/lib/formatters";
+import { formatCurrency, formatDate, formatEsArAmountInput, formatNumber, parseEsArAmount } from "@/lib/formatters";
 import { cn } from "@/lib/utils";
 import {
   Banknote,
@@ -268,6 +268,10 @@ export default function CashPage() {
   const [batchOpen, setBatchOpen] = useState(false);
   const [draftRows, setDraftRows] = useState<DraftRow[]>(() => [makeDraftRow(draftRowSeqRef)]);
   const [editRow, setEditRow] = useState<TransactionWithRelations | null>(null);
+  const [editTransactionDate, setEditTransactionDate] = useState("");
+  const [editDescription, setEditDescription] = useState("");
+  const [editType, setEditType] = useState<"income" | "expense">("income");
+  const [editAmount, setEditAmount] = useState("");
   const [editCategoryId, setEditCategoryId] = useState<string>("");
   const [editLocalId, setEditLocalId] = useState<string>("none");
   const [deleteTarget, setDeleteTarget] = useState<TransactionWithRelations | null>(null);
@@ -427,16 +431,18 @@ export default function CashPage() {
 
   /** Promedio diario de ingresos: total ingresos filtrados ÷ días del período (filtros de fecha o rango de fechas visibles). */
   const dailyIncomeAverage = useMemo(() => {
-    const uniqueSortedDates = [
-      ...new Set(
+    const incomeSortedDates = Array.from(
+      new Set(
         filteredTransactions
+          .filter((t) => t.type === "income")
           .map((t) => String(t.transactionDate ?? "").slice(0, 10))
           .filter((d) => /^\d{4}-\d{2}-\d{2}$/.test(d)),
       ),
-    ].sort();
+    ).sort();
 
     const fromInput = filterDateFrom.trim();
     const toInput = filterDateTo.trim();
+    const explicitRange = Boolean(fromInput && toInput);
 
     let from = fromInput;
     let to = toInput;
@@ -444,22 +450,25 @@ export default function CashPage() {
     if (from && to) {
       /* usar rango explícito del usuario */
     } else if (from && !to) {
-      to = uniqueSortedDates.length ? uniqueSortedDates[uniqueSortedDates.length - 1]! : from;
+      to = incomeSortedDates.length ? incomeSortedDates[incomeSortedDates.length - 1]! : from;
     } else if (!from && to) {
-      from = uniqueSortedDates.length ? uniqueSortedDates[0]! : to;
+      from = incomeSortedDates.length ? incomeSortedDates[0]! : to;
     } else {
-      if (uniqueSortedDates.length === 0) {
-        return { amount: 0, days: 1, periodNote: "Sin fechas en la vista" };
+      if (incomeSortedDates.length === 0) {
+        return { amount: 0, days: 1, periodNote: "Sin ingresos en los filtros" };
       }
-      from = uniqueSortedDates[0]!;
-      to = uniqueSortedDates[uniqueSortedDates.length - 1]!;
+      from = incomeSortedDates[0]!;
+      to = incomeSortedDates[incomeSortedDates.length - 1]!;
     }
 
     const days = inclusiveCalendarDays(from, to);
+    const rangeNote = explicitRange
+      ? ""
+      : " · del primero al último día con ingreso (solo ingresos acotan el rango)";
     return {
       amount: totalIncome / days,
       days,
-      periodNote: `${from} → ${to} · ${days} día${days === 1 ? "" : "s"}`,
+      periodNote: `${from} → ${to} · ${days} día${days === 1 ? "" : "s"}${rangeNote}`,
     };
   }, [filteredTransactions, filterDateFrom, filterDateTo, totalIncome]);
 
@@ -526,11 +535,28 @@ export default function CashPage() {
   const patchMutation = useMutation({
     mutationFn: async () => {
       if (!editRow) return;
-      const body: { categoryId?: number | null; localId?: number | null } = {};
-      if (editCategoryId !== "") body.categoryId = parseInt(editCategoryId, 10);
-      else body.categoryId = null;
-      body.localId = editLocalId === "none" ? null : parseInt(editLocalId, 10);
-      await apiRequest("PATCH", `/api/transactions/${editRow.id}`, body);
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(editTransactionDate.trim())) {
+        throw new Error("Fecha inválida");
+      }
+      const desc = editDescription.trim();
+      if (!desc) {
+        throw new Error("La descripción es obligatoria");
+      }
+      const amt = parseEsArAmount(String(editAmount));
+      if (!Number.isFinite(amt) || amt <= 0) {
+        throw new Error("Importe inválido");
+      }
+      if (editCategoryId === "") {
+        throw new Error("Elegí una categoría");
+      }
+      await apiRequest("PATCH", `/api/transactions/${editRow.id}`, {
+        transactionDate: editTransactionDate.trim(),
+        description: desc,
+        type: editType,
+        amount: amt,
+        categoryId: parseInt(editCategoryId, 10),
+        localId: editLocalId === "none" ? null : parseInt(editLocalId, 10),
+      });
     },
     onSuccess: async () => {
       toast({ title: "Movimiento actualizado" });
@@ -560,6 +586,11 @@ export default function CashPage() {
 
   const openEdit = (row: TransactionWithRelations) => {
     setEditRow(row);
+    const ds = String(row.transactionDate ?? "").slice(0, 10);
+    setEditTransactionDate(/^\d{4}-\d{2}-\d{2}$/.test(ds) ? ds : "");
+    setEditDescription(row.description ?? "");
+    setEditType(row.type === "expense" ? "expense" : "income");
+    setEditAmount(formatNumber(Math.abs(parseFloat(String(row.amount) || "0")), 2));
     setEditCategoryId(row.categoryId != null ? String(row.categoryId) : "");
     setEditLocalId(row.localId != null ? String(row.localId) : "none");
   };
@@ -625,7 +656,7 @@ export default function CashPage() {
       header: "",
       cell: (row) => (
         <div className="flex gap-1">
-          <Button size="icon" variant="ghost" title="Clasificar / local" onClick={() => openEdit(row)}>
+          <Button size="icon" variant="ghost" title="Editar movimiento" onClick={() => openEdit(row)}>
             <Tag className="h-4 w-4" />
           </Button>
           <Button size="icon" variant="ghost" title="Eliminar" onClick={() => setDeleteTarget(row)}>
@@ -965,20 +996,63 @@ export default function CashPage() {
       <Dialog open={!!editRow} onOpenChange={(o) => !o && setEditRow(null)}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Editar movimiento</DialogTitle>
-            <DialogDescription>Categoría y local (misma regla que en extractos).</DialogDescription>
+            <DialogTitle>Editar movimiento en efectivo</DialogTitle>
+            <DialogDescription>
+              Podés corregir fecha, descripción, tipo, importe, categoría y local. Solo aplica a movimientos cargados como efectivo.
+            </DialogDescription>
           </DialogHeader>
           {editRow && (
             <div className="space-y-3 py-2">
+              <div className="space-y-1">
+                <Label>Fecha</Label>
+                <Input
+                  type="date"
+                  value={editTransactionDate}
+                  onChange={(e) => setEditTransactionDate(e.target.value)}
+                />
+              </div>
+              <div className="space-y-1">
+                <Label>Descripción</Label>
+                <Input value={editDescription} onChange={(e) => setEditDescription(e.target.value)} placeholder="Concepto…" />
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-1">
+                  <Label>Tipo</Label>
+                  <Select
+                    value={editType}
+                    onValueChange={(v) => {
+                      const nt = v as "income" | "expense";
+                      setEditType(nt);
+                      setEditCategoryId("");
+                    }}
+                  >
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="income">Ingreso</SelectItem>
+                      <SelectItem value="expense">Egreso</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-1">
+                  <Label>Importe</Label>
+                  <Input
+                    inputMode="decimal"
+                    placeholder="0,00"
+                    className="font-mono"
+                    value={editAmount}
+                    onChange={(e) => setEditAmount(formatEsArAmountInput(e.target.value))}
+                  />
+                </div>
+              </div>
               <div className="space-y-1">
                 <Label>Categoría</Label>
                 <CategoryPicker
                   value={editCategoryId}
                   onChange={setEditCategoryId}
-                  categories={categoriasForType(editRow.type)}
+                  categories={categoriasForType(editType)}
                   placeholder="Elegir categoría…"
-                  allowClear
-                  clearLabel="Sin categoría"
                 />
               </div>
               <div className="space-y-1">

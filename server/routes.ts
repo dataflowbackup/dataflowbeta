@@ -28,6 +28,7 @@ import { computeInvoiceTaxes } from "@shared/invoiceTaxComputation";
 import { registerBulkInvoiceImportRoutes } from "./routesBulkInvoiceImport";
 import { db } from "./db";
 import { users, userCredentials, clients } from "@shared/schema";
+import type { InsertTransaction } from "@shared/schema";
 import { eq } from "drizzle-orm";
 import { hashPassword } from "./auth";
 import { isMailConfigured, sendMail, getAppPublicUrl } from "./sendMail";
@@ -99,6 +100,10 @@ const updateTransactionSchema = z.object({
     return null;
   }),
   invoiced: z.union([z.boolean(), z.coerce.boolean()]).optional(),
+  transactionDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+  description: z.string().trim().min(1).max(2000).optional(),
+  type: z.enum(["income", "expense"]).optional(),
+  amount: z.coerce.number().positive().max(1e14).optional(),
 }).strict();
 
 const cashMovementRowSchema = z.object({
@@ -2680,23 +2685,108 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       if (!parseResult.success) {
         return res.status(400).json({ message: "Campos invalidos", errors: parseResult.error.errors });
       }
-      
-      const safeUpdate: { categoryId?: number | null; localId?: number | null; invoiced?: boolean } = {};
-      if (parseResult.data.categoryId !== undefined) {
-        safeUpdate.categoryId = parseResult.data.categoryId;
+
+      const id = parseInt(req.params.id, 10);
+      if (!Number.isFinite(id)) {
+        return res.status(400).json({ message: "ID invalido" });
       }
-      if (parseResult.data.localId !== undefined) {
-        safeUpdate.localId = parseResult.data.localId;
+
+      const existing = await storage.getTransactionById(clientId, id);
+
+      if (!existing) return res.status(404).json({ message: "Transaction not found" });
+
+      const patch = parseResult.data;
+      const hasCorePatch =
+        patch.transactionDate !== undefined ||
+        patch.description !== undefined ||
+        patch.type !== undefined ||
+        patch.amount !== undefined;
+
+      if (hasCorePatch && existing.bankSource !== "cash") {
+        return res.status(403).json({
+          message:
+            "Solo los movimientos en efectivo se pueden editar por completo (fecha, texto, tipo e importe). En extractos bancarios solo categoría y local.",
+        });
       }
-      if (parseResult.data.invoiced !== undefined) {
-        safeUpdate.invoiced = parseResult.data.invoiced;
+
+      const safeUpdate: {
+        categoryId?: number | null;
+        localId?: number | null;
+        invoiced?: boolean;
+        transactionDate?: string;
+        description?: string;
+        type?: string;
+        amount?: string;
+      } = {};
+      if (patch.categoryId !== undefined) {
+        safeUpdate.categoryId = patch.categoryId ?? null;
+      }
+      if (patch.localId !== undefined) {
+        safeUpdate.localId = patch.localId ?? null;
+      }
+      if (patch.invoiced !== undefined) {
+        safeUpdate.invoiced = patch.invoiced;
+      }
+      if (patch.transactionDate !== undefined) {
+        safeUpdate.transactionDate = patch.transactionDate;
+      }
+      if (patch.description !== undefined) {
+        safeUpdate.description = patch.description;
+      }
+      if (patch.type !== undefined) {
+        safeUpdate.type = patch.type;
+      }
+      if (patch.amount !== undefined) {
+        safeUpdate.amount = String(Math.abs(patch.amount));
+      }
+
+      const cashClassifyTouch =
+        existing.bankSource === "cash" &&
+        (hasCorePatch || patch.categoryId !== undefined || patch.localId !== undefined);
+
+      if (cashClassifyTouch) {
+        const nextCategoryId =
+          patch.categoryId !== undefined ? patch.categoryId : existing.categoryId;
+        if (nextCategoryId == null) {
+          return res
+            .status(400)
+            .json({ message: "La categoría es obligatoria en movimientos de efectivo." });
+        }
+        const nextTypeRaw = patch.type ?? existing.type;
+        if (nextTypeRaw !== "income" && nextTypeRaw !== "expense") {
+          return res.status(400).json({ message: "Tipo de movimiento inválido" });
+        }
+        const nextLocalId =
+          patch.localId !== undefined ? patch.localId : existing.localId;
+        const amt =
+          patch.amount !== undefined
+            ? patch.amount
+            : Math.abs(parseFloat(String(existing.amount ?? "0")));
+        try {
+          await storage.assertCashMovementRowValid(clientId, {
+            categoryId: nextCategoryId,
+            localId: nextLocalId,
+            type: nextTypeRaw as "income" | "expense",
+            amount: amt,
+          });
+        } catch (err: any) {
+          return res.status(400).json({ message: err?.message ?? "Validación rechazada" });
+        }
+
+        const nextDesc =
+          patch.description !== undefined
+            ? patch.description
+            : (existing.description ?? "");
+        if (!String(nextDesc).trim()) {
+          return res.status(400).json({ message: "La descripción es obligatoria en efectivo." });
+        }
       }
       
       if (Object.keys(safeUpdate).length === 0) {
         return res.status(400).json({ message: "No hay campos para actualizar" });
       }
       
-      const updated = await storage.updateTransaction(clientId, parseInt(req.params.id), safeUpdate);
+      const updated = await storage.updateTransaction(clientId, id, safeUpdate as Partial<InsertTransaction>);
       if (!updated) return res.status(404).json({ message: "Transaction not found" });
       res.json(updated);
     } catch (e: any) {

@@ -318,7 +318,18 @@ export interface IStorage {
       bankSource?: string;
     },
   ): Promise<Transaction[]>;
+  getTransactionById(clientId: number, id: number): Promise<Transaction | undefined>;
   getTransactionCount(clientId: number, options?: { bankSource?: string }): Promise<number>;
+  /** Valida fila de efectivo (categoría vs tipo, local, importe). */
+  assertCashMovementRowValid(
+    clientId: number,
+    row: {
+      categoryId: number;
+      localId: number | null | undefined;
+      type: "income" | "expense";
+      amount: number;
+    },
+  ): Promise<void>;
   insertCashMovementBatch(
     clientId: number,
     userId: string | undefined,
@@ -2104,6 +2115,48 @@ export class DatabaseStorage implements IStorage {
     return await qb;
   }
 
+  async getTransactionById(clientId: number, id: number): Promise<Transaction | undefined> {
+    const [row] = await db
+      .select()
+      .from(transactions)
+      .where(and(eq(transactions.clientId, clientId), eq(transactions.id, id)))
+      .limit(1);
+    return row;
+  }
+
+  async assertCashMovementRowValid(
+    clientId: number,
+    row: {
+      categoryId: number;
+      localId: number | null | undefined;
+      type: "income" | "expense";
+      amount: number;
+    },
+  ): Promise<void> {
+    const cats = await db
+      .select()
+      .from(transactionCategories)
+      .where(eq(transactionCategories.clientId, clientId));
+    const catById = new Map(cats.map((c) => [c.id, c]));
+    const cat = catById.get(row.categoryId);
+    if (!cat) {
+      throw new Error(`Categoría no encontrada (${row.categoryId})`);
+    }
+    if (cat.type !== "both" && cat.type !== row.type) {
+      throw new Error(
+        `La categoría «${cat.name}» no corresponde a un movimiento de ${row.type === "income" ? "ingreso" : "egreso"}`,
+      );
+    }
+    const localsList = await this.getLocals(clientId);
+    const localIds = new Set(localsList.map((l) => l.id));
+    if (row.localId != null && !localIds.has(row.localId)) {
+      throw new Error("Local inválido");
+    }
+    if (!Number.isFinite(row.amount) || row.amount <= 0 || row.amount > 1e14) {
+      throw new Error("Importe inválido");
+    }
+  }
+
   async insertCashMovementBatch(
     clientId: number,
     userId: string | undefined,
@@ -2118,26 +2171,13 @@ export class DatabaseStorage implements IStorage {
   ): Promise<Transaction[]> {
     if (rows.length === 0) return [];
 
-    const cats = await db
-      .select()
-      .from(transactionCategories)
-      .where(eq(transactionCategories.clientId, clientId));
-    const catById = new Map(cats.map((c) => [c.id, c]));
-
-    const localsList = await this.getLocals(clientId);
-    const localIds = new Set(localsList.map((l) => l.id));
-
     for (const r of rows) {
-      const cat = catById.get(r.categoryId);
-      if (!cat) {
-        throw new Error(`Categoría no encontrada (${r.categoryId})`);
-      }
-      if (cat.type !== "both" && cat.type !== r.type) {
-        throw new Error(`La categoría «${cat.name}» no corresponde a un movimiento de ${r.type === "income" ? "ingreso" : "egreso"}`);
-      }
-      if (r.localId != null && !localIds.has(r.localId)) {
-        throw new Error("Local inválido");
-      }
+      await this.assertCashMovementRowValid(clientId, {
+        categoryId: r.categoryId,
+        localId: r.localId,
+        type: r.type,
+        amount: r.amount,
+      });
     }
 
     return await db.transaction(async (tx) => {
