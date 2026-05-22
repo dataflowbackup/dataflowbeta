@@ -16,13 +16,7 @@ import {
   FormLabel,
   FormMessage,
 } from "@/components/ui/form";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
+import { DataEntryCombobox } from "@/components/data-entry-combobox";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import {
   Command,
@@ -57,65 +51,6 @@ interface SupplyWithUnit extends Supply {
   rubro?: Rubro | null;
   subRubro?: SubRubro | null;
   unitOfMeasure?: UnitOfMeasure | null;
-}
-
-function InvoiceSupplierCombobox({
-  suppliers,
-  value,
-  onChange,
-  disabled,
-}: {
-  suppliers: Supplier[];
-  value: number;
-  onChange: (id: number) => void;
-  disabled?: boolean;
-}) {
-  const [open, setOpen] = useState(false);
-  const active = suppliers.filter((s) => s.active);
-  const selected = value ? active.find((s) => s.id === value) : undefined;
-  return (
-    <Popover open={open} onOpenChange={(o) => !disabled && setOpen(o)} modal={true}>
-      <PopoverTrigger asChild>
-        <Button
-          type="button"
-          variant="outline"
-          role="combobox"
-          aria-expanded={open}
-          disabled={disabled}
-          className="w-full justify-between font-normal min-h-9"
-          data-testid="select-supplier"
-        >
-          <span className="truncate text-left">
-            {selected ? selected.businessName : "Seleccionar proveedor"}
-          </span>
-          <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
-        </Button>
-      </PopoverTrigger>
-      <PopoverContent className="w-[min(100vw-2rem,28rem)] p-0 z-50" align="start">
-        <Command>
-          <CommandInput placeholder="Buscar proveedor..." />
-          <CommandList className="max-h-[280px]">
-            <CommandEmpty>Sin resultados.</CommandEmpty>
-            <CommandGroup>
-              {active.map((s) => (
-                <CommandItem
-                  key={s.id}
-                  value={`${s.businessName} ${s.id}`}
-                  onSelect={() => {
-                    onChange(s.id);
-                    setOpen(false);
-                  }}
-                >
-                  <Check className={cn("mr-2 h-4 w-4 shrink-0", value === s.id ? "opacity-100" : "opacity-0")} />
-                  <span className="truncate">{s.businessName}</span>
-                </CommandItem>
-              ))}
-            </CommandGroup>
-          </CommandList>
-        </Command>
-      </PopoverContent>
-    </Popover>
-  );
 }
 
 const invoiceTypes = [
@@ -239,6 +174,7 @@ export default function InvoiceFormPage() {
   const isViewing = !!isEditing;
   const [confirmedItems, setConfirmedItems] = useState<Set<number>>(new Set());
   const [openSupplyPickerIndex, setOpenSupplyPickerIndex] = useState<number | null>(null);
+  const [addTaxComboKey, setAddTaxComboKey] = useState(0);
 
   const { data: existingInvoice, isLoading: isLoadingInvoice } = useQuery<InvoiceDetail>({
     queryKey: ["/api/invoices", params.id],
@@ -301,7 +237,7 @@ export default function InvoiceFormPage() {
     },
   });
 
-  const { fields: itemFields, append: appendItem, remove: removeItem } = useFieldArray({
+  const { fields: itemFields, prepend: prependItem, remove: removeItem } = useFieldArray({
     control: form.control,
     name: "items",
   });
@@ -446,6 +382,64 @@ export default function InvoiceFormPage() {
     [taxes],
   );
 
+  const localComboOptions = useMemo(
+    () => locals.filter((l) => l.active).map((l) => ({ value: String(l.id), label: l.name })),
+    [locals],
+  );
+
+  const supplierComboOptions = useMemo(
+    () => suppliers.filter((s) => s.active !== false).map((s) => ({ value: String(s.id), label: s.businessName })),
+    [suppliers],
+  );
+
+  const supplierRubroComboOptions = useMemo(
+    () => rubros.filter((r) => r.active).map((r) => ({ value: String(r.id), label: r.name })),
+    [rubros],
+  );
+
+  const invoiceTypeComboOptions = useMemo(
+    () => invoiceTypes.map((t) => ({ value: t.value, label: t.label })),
+    [],
+  );
+
+  const ivaConditionComboOptions = useMemo(
+    () => ivaConditions.map((c) => ({ value: c.value, label: c.label })),
+    [],
+  );
+
+  const expenseTypeComboOptions = useMemo(
+    () => expenseTypes.map((t) => ({ value: t.value, label: t.label })),
+    [],
+  );
+
+  const invoiceTaxPickComboOptions = useMemo(
+    () =>
+      taxes
+        .filter((t) => t.active !== false)
+        .map((t) => ({
+          value: String(t.id),
+          label: `${t.name} (${t.percentage}%)`,
+        })),
+    [taxes],
+  );
+
+  const lineTaxComboOptions = useMemo(
+    () =>
+      lineTaxSelectOptions.map((t) => ({
+        value: String(t.id),
+        label: `${t.name} (${t.percentage}%)`,
+      })),
+    [lineTaxSelectOptions],
+  );
+
+  const orderedItemIndices = useMemo(() => {
+    const n = itemFields.length;
+    const all = Array.from({ length: n }, (_, i) => i);
+    const drafts = all.filter((i) => !confirmedItems.has(i));
+    const confirmed = all.filter((i) => confirmedItems.has(i));
+    return [...drafts, ...confirmed];
+  }, [itemFields.length, confirmedItems]);
+
   const watchTaxesRows = useWatch({ control: form.control, name: "taxes" }) ?? [];
 
   const taxComputation = useMemo(
@@ -571,12 +565,14 @@ export default function InvoiceFormPage() {
     const baseAmount = calculations.subtotalAfterDiscount;
     if (isInternalTaxType(tax.type)) {
       appendTax({ taxId, baseAmount, taxAmount: 0 });
+      setAddTaxComboKey((k) => k + 1);
       return;
     }
     const percentage = parseFloat(String(tax.percentage));
     const taxAmount = (baseAmount * percentage) / 100;
 
     appendTax({ taxId, baseAmount, taxAmount });
+    setAddTaxComboKey((k) => k + 1);
   };
 
   const recalculateTaxes = () => {
@@ -721,20 +717,17 @@ export default function InvoiceFormPage() {
                       render={({ field }) => (
                         <FormItem>
                           <FormLabel>Local *</FormLabel>
-                          <Select onValueChange={field.onChange} value={field.value?.toString() || ""}>
-                            <FormControl>
-                              <SelectTrigger data-testid="select-local">
-                                <SelectValue placeholder="Seleccionar local" />
-                              </SelectTrigger>
-                            </FormControl>
-                            <SelectContent>
-                              {locals.filter(l => l.active).map((local) => (
-                                <SelectItem key={local.id} value={local.id.toString()}>
-                                  {local.name}
-                                </SelectItem>
-                              ))}
-                            </SelectContent>
-                          </Select>
+                          <FormControl>
+                            <DataEntryCombobox
+                              options={localComboOptions}
+                              value={field.value ? String(field.value) : ""}
+                              onValueChange={(v) => field.onChange(parseInt(v, 10))}
+                              placeholder="Seleccionar local"
+                              searchPlaceholder="Buscar local…"
+                              data-testid="select-local"
+                              emptyMessage="Sin locales activos."
+                            />
+                          </FormControl>
                           <FormMessage />
                         </FormItem>
                       )}
@@ -746,10 +739,14 @@ export default function InvoiceFormPage() {
                         <FormItem>
                           <FormLabel>Proveedor *</FormLabel>
                           <FormControl>
-                            <InvoiceSupplierCombobox
-                              suppliers={suppliers}
-                              value={field.value}
-                              onChange={(id) => field.onChange(id)}
+                            <DataEntryCombobox
+                              options={supplierComboOptions}
+                              value={field.value ? String(field.value) : ""}
+                              onValueChange={(v) => field.onChange(parseInt(v, 10))}
+                              placeholder="Seleccionar proveedor"
+                              searchPlaceholder="Buscar proveedor…"
+                              data-testid="select-supplier"
+                              emptyMessage="Sin proveedores."
                             />
                           </FormControl>
                           <FormMessage />
@@ -762,30 +759,19 @@ export default function InvoiceFormPage() {
                       render={({ field }) => (
                         <FormItem>
                           <FormLabel>Rubro</FormLabel>
-                          <Select
-                            onValueChange={(val) =>
-                              field.onChange(val ? parseInt(val) : undefined)
-                            }
-                            value={field.value?.toString() || ""}
-                          >
-                            <FormControl>
-                              <SelectTrigger data-testid="select-supplier-rubro">
-                                <SelectValue placeholder="Seleccionar rubro" />
-                              </SelectTrigger>
-                            </FormControl>
-                            <SelectContent>
-                              {rubros
-                                .filter((r) => r.active)
-                                .map((rubro) => (
-                                  <SelectItem
-                                    key={rubro.id}
-                                    value={rubro.id.toString()}
-                                  >
-                                    {rubro.name}
-                                  </SelectItem>
-                                ))}
-                            </SelectContent>
-                          </Select>
+                          <FormControl>
+                            <DataEntryCombobox
+                              options={supplierRubroComboOptions}
+                              value={field.value != null ? String(field.value) : ""}
+                              onValueChange={(v) =>
+                                field.onChange(v === "" ? undefined : parseInt(v, 10))
+                              }
+                              placeholder="Seleccionar rubro"
+                              searchPlaceholder="Buscar rubro…"
+                              emptyOptionLabel="Sin rubro del proveedor"
+                              data-testid="select-supplier-rubro"
+                            />
+                          </FormControl>
                           <FormMessage />
                         </FormItem>
                       )}
@@ -799,20 +785,16 @@ export default function InvoiceFormPage() {
                       render={({ field }) => (
                         <FormItem>
                           <FormLabel>Tipo de Comprobante *</FormLabel>
-                          <Select onValueChange={field.onChange} value={field.value}>
-                            <FormControl>
-                              <SelectTrigger data-testid="select-invoice-type">
-                                <SelectValue placeholder="Seleccionar tipo" />
-                              </SelectTrigger>
-                            </FormControl>
-                            <SelectContent>
-                              {invoiceTypes.map((type) => (
-                                <SelectItem key={type.value} value={type.value}>
-                                  {type.label}
-                                </SelectItem>
-                              ))}
-                            </SelectContent>
-                          </Select>
+                          <FormControl>
+                            <DataEntryCombobox
+                              options={invoiceTypeComboOptions}
+                              value={field.value || ""}
+                              onValueChange={field.onChange}
+                              placeholder="Seleccionar tipo"
+                              searchPlaceholder="Buscar tipo de comprobante…"
+                              data-testid="select-invoice-type"
+                            />
+                          </FormControl>
                           <FormMessage />
                         </FormItem>
                       )}
@@ -881,20 +863,16 @@ export default function InvoiceFormPage() {
                       render={({ field }) => (
                         <FormItem>
                           <FormLabel>Condicion IVA</FormLabel>
-                          <Select onValueChange={field.onChange} value={field.value || ""}>
-                            <FormControl>
-                              <SelectTrigger data-testid="select-iva-condition">
-                                <SelectValue placeholder="Seleccionar" />
-                              </SelectTrigger>
-                            </FormControl>
-                            <SelectContent>
-                              {ivaConditions.map((condition) => (
-                                <SelectItem key={condition.value} value={condition.value}>
-                                  {condition.label}
-                                </SelectItem>
-                              ))}
-                            </SelectContent>
-                          </Select>
+                          <FormControl>
+                            <DataEntryCombobox
+                              options={ivaConditionComboOptions}
+                              value={field.value || ""}
+                              onValueChange={field.onChange}
+                              placeholder="Seleccionar"
+                              searchPlaceholder="Buscar condición IVA…"
+                              data-testid="select-iva-condition"
+                            />
+                          </FormControl>
                           <FormMessage />
                         </FormItem>
                       )}
@@ -905,20 +883,16 @@ export default function InvoiceFormPage() {
                       render={({ field }) => (
                         <FormItem>
                           <FormLabel>Tipo de Gasto *</FormLabel>
-                          <Select onValueChange={field.onChange} value={field.value}>
-                            <FormControl>
-                              <SelectTrigger data-testid="select-expense-type">
-                                <SelectValue placeholder="Seleccionar tipo" />
-                              </SelectTrigger>
-                            </FormControl>
-                            <SelectContent>
-                              {expenseTypes.map((type) => (
-                                <SelectItem key={type.value} value={type.value}>
-                                  {type.label}
-                                </SelectItem>
-                              ))}
-                            </SelectContent>
-                          </Select>
+                          <FormControl>
+                            <DataEntryCombobox
+                              options={expenseTypeComboOptions}
+                              value={field.value || ""}
+                              onValueChange={field.onChange}
+                              placeholder="Seleccionar tipo"
+                              searchPlaceholder="Buscar tipo de gasto…"
+                              data-testid="select-expense-type"
+                            />
+                          </FormControl>
                           <FormMessage />
                         </FormItem>
                       )}
@@ -971,8 +945,8 @@ export default function InvoiceFormPage() {
                     type="button"
                     variant="outline"
                     size="sm"
-                    onClick={() =>
-                      appendItem({
+                    onClick={() => {
+                      prependItem({
                         supplyId: undefined,
                         description: "",
                         quantity: 1,
@@ -980,8 +954,13 @@ export default function InvoiceFormPage() {
                         subtotal: 0,
                         rubroId: undefined,
                         taxId: undefined,
-                      })
-                    }
+                      });
+                      setConfirmedItems((prev) => {
+                        const next = new Set<number>();
+                        prev.forEach((i) => next.add(i + 1));
+                        return next;
+                      });
+                    }}
                     data-testid="button-add-item"
                   >
                     <Plus className="h-4 w-4 mr-1" />
@@ -989,7 +968,8 @@ export default function InvoiceFormPage() {
                   </Button>
                 </CardHeader>
                 <CardContent className="space-y-4">
-                  {itemFields.map((field, index) => {
+                  {orderedItemIndices.map((index) => {
+                    const field = itemFields[index]!;
                     const selectedSupply = supplies.find(s => s.id === watchItems[index]?.supplyId);
                     const unitAbbr = selectedSupply?.unitOfMeasure?.abbreviation || "";
                     const isItemConfirmed = confirmedItems.has(index);
@@ -1053,7 +1033,8 @@ export default function InvoiceFormPage() {
                               <FormLabel>Insumo</FormLabel>
                               <Popover
                                 open={openSupplyPickerIndex === index}
-                                onOpenChange={(open) => setOpenSupplyPickerIndex(open ? index : null)}
+                                onOpenChange={(o) => setOpenSupplyPickerIndex(o ? index : null)}
+                                modal
                               >
                                 <PopoverTrigger asChild>
                                   <FormControl>
@@ -1087,7 +1068,13 @@ export default function InvoiceFormPage() {
                                   </FormControl>
                                 </PopoverTrigger>
                                 <PopoverContent className="w-[min(100vw-2rem,420px)] p-0" align="start">
-                                  <Command>
+                                  <Command
+                                    defaultValue={
+                                      selectedSupply
+                                        ? `${selectedSupply.name} ${selectedSupply.unitOfMeasure?.abbreviation ?? ""} ${selectedSupply.id}`
+                                        : undefined
+                                    }
+                                  >
                                     <CommandInput placeholder="Buscar insumo..." />
                                     <CommandList>
                                       <CommandEmpty>Sin resultados</CommandEmpty>
@@ -1204,28 +1191,19 @@ export default function InvoiceFormPage() {
                         render={({ field: taxField }) => (
                           <FormItem>
                             <FormLabel>IVA por insumo</FormLabel>
-                            <Select
-                              value={
-                                taxField.value != null ? String(taxField.value) : "__none__"
-                              }
-                              onValueChange={(v) =>
-                                taxField.onChange(v === "__none__" ? undefined : parseInt(v, 10))
-                              }
-                            >
-                              <FormControl>
-                                <SelectTrigger data-testid={`select-item-tax-${index}`}>
-                                  <SelectValue placeholder="Sin IVA en esta línea" />
-                                </SelectTrigger>
-                              </FormControl>
-                              <SelectContent>
-                                <SelectItem value="__none__">Sin IVA en esta línea</SelectItem>
-                                {lineTaxSelectOptions.map((t) => (
-                                  <SelectItem key={t.id} value={String(t.id)}>
-                                    {t.name} ({t.percentage}%)
-                                  </SelectItem>
-                                ))}
-                              </SelectContent>
-                            </Select>
+                            <FormControl>
+                              <DataEntryCombobox
+                                options={lineTaxComboOptions}
+                                value={taxField.value != null ? String(taxField.value) : ""}
+                                onValueChange={(v) =>
+                                  taxField.onChange(v === "" ? undefined : parseInt(v, 10))
+                                }
+                                placeholder="Sin IVA en esta línea"
+                                searchPlaceholder="Buscar alícuota…"
+                                emptyOptionLabel="Sin IVA en esta línea"
+                                data-testid={`select-item-tax-${index}`}
+                              />
+                            </FormControl>
                             <FormMessage />
                           </FormItem>
                         )}
@@ -1328,18 +1306,16 @@ export default function InvoiceFormPage() {
                     </CardDescription>
                   </div>
                   <div className="flex items-center gap-2 shrink-0">
-                    <Select onValueChange={(val) => handleAddTax(parseInt(val, 10))}>
-                      <SelectTrigger className="w-48" data-testid="select-add-tax">
-                        <SelectValue placeholder="Agregar impuesto" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {taxes.filter((t) => t.active).map((tax) => (
-                          <SelectItem key={tax.id} value={tax.id.toString()}>
-                            {tax.name} ({tax.percentage}%)
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
+                    <DataEntryCombobox
+                      key={addTaxComboKey}
+                      options={invoiceTaxPickComboOptions}
+                      value=""
+                      onValueChange={(v) => handleAddTax(parseInt(v, 10))}
+                      placeholder="Agregar impuesto"
+                      searchPlaceholder="Buscar impuesto…"
+                      triggerClassName="w-48 shrink-0"
+                      data-testid="select-add-tax"
+                    />
                     <Button
                       type="button"
                       variant="outline"
