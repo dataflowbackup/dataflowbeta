@@ -20,6 +20,7 @@
 [functions.api]
   timeout = 26
 
+# Static SPA y API proxy (no copiar SPA catch-all a client/public/_redirects: puede mandar todo /api/* a index.html).
 [[redirects]]
   from = "/api/*"
   to = "/.netlify/functions/api/api/:splat"
