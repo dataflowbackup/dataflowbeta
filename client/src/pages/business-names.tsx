@@ -26,13 +26,15 @@ import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { Building2, Edit, Trash2 } from "lucide-react";
 import type { BusinessName } from "@shared/schema";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
+import { DataEntryCombobox } from "@/components/data-entry-combobox";
+
+const businessNameIvaComboOptions = [
+  { value: "responsable_inscripto", label: "Responsable Inscripto" },
+  { value: "monotributo", label: "Monotributo" },
+  { value: "exento", label: "Exento" },
+  { value: "consumidor_final", label: "Consumidor Final" },
+  { value: "no_responsable", label: "No Responsable" },
+];
 
 const formSchema = z.object({
   name: z.string().min(1, "La razón social es requerida"),
@@ -214,18 +216,13 @@ export default function BusinessNamesPage() {
                   <FormItem>
                     <FormLabel>Condición frente al IVA</FormLabel>
                     <FormControl>
-                      <Select value={field.value} onValueChange={field.onChange}>
-                        <SelectTrigger>
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="responsable_inscripto">Responsable Inscripto</SelectItem>
-                          <SelectItem value="monotributo">Monotributo</SelectItem>
-                          <SelectItem value="exento">Exento</SelectItem>
-                          <SelectItem value="consumidor_final">Consumidor Final</SelectItem>
-                          <SelectItem value="no_responsable">No Responsable</SelectItem>
-                        </SelectContent>
-                      </Select>
+                      <DataEntryCombobox
+                        options={businessNameIvaComboOptions}
+                        value={field.value}
+                        onValueChange={field.onChange}
+                        placeholder="Seleccionar condición IVA"
+                        searchPlaceholder="Buscar…"
+                      />
                     </FormControl>
                     <FormMessage />
                   </FormItem>

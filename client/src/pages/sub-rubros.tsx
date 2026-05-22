@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -23,13 +23,7 @@ import {
 } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
+import { DataEntryCombobox } from "@/components/data-entry-combobox";
 import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
@@ -61,6 +55,11 @@ export default function SubRubrosPage() {
   const { data: rubros = [] } = useQuery<Rubro[]>({
     queryKey: ["/api/rubros"],
   });
+
+  const subRubrosParentRubroOptions = useMemo(
+    () => rubros.map((r) => ({ value: String(r.id), label: r.name })),
+    [rubros],
+  );
 
   const form = useForm<FormData>({
     resolver: zodResolver(formSchema),
@@ -259,23 +258,16 @@ export default function SubRubrosPage() {
                 render={({ field }) => (
                   <FormItem>
                     <FormLabel>Rubro Padre *</FormLabel>
-                    <Select
-                      onValueChange={field.onChange}
-                      value={field.value?.toString()}
-                    >
-                      <FormControl>
-                        <SelectTrigger data-testid="select-rubroId">
-                          <SelectValue placeholder="Seleccionar rubro" />
-                        </SelectTrigger>
-                      </FormControl>
-                      <SelectContent>
-                        {rubros.map((rubro) => (
-                          <SelectItem key={rubro.id} value={rubro.id.toString()}>
-                            {rubro.name}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
+                    <FormControl>
+                      <DataEntryCombobox
+                        options={subRubrosParentRubroOptions}
+                        value={field.value ? String(field.value) : ""}
+                        onValueChange={(v) => field.onChange(parseInt(v, 10))}
+                        placeholder="Seleccionar rubro"
+                        searchPlaceholder="Buscar rubro…"
+                        data-testid="select-rubroId"
+                      />
+                    </FormControl>
                     <FormMessage />
                   </FormItem>
                 )}

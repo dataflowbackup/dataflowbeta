@@ -8,13 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
+import { DataEntryCombobox } from "@/components/data-entry-combobox";
 import { Switch } from "@/components/ui/switch";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
@@ -22,6 +16,12 @@ import { formatCurrency, formatPercentage, formatDate } from "@/lib/formatters";
 import { Layers, Plus, Eye, Trash2, ArrowLeft, Search, SquarePen } from "lucide-react";
 import { SubRecipeUsageDialog } from "@/components/catalog-usage-dialog";
 import type { Recipe, RecipeCategory, RecipeSubcategory, UnitOfMeasure } from "@shared/schema";
+
+const subRecipeActiveFilterOptions = [
+  { value: "__all__", label: "Todas" },
+  { value: "active", label: "Solo activas" },
+  { value: "inactive", label: "Solo inactivas" },
+];
 
 interface RecipeWithRelations extends Recipe {
   category?: RecipeCategory | null;
@@ -320,16 +320,15 @@ export default function SubRecipesPage() {
         </div>
         <div className="flex flex-col gap-1 min-w-[180px]">
           <span className="text-xs text-muted-foreground">Activo / Inactivo</span>
-          <Select value={filterActive} onValueChange={setFilterActive}>
-            <SelectTrigger data-testid="filter-sub-active">
-              <SelectValue placeholder="Todos" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="__all__">Todas</SelectItem>
-              <SelectItem value="active">Solo activas</SelectItem>
-              <SelectItem value="inactive">Solo inactivas</SelectItem>
-            </SelectContent>
-          </Select>
+          <DataEntryCombobox
+            options={subRecipeActiveFilterOptions}
+            value={filterActive}
+            onValueChange={setFilterActive}
+            placeholder="Todos"
+            searchPlaceholder="Buscar…"
+            triggerClassName="min-w-[180px]"
+            data-testid="filter-sub-active"
+          />
         </div>
       </div>
 

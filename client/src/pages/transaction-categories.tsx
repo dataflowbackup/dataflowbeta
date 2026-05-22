@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -22,13 +22,7 @@ import {
   FormMessage,
 } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
+import { DataEntryCombobox } from "@/components/data-entry-combobox";
 import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
@@ -55,6 +49,9 @@ const specialTypes = [
   { value: "ventas", label: "Ventas" },
   { value: "otros_ingresos", label: "Otros Ingresos" },
 ];
+
+const categoryTypeComboOptions = categoryTypes.map((t) => ({ value: t.value, label: t.label }));
+const specialTypeComboOptions = specialTypes.map((t) => ({ value: t.value, label: t.label }));
 
 const formSchema = z.object({
   name: z.string().min(1, "El nombre es requerido"),
@@ -100,6 +97,14 @@ export default function TransactionCategoriesPage() {
   });
 
   const watchIsSpecial = form.watch("isSpecial");
+
+  const txCategoryFinancialGroupOptions = useMemo(
+    () =>
+      financialGroups
+        .filter((g) => g.active !== false)
+        .map((g) => ({ value: String(g.id), label: g.name })),
+    [financialGroups],
+  );
 
   const createMutation = useMutation({
     mutationFn: async (data: FormData) => {
@@ -345,20 +350,16 @@ export default function TransactionCategoriesPage() {
                   render={({ field }) => (
                     <FormItem>
                       <FormLabel>Tipo *</FormLabel>
-                      <Select onValueChange={field.onChange} value={field.value}>
-                        <FormControl>
-                          <SelectTrigger data-testid="select-type">
-                            <SelectValue placeholder="Seleccionar tipo" />
-                          </SelectTrigger>
-                        </FormControl>
-                        <SelectContent>
-                          {categoryTypes.map((type) => (
-                            <SelectItem key={type.value} value={type.value}>
-                              {type.label}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
+                      <FormControl>
+                        <DataEntryCombobox
+                          options={categoryTypeComboOptions}
+                          value={field.value}
+                          onValueChange={field.onChange}
+                          placeholder="Seleccionar tipo"
+                          searchPlaceholder="Buscar tipo…"
+                          data-testid="select-type"
+                        />
+                      </FormControl>
                       <FormMessage />
                     </FormItem>
                   )}
@@ -369,23 +370,19 @@ export default function TransactionCategoriesPage() {
                   render={({ field }) => (
                     <FormItem>
                       <FormLabel>Grupo Financiero</FormLabel>
-                      <Select
-                        onValueChange={(val) => field.onChange(val ? parseInt(val) : undefined)}
-                        value={field.value?.toString() || ""}
-                      >
-                        <FormControl>
-                          <SelectTrigger data-testid="select-group">
-                            <SelectValue placeholder="Seleccionar grupo" />
-                          </SelectTrigger>
-                        </FormControl>
-                        <SelectContent>
-                          {financialGroups.filter(g => g.active !== false).map((group) => (
-                            <SelectItem key={group.id} value={group.id.toString()}>
-                              {group.name}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
+                      <FormControl>
+                        <DataEntryCombobox
+                          options={txCategoryFinancialGroupOptions}
+                          value={field.value != null ? String(field.value) : ""}
+                          onValueChange={(val) =>
+                            field.onChange(val ? parseInt(val, 10) : undefined)
+                          }
+                          placeholder="Seleccionar grupo"
+                          searchPlaceholder="Buscar grupo…"
+                          emptyOptionLabel="Sin grupo"
+                          data-testid="select-group"
+                        />
+                      </FormControl>
                       <FormMessage />
                     </FormItem>
                   )}
@@ -422,20 +419,16 @@ export default function TransactionCategoriesPage() {
                     render={({ field }) => (
                       <FormItem>
                         <FormLabel>Tipo para EE.RR. *</FormLabel>
-                        <Select onValueChange={field.onChange} value={field.value || ""}>
-                          <FormControl>
-                            <SelectTrigger data-testid="select-specialType">
-                              <SelectValue placeholder="Seleccionar tipo" />
-                            </SelectTrigger>
-                          </FormControl>
-                          <SelectContent>
-                            {specialTypes.map((type) => (
-                              <SelectItem key={type.value} value={type.value}>
-                                {type.label}
-                              </SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
+                        <FormControl>
+                          <DataEntryCombobox
+                            options={specialTypeComboOptions}
+                            value={field.value ?? ""}
+                            onValueChange={field.onChange}
+                            placeholder="Seleccionar tipo"
+                            searchPlaceholder="Buscar tipo…"
+                            data-testid="select-specialType"
+                          />
+                        </FormControl>
                         <FormMessage />
                       </FormItem>
                     )}

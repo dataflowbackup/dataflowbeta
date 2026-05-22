@@ -25,13 +25,7 @@ import {
   FormMessage,
 } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
+import { DataEntryCombobox } from "@/components/data-entry-combobox";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -111,6 +105,30 @@ export default function PaymentsPage() {
   const { data: allInvoices = [] } = useQuery<InvoiceWithRelations[]>({
     queryKey: ["/api/invoices"],
   });
+
+  const paymentSupplierOptions = useMemo(
+    () =>
+      suppliers.filter((s) => s.active).map((s) => ({ value: String(s.id), label: s.businessName })),
+    [suppliers],
+  );
+
+  const paymentLocalOptions = useMemo(
+    () => locals.filter((l) => l.active).map((l) => ({ value: String(l.id), label: l.name })),
+    [locals],
+  );
+
+  const paymentBankOptions = useMemo(
+    () => [
+      { value: "0", label: "Sin especificar" },
+      ...bankAccounts.filter((b) => b.active).map((b) => ({ value: String(b.id), label: b.name })),
+    ],
+    [bankAccounts],
+  );
+
+  const paymentMethodComboOptions = useMemo(
+    () => paymentMethods.map((m) => ({ value: m.value, label: m.label })),
+    [],
+  );
 
   const form = useForm<FormData>({
     resolver: zodResolver(formSchema),
@@ -381,20 +399,16 @@ export default function PaymentsPage() {
                   render={({ field }) => (
                     <FormItem>
                       <FormLabel>Proveedor *</FormLabel>
-                      <Select onValueChange={field.onChange} value={field.value?.toString() || ""}>
-                        <FormControl>
-                          <SelectTrigger data-testid="select-supplier">
-                            <SelectValue placeholder="Seleccionar proveedor" />
-                          </SelectTrigger>
-                        </FormControl>
-                        <SelectContent>
-                          {suppliers.filter(s => s.active).map((supplier) => (
-                            <SelectItem key={supplier.id} value={supplier.id.toString()}>
-                              {supplier.businessName}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
+                      <FormControl>
+                        <DataEntryCombobox
+                          options={paymentSupplierOptions}
+                          value={field.value && field.value > 0 ? String(field.value) : ""}
+                          onValueChange={(v) => field.onChange(parseInt(v, 10))}
+                          placeholder="Seleccionar proveedor"
+                          searchPlaceholder="Buscar proveedor…"
+                          data-testid="select-supplier"
+                        />
+                      </FormControl>
                       <FormMessage />
                     </FormItem>
                   )}
@@ -405,20 +419,16 @@ export default function PaymentsPage() {
                   render={({ field }) => (
                     <FormItem>
                       <FormLabel>Local *</FormLabel>
-                      <Select onValueChange={field.onChange} value={field.value?.toString() || ""}>
-                        <FormControl>
-                          <SelectTrigger data-testid="select-local">
-                            <SelectValue placeholder="Seleccionar local" />
-                          </SelectTrigger>
-                        </FormControl>
-                        <SelectContent>
-                          {locals.filter(l => l.active).map((local) => (
-                            <SelectItem key={local.id} value={local.id.toString()}>
-                              {local.name}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
+                      <FormControl>
+                        <DataEntryCombobox
+                          options={paymentLocalOptions}
+                          value={field.value && field.value > 0 ? String(field.value) : ""}
+                          onValueChange={(v) => field.onChange(parseInt(v, 10))}
+                          placeholder="Seleccionar local"
+                          searchPlaceholder="Buscar local…"
+                          data-testid="select-local"
+                        />
+                      </FormControl>
                       <FormMessage />
                     </FormItem>
                   )}
@@ -555,21 +565,22 @@ export default function PaymentsPage() {
                   render={({ field }) => (
                     <FormItem>
                       <FormLabel>Entidad Bancaria</FormLabel>
-                      <Select onValueChange={field.onChange} value={field.value?.toString() || "0"}>
-                        <FormControl>
-                          <SelectTrigger data-testid="select-bank-account">
-                            <SelectValue placeholder="Seleccionar banco" />
-                          </SelectTrigger>
-                        </FormControl>
-                        <SelectContent>
-                          <SelectItem value="0">Sin especificar</SelectItem>
-                          {bankAccounts.filter(b => b.active).map((bank) => (
-                            <SelectItem key={bank.id} value={bank.id.toString()}>
-                              {bank.name}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
+                      <FormControl>
+                        <DataEntryCombobox
+                          options={paymentBankOptions}
+                          value={
+                            field.value !== null &&
+                            field.value !== undefined &&
+                            field.value !== 0
+                              ? String(field.value)
+                              : "0"
+                          }
+                          onValueChange={(v) => field.onChange(parseInt(v, 10))}
+                          placeholder="Seleccionar banco"
+                          searchPlaceholder="Buscar banco…"
+                          data-testid="select-bank-account"
+                        />
+                      </FormControl>
                       <FormMessage />
                     </FormItem>
                   )}
@@ -580,20 +591,16 @@ export default function PaymentsPage() {
                   render={({ field }) => (
                     <FormItem>
                       <FormLabel>Metodo *</FormLabel>
-                      <Select onValueChange={field.onChange} value={field.value}>
-                        <FormControl>
-                          <SelectTrigger data-testid="select-method">
-                            <SelectValue placeholder="Seleccionar" />
-                          </SelectTrigger>
-                        </FormControl>
-                        <SelectContent>
-                          {paymentMethods.map((method) => (
-                            <SelectItem key={method.value} value={method.value}>
-                              {method.label}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
+                      <FormControl>
+                        <DataEntryCombobox
+                          options={paymentMethodComboOptions}
+                          value={field.value || ""}
+                          onValueChange={field.onChange}
+                          placeholder="Seleccionar"
+                          searchPlaceholder="Buscar método…"
+                          data-testid="select-method"
+                        />
+                      </FormControl>
                       <FormMessage />
                     </FormItem>
                   )}

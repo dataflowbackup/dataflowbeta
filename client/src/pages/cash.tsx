@@ -25,13 +25,7 @@ import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
+import { DataEntryCombobox } from "@/components/data-entry-combobox";
 import {
   Command,
   CommandEmpty,
@@ -69,6 +63,17 @@ interface TransactionWithRelations extends Transaction {
 }
 
 const CASH_BANK_SOURCE = "cash";
+
+const CASH_FILTER_TYPE_OPTIONS = [
+  { value: "all", label: "Todos" },
+  { value: "income", label: "Ingresos" },
+  { value: "expense", label: "Egresos" },
+];
+
+const CASH_MOVEMENT_TYPE_OPTIONS = [
+  { value: "income", label: "Ingreso" },
+  { value: "expense", label: "Egreso" },
+];
 
 function isoDateParts(s: string): { y: number; m: number; d: number } | null {
   const slice = String(s ?? "").slice(0, 10);
@@ -318,6 +323,14 @@ export default function CashPage() {
 
   const localFiltersItems = useMemo(
     () => localsSorted.map((l) => ({ id: l.id, name: l.name })),
+    [localsSorted],
+  );
+
+  const cashLocalPickComboOptions = useMemo(
+    () => [
+      { value: "none", label: "Sin asignar" },
+      ...localsSorted.map((l) => ({ value: String(l.id), label: l.name })),
+    ],
     [localsSorted],
   );
 
@@ -826,16 +839,13 @@ export default function CashPage() {
             </div>
             <div className="space-y-1">
               <Label className="text-xs">Tipo</Label>
-              <Select value={filterType} onValueChange={(v) => setFilterType(v as "all" | "income" | "expense")}>
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">Todos</SelectItem>
-                  <SelectItem value="income">Ingresos</SelectItem>
-                  <SelectItem value="expense">Egresos</SelectItem>
-                </SelectContent>
-              </Select>
+              <DataEntryCombobox
+                options={CASH_FILTER_TYPE_OPTIONS}
+                value={filterType}
+                onValueChange={(v) => setFilterType(v as "all" | "income" | "expense")}
+                placeholder="Tipo"
+                searchPlaceholder="Buscar…"
+              />
             </div>
             <div className="space-y-1">
               <Label className="text-xs">Local</Label>
@@ -924,18 +934,18 @@ export default function CashPage() {
                   </div>
                   <div className="md:col-span-2 space-y-1">
                     <Label className="text-xs">Tipo</Label>
-                    <Select
+                    <DataEntryCombobox
+                      options={CASH_MOVEMENT_TYPE_OPTIONS}
                       value={r.type}
-                      onValueChange={(v) => patchDraft(r.key, { type: v as "income" | "expense", categoryId: "" })}
-                    >
-                      <SelectTrigger>
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="income">Ingreso</SelectItem>
-                        <SelectItem value="expense">Egreso</SelectItem>
-                      </SelectContent>
-                    </Select>
+                      onValueChange={(v) =>
+                        patchDraft(r.key, {
+                          type: v as "income" | "expense",
+                          categoryId: "",
+                        })
+                      }
+                      placeholder="Tipo"
+                      searchPlaceholder="Buscar…"
+                    />
                   </div>
                   <div className="md:col-span-3 space-y-1">
                     <Label className="text-xs">Importe</Label>
@@ -960,19 +970,13 @@ export default function CashPage() {
                   </div>
                   <div className="md:col-span-6 space-y-1">
                     <Label className="text-xs">Local</Label>
-                    <Select value={r.localId} onValueChange={(v) => patchDraft(r.key, { localId: v })}>
-                      <SelectTrigger>
-                        <SelectValue placeholder="Opcional" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="none">Sin asignar</SelectItem>
-                        {locals.map((l) => (
-                          <SelectItem key={l.id} value={String(l.id)}>
-                            {l.name}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
+                    <DataEntryCombobox
+                      options={cashLocalPickComboOptions}
+                      value={r.localId}
+                      onValueChange={(v) => patchDraft(r.key, { localId: v })}
+                      placeholder="Opcional"
+                      searchPlaceholder="Buscar local…"
+                    />
                   </div>
                 </div>
               ))}
@@ -1020,22 +1024,17 @@ export default function CashPage() {
               <div className="grid grid-cols-2 gap-3">
                 <div className="space-y-1">
                   <Label>Tipo</Label>
-                  <Select
+                  <DataEntryCombobox
+                    options={CASH_MOVEMENT_TYPE_OPTIONS}
                     value={editType}
                     onValueChange={(v) => {
                       const nt = v as "income" | "expense";
                       setEditType(nt);
                       setEditCategoryId("");
                     }}
-                  >
-                    <SelectTrigger>
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="income">Ingreso</SelectItem>
-                      <SelectItem value="expense">Egreso</SelectItem>
-                    </SelectContent>
-                  </Select>
+                    placeholder="Tipo"
+                    searchPlaceholder="Buscar…"
+                  />
                 </div>
                 <div className="space-y-1">
                   <Label>Importe</Label>
@@ -1059,19 +1058,13 @@ export default function CashPage() {
               </div>
               <div className="space-y-1">
                 <Label>Local</Label>
-                <Select value={editLocalId} onValueChange={setEditLocalId}>
-                  <SelectTrigger>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="none">Sin asignar</SelectItem>
-                    {locals.map((l) => (
-                      <SelectItem key={l.id} value={String(l.id)}>
-                        {l.name}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                <DataEntryCombobox
+                  options={cashLocalPickComboOptions}
+                  value={editLocalId}
+                  onValueChange={setEditLocalId}
+                  placeholder="Local"
+                  searchPlaceholder="Buscar local…"
+                />
               </div>
             </div>
           )}

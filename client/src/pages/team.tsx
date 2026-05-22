@@ -25,13 +25,7 @@ import {
   UserCog,
   UserMinus,
 } from "lucide-react";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
+import { DataEntryCombobox } from "@/components/data-entry-combobox";
 import {
   Dialog,
   DialogContent,
@@ -72,6 +66,11 @@ const ROLE_LABELS: Record<string, { name: string; color: string }> = {
 };
 
 const ROLE_OPTIONS = ["socio", "admin", "manager", "encargado", "employee", "viewer"] as const;
+
+const teamRoleComboOptions = ROLE_OPTIONS.map((r) => ({
+  value: r,
+  label: ROLE_LABELS[r]?.name ?? r,
+}));
 
 function parseApiError(err: unknown): string {
   if (!(err instanceof Error)) return "Error inesperado";
@@ -471,18 +470,14 @@ export default function TeamPage() {
                     </div>
                     <div className="space-y-2">
                       <Label htmlFor="role">Rol</Label>
-                      <Select value={inviteRole} onValueChange={setInviteRole}>
-                        <SelectTrigger data-testid="select-invite-role">
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {ROLE_OPTIONS.map((r) => (
-                            <SelectItem key={r} value={r}>
-                              {ROLE_LABELS[r]?.name ?? r}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
+                      <DataEntryCombobox
+                        options={teamRoleComboOptions}
+                        value={inviteRole}
+                        onValueChange={setInviteRole}
+                        placeholder="Rol"
+                        searchPlaceholder="Buscar rol…"
+                        data-testid="select-invite-role"
+                      />
                     </div>
                   </div>
                   <DialogFooter>
@@ -642,18 +637,13 @@ export default function TeamPage() {
             <DialogDescription>Cambiar el rol solo en esta empresa (tabla de equipo).</DialogDescription>
           </DialogHeader>
           <div className="py-4">
-            <Select value={newRole} onValueChange={setNewRole}>
-              <SelectTrigger>
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {ROLE_OPTIONS.map((r) => (
-                  <SelectItem key={r} value={r}>
-                    {ROLE_LABELS[r]?.name ?? r}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+            <DataEntryCombobox
+              options={teamRoleComboOptions}
+              value={newRole}
+              onValueChange={setNewRole}
+              placeholder="Rol"
+              searchPlaceholder="Buscar rol…"
+            />
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setRoleTarget(null)}>

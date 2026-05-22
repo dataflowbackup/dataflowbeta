@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -23,13 +23,7 @@ import {
   FormLabel,
   FormMessage,
 } from "@/components/ui/form";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
+import { DataEntryCombobox } from "@/components/data-entry-combobox";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/hooks/use-toast";
@@ -63,6 +57,18 @@ type FormData = z.infer<typeof formSchema>;
 
 type PayrollWithEmployee = Payroll & { employee?: Employee };
 
+const payrollTypeComboOptions = [
+  { value: "salary", label: "Sueldo Mensual" },
+  { value: "bonus", label: "Aguinaldo" },
+  { value: "vacation", label: "Vacaciones" },
+];
+
+const payrollStatusComboOptions = [
+  { value: "pending", label: "Pendiente" },
+  { value: "paid", label: "Pagado" },
+  { value: "cancelled", label: "Cancelado" },
+];
+
 export default function PayrollPage() {
   const { toast } = useToast();
   const [isDialogOpen, setIsDialogOpen] = useState(false);
@@ -86,6 +92,17 @@ export default function PayrollPage() {
   });
 
   const hasError = isPayrollsError || isEmployeesError;
+
+  const payrollEmployeeComboOptions = useMemo(
+    () =>
+      employees
+        .filter((e) => e.status === "active")
+        .map((e) => ({
+          value: String(e.id),
+          label: `${e.firstName} ${e.lastName}`,
+        })),
+    [employees],
+  );
 
   const form = useForm<FormData>({
     resolver: zodResolver(formSchema),
@@ -462,29 +479,26 @@ export default function PayrollPage() {
                   render={({ field }) => (
                     <FormItem>
                       <FormLabel>Empleado</FormLabel>
-                      <Select
-                        value={field.value?.toString() || ""}
-                        onValueChange={(val) => {
-                          field.onChange(parseInt(val));
-                          const emp = employees.find(e => e.id === parseInt(val));
-                          if (emp && !editingPayroll) {
-                            form.setValue("baseSalary", parseFloat(emp.baseSalary || "0"));
-                          }
-                        }}
-                      >
-                        <FormControl>
-                          <SelectTrigger data-testid="select-employee">
-                            <SelectValue placeholder="Seleccionar empleado" />
-                          </SelectTrigger>
-                        </FormControl>
-                        <SelectContent>
-                          {employees.filter(e => e.status === "active").map((employee) => (
-                            <SelectItem key={employee.id} value={employee.id.toString()}>
-                              {employee.firstName} {employee.lastName}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
+                      <FormControl>
+                        <DataEntryCombobox
+                          options={payrollEmployeeComboOptions}
+                          value={field.value ? String(field.value) : ""}
+                          onValueChange={(val) => {
+                            const id = parseInt(val, 10);
+                            field.onChange(id);
+                            const emp = employees.find((e) => e.id === id);
+                            if (emp && !editingPayroll) {
+                              form.setValue(
+                                "baseSalary",
+                                parseFloat(emp.baseSalary || "0"),
+                              );
+                            }
+                          }}
+                          placeholder="Seleccionar empleado"
+                          searchPlaceholder="Buscar empleado…"
+                          data-testid="select-employee"
+                        />
+                      </FormControl>
                       <FormMessage />
                     </FormItem>
                   )}
@@ -519,18 +533,16 @@ export default function PayrollPage() {
                   render={({ field }) => (
                     <FormItem>
                       <FormLabel>Tipo</FormLabel>
-                      <Select value={field.value} onValueChange={field.onChange}>
-                        <FormControl>
-                          <SelectTrigger data-testid="select-payroll-type">
-                            <SelectValue />
-                          </SelectTrigger>
-                        </FormControl>
-                        <SelectContent>
-                          <SelectItem value="salary">Sueldo Mensual</SelectItem>
-                          <SelectItem value="bonus">Aguinaldo</SelectItem>
-                          <SelectItem value="vacation">Vacaciones</SelectItem>
-                        </SelectContent>
-                      </Select>
+                      <FormControl>
+                        <DataEntryCombobox
+                          options={payrollTypeComboOptions}
+                          value={field.value}
+                          onValueChange={field.onChange}
+                          placeholder="Tipo"
+                          searchPlaceholder="Buscar…"
+                          data-testid="select-payroll-type"
+                        />
+                      </FormControl>
                       <FormMessage />
                     </FormItem>
                   )}
@@ -542,18 +554,16 @@ export default function PayrollPage() {
                   render={({ field }) => (
                     <FormItem>
                       <FormLabel>Estado</FormLabel>
-                      <Select value={field.value} onValueChange={field.onChange}>
-                        <FormControl>
-                          <SelectTrigger data-testid="select-status">
-                            <SelectValue />
-                          </SelectTrigger>
-                        </FormControl>
-                        <SelectContent>
-                          <SelectItem value="pending">Pendiente</SelectItem>
-                          <SelectItem value="paid">Pagado</SelectItem>
-                          <SelectItem value="cancelled">Cancelado</SelectItem>
-                        </SelectContent>
-                      </Select>
+                      <FormControl>
+                        <DataEntryCombobox
+                          options={payrollStatusComboOptions}
+                          value={field.value}
+                          onValueChange={field.onChange}
+                          placeholder="Estado"
+                          searchPlaceholder="Buscar…"
+                          data-testid="select-status"
+                        />
+                      </FormControl>
                       <FormMessage />
                     </FormItem>
                   )}

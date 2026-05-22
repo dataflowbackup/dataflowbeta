@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { PageHeader } from "@/components/page-header";
 import { DataTable, Column } from "@/components/data-table";
@@ -12,16 +12,10 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
+import { Label } from "@/components/ui/label";
+import { DataEntryCombobox } from "@/components/data-entry-combobox";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
-import { Label } from "@/components/ui/label";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { formatDate } from "@/lib/formatters";
@@ -213,6 +207,35 @@ export default function AttendancePage() {
 
   const employeesWithOpenCheckIn = todayAttendances.filter(a => a.checkIn && !a.checkOut);
 
+  const clockEmployeeComboOptions = useMemo(() => {
+    if (clockAction === "in") {
+      return employeesWithoutCheckIn.map((e) => ({
+        value: String(e.id),
+        label: `${e.firstName} ${e.lastName}`,
+      }));
+    }
+    const opts: { value: string; label: string }[] = [];
+    for (const attendance of employeesWithOpenCheckIn) {
+      const employee = employees.find((e) => e.id === attendance.employeeId);
+      if (employee) {
+        opts.push({
+          value: String(attendance.employeeId),
+          label: `${employee.firstName} ${employee.lastName}`,
+        });
+      }
+    }
+    return opts;
+  }, [clockAction, employeesWithoutCheckIn, employeesWithOpenCheckIn, employees]);
+
+  const attendanceLocalComboOptions = useMemo(
+    () =>
+      locals.map((local) => ({
+        value: String(local.id),
+        label: local.name,
+      })),
+    [locals],
+  );
+
   const columns: Column<AttendanceWithRelations>[] = [
     {
       key: "employee",
@@ -400,51 +423,32 @@ export default function AttendancePage() {
           <div className="space-y-4 py-4">
             <div className="space-y-2">
               <Label htmlFor="employee">Empleado</Label>
-              <Select
-                value={selectedEmployeeId?.toString() || ""}
-                onValueChange={(value) => setSelectedEmployeeId(parseInt(value))}
-              >
-                <SelectTrigger data-testid="select-employee">
-                  <SelectValue placeholder="Seleccionar empleado" />
-                </SelectTrigger>
-                <SelectContent>
-                  {clockAction === "in" 
-                    ? employeesWithoutCheckIn.map((employee) => (
-                        <SelectItem key={employee.id} value={employee.id.toString()}>
-                          {employee.firstName} {employee.lastName}
-                        </SelectItem>
-                      ))
-                    : employeesWithOpenCheckIn.map((attendance) => {
-                        const employee = employees.find(e => e.id === attendance.employeeId);
-                        return employee ? (
-                          <SelectItem key={attendance.employeeId} value={attendance.employeeId.toString()}>
-                            {employee.firstName} {employee.lastName}
-                          </SelectItem>
-                        ) : null;
-                      })
-                  }
-                </SelectContent>
-              </Select>
+              <DataEntryCombobox
+                options={clockEmployeeComboOptions}
+                value={selectedEmployeeId != null ? String(selectedEmployeeId) : ""}
+                onValueChange={(value) =>
+                  setSelectedEmployeeId(value ? parseInt(value, 10) : null)
+                }
+                placeholder="Seleccionar empleado"
+                searchPlaceholder="Buscar empleado…"
+                data-testid="select-employee"
+              />
             </div>
 
             {clockAction === "in" && (
               <div className="space-y-2">
                 <Label htmlFor="local">Local (Opcional)</Label>
-                <Select
-                  value={selectedLocalId?.toString() || ""}
-                  onValueChange={(value) => setSelectedLocalId(value ? parseInt(value) : null)}
-                >
-                  <SelectTrigger data-testid="select-local">
-                    <SelectValue placeholder="Seleccionar local" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {locals.map((local) => (
-                      <SelectItem key={local.id} value={local.id.toString()}>
-                        {local.name}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                <DataEntryCombobox
+                  options={attendanceLocalComboOptions}
+                  value={selectedLocalId != null ? String(selectedLocalId) : ""}
+                  onValueChange={(value) =>
+                    setSelectedLocalId(value ? parseInt(value, 10) : null)
+                  }
+                  placeholder="Seleccionar local"
+                  searchPlaceholder="Buscar local…"
+                  emptyOptionLabel="Sin local"
+                  data-testid="select-local"
+                />
               </div>
             )}
 

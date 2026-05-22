@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -21,13 +21,7 @@ import {
   FormLabel,
   FormMessage,
 } from "@/components/ui/form";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
+import { DataEntryCombobox } from "@/components/data-entry-combobox";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
@@ -37,6 +31,19 @@ import { apiRequest, queryClient } from "@/lib/queryClient";
 import { formatCurrency, formatDate } from "@/lib/formatters";
 import { Edit, Trash2, UserPlus, AlertCircle } from "lucide-react";
 import type { Employee, Local } from "@shared/schema";
+
+const employeeDocTypeComboOptions = [
+  { value: "DNI", label: "DNI" },
+  { value: "CUIL", label: "CUIL" },
+  { value: "CUIT", label: "CUIT" },
+  { value: "Pasaporte", label: "Pasaporte" },
+];
+
+const employeeStatusComboOptions = [
+  { value: "active", label: "Activo" },
+  { value: "inactive", label: "Inactivo" },
+  { value: "terminated", label: "Desvinculado" },
+];
 
 const formSchema = z.object({
   firstName: z.string().min(1, "El nombre es requerido"),
@@ -71,6 +78,15 @@ export default function EmployeesPage() {
   });
 
   const hasError = isEmployeesError || isLocalsError;
+
+  const employeeLocalComboOptions = useMemo(
+    () =>
+      locals.map((local) => ({
+        value: String(local.id),
+        label: local.name,
+      })),
+    [locals],
+  );
 
   const form = useForm<FormData>({
     resolver: zodResolver(formSchema),
@@ -318,19 +334,16 @@ export default function EmployeesPage() {
                   render={({ field }) => (
                     <FormItem>
                       <FormLabel>Tipo Documento</FormLabel>
-                      <Select onValueChange={field.onChange} value={field.value}>
-                        <FormControl>
-                          <SelectTrigger data-testid="select-doctype">
-                            <SelectValue />
-                          </SelectTrigger>
-                        </FormControl>
-                        <SelectContent>
-                          <SelectItem value="DNI">DNI</SelectItem>
-                          <SelectItem value="CUIL">CUIL</SelectItem>
-                          <SelectItem value="CUIT">CUIT</SelectItem>
-                          <SelectItem value="Pasaporte">Pasaporte</SelectItem>
-                        </SelectContent>
-                      </Select>
+                      <FormControl>
+                        <DataEntryCombobox
+                          options={employeeDocTypeComboOptions}
+                          value={field.value}
+                          onValueChange={field.onChange}
+                          placeholder="Tipo"
+                          searchPlaceholder="Buscar…"
+                          data-testid="select-doctype"
+                        />
+                      </FormControl>
                       <FormMessage />
                     </FormItem>
                   )}
@@ -400,20 +413,19 @@ export default function EmployeesPage() {
                   render={({ field }) => (
                     <FormItem>
                       <FormLabel>Local</FormLabel>
-                      <Select onValueChange={field.onChange} value={field.value?.toString()}>
-                        <FormControl>
-                          <SelectTrigger data-testid="select-local">
-                            <SelectValue placeholder="Seleccionar local" />
-                          </SelectTrigger>
-                        </FormControl>
-                        <SelectContent>
-                          {locals.map((local) => (
-                            <SelectItem key={local.id} value={local.id.toString()}>
-                              {local.name}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
+                      <FormControl>
+                        <DataEntryCombobox
+                          options={employeeLocalComboOptions}
+                          value={field.value != null ? String(field.value) : ""}
+                          onValueChange={(v) =>
+                            field.onChange(v ? parseInt(v, 10) : undefined)
+                          }
+                          placeholder="Seleccionar local"
+                          searchPlaceholder="Buscar local…"
+                          emptyOptionLabel="Sin local"
+                          data-testid="select-local"
+                        />
+                      </FormControl>
                       <FormMessage />
                     </FormItem>
                   )}
@@ -482,18 +494,16 @@ export default function EmployeesPage() {
                   render={({ field }) => (
                     <FormItem>
                       <FormLabel>Estado</FormLabel>
-                      <Select onValueChange={field.onChange} value={field.value}>
-                        <FormControl>
-                          <SelectTrigger data-testid="select-status">
-                            <SelectValue />
-                          </SelectTrigger>
-                        </FormControl>
-                        <SelectContent>
-                          <SelectItem value="active">Activo</SelectItem>
-                          <SelectItem value="inactive">Inactivo</SelectItem>
-                          <SelectItem value="terminated">Desvinculado</SelectItem>
-                        </SelectContent>
-                      </Select>
+                      <FormControl>
+                        <DataEntryCombobox
+                          options={employeeStatusComboOptions}
+                          value={field.value}
+                          onValueChange={field.onChange}
+                          placeholder="Estado"
+                          searchPlaceholder="Buscar…"
+                          data-testid="select-status"
+                        />
+                      </FormControl>
                       <FormMessage />
                     </FormItem>
                   )}
@@ -523,7 +533,7 @@ export default function EmployeesPage() {
         title="Eliminar Empleado"
         description={`¿Esta seguro que desea eliminar a ${deleteEmployee?.firstName} ${deleteEmployee?.lastName}?`}
         onConfirm={() => deleteEmployee && deleteMutation.mutate(deleteEmployee.id)}
-        loading={deleteMutation.isPending}
+        isLoading={deleteMutation.isPending}
       />
     </div>
   );

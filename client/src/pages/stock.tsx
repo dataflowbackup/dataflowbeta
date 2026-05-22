@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { useForm, useWatch } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -22,13 +22,7 @@ import {
   FormMessage,
   FormDescription,
 } from "@/components/ui/form";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
+import { DataEntryCombobox } from "@/components/data-entry-combobox";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
@@ -86,6 +80,24 @@ export default function StockPage() {
   const { data: locals = [], isError: isLocalsError } = useQuery<Local[]>({
     queryKey: ["/api/locals"],
   });
+
+  const stockLocalFilterOptions = useMemo(
+    () => [
+      { value: "all", label: "Todos los locales" },
+      ...locals.map((local) => ({ value: String(local.id), label: local.name })),
+    ],
+    [locals],
+  );
+
+  const stockFormLocalOptions = useMemo(
+    () => locals.map((local) => ({ value: String(local.id), label: local.name })),
+    [locals],
+  );
+
+  const stockFormSupplyOptions = useMemo(
+    () => supplies.map((s) => ({ value: String(s.id), label: s.name })),
+    [supplies],
+  );
 
   const form = useForm<AdjustmentFormData>({
     resolver: zodResolver(adjustmentSchema),
@@ -297,19 +309,15 @@ export default function StockPage() {
       />
 
       <div className="flex items-center gap-4">
-        <Select value={selectedLocal} onValueChange={setSelectedLocal}>
-          <SelectTrigger className="w-[200px]" data-testid="select-local-filter">
-            <SelectValue placeholder="Todos los locales" />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="all">Todos los locales</SelectItem>
-            {locals.map((local) => (
-              <SelectItem key={local.id} value={local.id.toString()}>
-                {local.name}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
+        <DataEntryCombobox
+          options={stockLocalFilterOptions}
+          value={selectedLocal}
+          onValueChange={setSelectedLocal}
+          placeholder="Todos los locales"
+          searchPlaceholder="Buscar local…"
+          triggerClassName="w-[200px]"
+          data-testid="select-local-filter"
+        />
       </div>
 
       {lowStockItems.length > 0 && (
@@ -392,20 +400,16 @@ export default function StockPage() {
                 render={({ field }) => (
                   <FormItem>
                     <FormLabel>Local</FormLabel>
-                    <Select onValueChange={field.onChange} value={field.value ? field.value.toString() : ""}>
-                      <FormControl>
-                        <SelectTrigger data-testid="select-local">
-                          <SelectValue placeholder="Seleccionar local" />
-                        </SelectTrigger>
-                      </FormControl>
-                      <SelectContent>
-                        {locals.map((local) => (
-                          <SelectItem key={local.id} value={local.id.toString()}>
-                            {local.name}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
+                    <FormControl>
+                      <DataEntryCombobox
+                        options={stockFormLocalOptions}
+                        value={field.value && field.value > 0 ? String(field.value) : ""}
+                        onValueChange={(v) => field.onChange(parseInt(v, 10))}
+                        placeholder="Seleccionar local"
+                        searchPlaceholder="Buscar local…"
+                        data-testid="select-local"
+                      />
+                    </FormControl>
                     <FormMessage />
                   </FormItem>
                 )}
@@ -417,20 +421,16 @@ export default function StockPage() {
                 render={({ field }) => (
                   <FormItem>
                     <FormLabel>Insumo</FormLabel>
-                    <Select onValueChange={field.onChange} value={field.value ? field.value.toString() : ""}>
-                      <FormControl>
-                        <SelectTrigger data-testid="select-supply">
-                          <SelectValue placeholder="Seleccionar insumo" />
-                        </SelectTrigger>
-                      </FormControl>
-                      <SelectContent>
-                        {supplies.map((supply) => (
-                          <SelectItem key={supply.id} value={supply.id.toString()}>
-                            {supply.name}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
+                    <FormControl>
+                      <DataEntryCombobox
+                        options={stockFormSupplyOptions}
+                        value={field.value && field.value > 0 ? String(field.value) : ""}
+                        onValueChange={(v) => field.onChange(parseInt(v, 10))}
+                        placeholder="Seleccionar insumo"
+                        searchPlaceholder="Buscar insumo…"
+                        data-testid="select-supply"
+                      />
+                    </FormControl>
                     <FormMessage />
                   </FormItem>
                 )}

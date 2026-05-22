@@ -1,15 +1,9 @@
 import { useQuery } from "@tanstack/react-query";
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import { PageHeader } from "@/components/page-header";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
+import { DataEntryCombobox } from "@/components/data-entry-combobox";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { formatCurrency, formatNumber } from "@/lib/formatters";
@@ -55,6 +49,19 @@ export default function DashboardPage() {
   });
 
   const years = Array.from({ length: 5 }, (_, i) => currentYear - 2 + i);
+
+  const yearComboOptions = useMemo(
+    () => years.map((y) => ({ value: String(y), label: String(y) })),
+    [years],
+  );
+
+  const localComboOptions = useMemo(
+    () => [
+      { value: "all", label: "Todos los locales" },
+      ...locals.map((l) => ({ value: String(l.id), label: l.name })),
+    ],
+    [locals],
+  );
 
   const defaultStats: DashboardStats = {
     weeklySales: 0,
@@ -124,31 +131,24 @@ export default function DashboardPage() {
       />
 
       <div className="flex flex-col sm:flex-row gap-4">
-        <Select value={selectedYear} onValueChange={setSelectedYear}>
-          <SelectTrigger className="w-32" data-testid="select-year">
-            <SelectValue placeholder="Ano" />
-          </SelectTrigger>
-          <SelectContent>
-            {years.map((year) => (
-              <SelectItem key={year} value={year.toString()}>
-                {year}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-        <Select value={selectedLocalId} onValueChange={setSelectedLocalId}>
-          <SelectTrigger className="w-48" data-testid="select-local">
-            <SelectValue placeholder="Local" />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="all">Todos los locales</SelectItem>
-            {locals.map((local) => (
-              <SelectItem key={local.id} value={local.id.toString()}>
-                {local.name}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
+        <DataEntryCombobox
+          options={yearComboOptions}
+          value={selectedYear}
+          onValueChange={setSelectedYear}
+          placeholder="Año"
+          searchPlaceholder="Buscar año…"
+          triggerClassName="w-32"
+          data-testid="select-year"
+        />
+        <DataEntryCombobox
+          options={localComboOptions}
+          value={selectedLocalId}
+          onValueChange={setSelectedLocalId}
+          placeholder="Local"
+          searchPlaceholder="Buscar local…"
+          triggerClassName="w-48"
+          data-testid="select-local"
+        />
       </div>
 
       <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">

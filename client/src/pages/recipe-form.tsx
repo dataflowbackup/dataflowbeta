@@ -16,13 +16,7 @@ import {
   FormLabel,
   FormMessage,
 } from "@/components/ui/form";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
+import { DataEntryCombobox } from "@/components/data-entry-combobox";
 import { Textarea } from "@/components/ui/textarea";
 import { Separator } from "@/components/ui/separator";
 import { Badge } from "@/components/ui/badge";
@@ -160,6 +154,15 @@ export default function RecipeFormPage() {
       });
   }, [recipeSubcategories]);
 
+  const recipeSubcategoryFormComboOptions = useMemo(
+    () =>
+      subcategorySelectOptions.map((sub) => ({
+        value: String(sub.id),
+        label: `${sub.recipeCategory?.name || "?"} — ${sub.name}`,
+      })),
+    [subcategorySelectOptions],
+  );
+
   const { data: supplies = [] } = useQuery<SupplyWithUnit[]>({
     queryKey: ["/api/supplies"],
   });
@@ -167,6 +170,17 @@ export default function RecipeFormPage() {
   const { data: units = [] } = useQuery<UnitOfMeasure[]>({
     queryKey: ["/api/units"],
   });
+
+  const yieldUnitComboOptions = useMemo(
+    () =>
+      units
+        .filter((u) => u.active)
+        .map((u) => ({
+          value: u.abbreviation || u.name,
+          label: `${u.name} (${u.abbreviation})`,
+        })),
+    [units],
+  );
 
   const { data: allSubRecipesRaw = [] } = useQuery<RecipeWithCategory[]>({
     queryKey: ["/api/recipes"],
@@ -602,23 +616,20 @@ export default function RecipeFormPage() {
                               data-testid="select-subcategory"
                             />
                           ) : (
-                            <Select
-                              onValueChange={field.onChange}
-                              value={field.value?.toString() || ""}
-                            >
-                              <FormControl>
-                                <SelectTrigger data-testid="select-subcategory">
-                                  <SelectValue placeholder="Seleccionar subcategoria" />
-                                </SelectTrigger>
-                              </FormControl>
-                              <SelectContent>
-                                {subcategorySelectOptions.map((sub) => (
-                                  <SelectItem key={sub.id} value={sub.id.toString()}>
-                                    {(sub.recipeCategory?.name || "?") + " — " + sub.name}
-                                  </SelectItem>
-                                ))}
-                              </SelectContent>
-                            </Select>
+                            <FormControl>
+                              <DataEntryCombobox
+                                options={recipeSubcategoryFormComboOptions}
+                                value={field.value != null ? String(field.value) : ""}
+                                onValueChange={(v) =>
+                                  field.onChange(
+                                    v === "" ? undefined : parseInt(v, 10),
+                                  )
+                                }
+                                placeholder="Seleccionar subcategoria"
+                                searchPlaceholder="Buscar subcategoria…"
+                                data-testid="select-subcategory"
+                              />
+                            </FormControl>
                           )}
                           <FormMessage />
                         </FormItem>
@@ -1073,20 +1084,17 @@ export default function RecipeFormPage() {
                         render={({ field }) => (
                           <FormItem>
                             <FormLabel>Unidad de Medida</FormLabel>
-                            <Select onValueChange={field.onChange} value={field.value || ""}>
-                              <FormControl>
-                                <SelectTrigger data-testid="select-yield-unit">
-                                  <SelectValue placeholder="Seleccionar unidad" />
-                                </SelectTrigger>
-                              </FormControl>
-                              <SelectContent>
-                                {units.filter(u => u.active).map((u) => (
-                                  <SelectItem key={u.id} value={u.abbreviation || u.name}>
-                                    {u.name} ({u.abbreviation})
-                                  </SelectItem>
-                                ))}
-                              </SelectContent>
-                            </Select>
+                            <FormControl>
+                              <DataEntryCombobox
+                                options={yieldUnitComboOptions}
+                                value={field.value ?? ""}
+                                onValueChange={field.onChange}
+                                placeholder="Seleccionar unidad"
+                                searchPlaceholder="Buscar unidad…"
+                                emptyOptionLabel="Sin unidad"
+                                data-testid="select-yield-unit"
+                              />
+                            </FormControl>
                             <FormMessage />
                           </FormItem>
                         )}

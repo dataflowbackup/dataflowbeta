@@ -8,13 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
+import { DataEntryCombobox } from "@/components/data-entry-combobox";
 import { Switch } from "@/components/ui/switch";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { useToast } from "@/hooks/use-toast";
@@ -40,6 +34,12 @@ interface RecipeWithRelations extends Recipe {
   subcategory?: (RecipeSubcategory & { recipeCategory?: RecipeCategory | null }) | null;
   ingredientCount?: number;
 }
+
+const recipeActiveFilterOptions = [
+  { value: "__all__", label: "Todos" },
+  { value: "active", label: "Solo activas" },
+  { value: "inactive", label: "Solo inactivas" },
+];
 
 function computePlatoKpis(rows: RecipeWithRelations[]) {
   const n = rows.length;
@@ -112,6 +112,28 @@ export default function RecipesPage() {
     const cid = Number.parseInt(filterCategoryId, 10);
     return recipeSubcategories.filter((s) => s.recipeCategoryId === cid);
   }, [recipeSubcategories, filterCategoryId]);
+
+  const recipeCategoryFilterComboOptions = useMemo(
+    () => [
+      { value: "__all__", label: "Todas las categorias" },
+      ...recipeCategories.map((c) => ({
+        value: String(c.id),
+        label: c.name,
+      })),
+    ],
+    [recipeCategories],
+  );
+
+  const recipeSubcategoryFilterComboOptions = useMemo(
+    () => [
+      { value: "__all__", label: "Todas las subcategorias" },
+      ...subcategoryFilterOptions.map((s) => ({
+        value: String(s.id),
+        label: `${s.recipeCategory?.name || "?"} — ${s.name}`,
+      })),
+    ],
+    [subcategoryFilterOptions],
+  );
 
   const platosStructuralFiltered = useMemo(() => {
     let rows = platos;
@@ -494,54 +516,42 @@ export default function RecipesPage() {
           </div>
           <div className="flex flex-col gap-1 min-w-[180px]">
             <span className="text-xs text-muted-foreground">Categoria</span>
-            <Select
+            <DataEntryCombobox
+              options={recipeCategoryFilterComboOptions}
               value={filterCategoryId}
               onValueChange={(v) => {
                 setFilterCategoryId(v);
                 setFilterSubcategoryId("__all__");
               }}
-            >
-              <SelectTrigger data-testid="filter-recipe-category">
-                <SelectValue placeholder="Todas" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="__all__">Todas las categorias</SelectItem>
-                {recipeCategories.map((c) => (
-                  <SelectItem key={c.id} value={String(c.id)}>
-                    {c.name}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+              placeholder="Todas"
+              searchPlaceholder="Buscar categoria…"
+              triggerClassName="min-w-[180px]"
+              data-testid="filter-recipe-category"
+            />
           </div>
           <div className="flex flex-col gap-1 min-w-[200px]">
             <span className="text-xs text-muted-foreground">Subcategoria</span>
-            <Select value={filterSubcategoryId} onValueChange={setFilterSubcategoryId}>
-              <SelectTrigger data-testid="filter-recipe-subcategory">
-                <SelectValue placeholder="Todas" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="__all__">Todas las subcategorias</SelectItem>
-                {subcategoryFilterOptions.map((s) => (
-                  <SelectItem key={s.id} value={String(s.id)}>
-                    {(s.recipeCategory?.name || "?") + " — " + s.name}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+            <DataEntryCombobox
+              options={recipeSubcategoryFilterComboOptions}
+              value={filterSubcategoryId}
+              onValueChange={setFilterSubcategoryId}
+              placeholder="Todas"
+              searchPlaceholder="Buscar subcategoria…"
+              triggerClassName="min-w-[200px]"
+              data-testid="filter-recipe-subcategory"
+            />
           </div>
           <div className="flex flex-col gap-1 min-w-[160px]">
             <span className="text-xs text-muted-foreground">Activo / Inactivo</span>
-            <Select value={filterActive} onValueChange={setFilterActive}>
-              <SelectTrigger data-testid="filter-recipe-active">
-                <SelectValue placeholder="Todos" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="__all__">Todos</SelectItem>
-                <SelectItem value="active">Solo activas</SelectItem>
-                <SelectItem value="inactive">Solo inactivas</SelectItem>
-              </SelectContent>
-            </Select>
+            <DataEntryCombobox
+              options={recipeActiveFilterOptions}
+              value={filterActive}
+              onValueChange={setFilterActive}
+              placeholder="Todos"
+              searchPlaceholder="Buscar…"
+              triggerClassName="min-w-[160px]"
+              data-testid="filter-recipe-active"
+            />
           </div>
         </div>
       </div>

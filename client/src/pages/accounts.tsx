@@ -7,13 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
+import { DataEntryCombobox } from "@/components/data-entry-combobox";
 import { formatCurrency, formatCuit, formatDate } from "@/lib/formatters";
 import { PieChart, Pie, Cell, ResponsiveContainer, Legend, Tooltip } from "recharts";
 import { 
@@ -104,6 +98,22 @@ export default function AccountsPage() {
   const accounts = data?.accounts || [];
   const stats = data?.stats || { totalDebt: 0, totalOverdue: 0, totalInvoices: 0, totalOverdueCount: 0 };
   const suppliersWithDebt = accounts.filter(a => a.totalDebt > 0).length;
+
+  const accountsFilterLocalOptions = useMemo(
+    () => [
+      { value: "all", label: "Todos los locales" },
+      ...locals.filter((l) => l.active).map((l) => ({ value: String(l.id), label: l.name })),
+    ],
+    [locals],
+  );
+
+  const accountsFilterRubroOptions = useMemo(
+    () => [
+      { value: "all", label: "Todos los rubros" },
+      ...rubros.filter((r) => r.active).map((r) => ({ value: String(r.id), label: r.name })),
+    ],
+    [rubros],
+  );
 
   const overdueInvoices = useMemo(() => {
     const today = new Date();
@@ -372,32 +382,24 @@ export default function AccountsPage() {
           <Filter className="h-4 w-4 text-muted-foreground" />
           <span className="text-sm font-medium">Filtros:</span>
         </div>
-        <Select value={filterLocalId} onValueChange={setFilterLocalId}>
-          <SelectTrigger className="w-[200px]" data-testid="select-filter-local">
-            <SelectValue placeholder="Todos los locales" />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="all">Todos los locales</SelectItem>
-            {locals.filter(l => l.active).map((local) => (
-              <SelectItem key={local.id} value={local.id.toString()}>
-                {local.name}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-        <Select value={filterRubroId} onValueChange={setFilterRubroId}>
-          <SelectTrigger className="w-[200px]" data-testid="select-filter-rubro">
-            <SelectValue placeholder="Todos los rubros" />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="all">Todos los rubros</SelectItem>
-            {rubros.filter(r => r.active).map((rubro) => (
-              <SelectItem key={rubro.id} value={rubro.id.toString()}>
-                {rubro.name}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
+        <DataEntryCombobox
+          options={accountsFilterLocalOptions}
+          value={filterLocalId}
+          onValueChange={setFilterLocalId}
+          placeholder="Todos los locales"
+          searchPlaceholder="Buscar local…"
+          triggerClassName="w-[200px]"
+          data-testid="select-filter-local"
+        />
+        <DataEntryCombobox
+          options={accountsFilterRubroOptions}
+          value={filterRubroId}
+          onValueChange={setFilterRubroId}
+          placeholder="Todos los rubros"
+          searchPlaceholder="Buscar rubro…"
+          triggerClassName="w-[200px]"
+          data-testid="select-filter-rubro"
+        />
       </div>
 
       <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">

@@ -28,13 +28,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Progress } from "@/components/ui/progress";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Checkbox } from "@/components/ui/checkbox";
-import { 
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
+import { DataEntryCombobox } from "@/components/data-entry-combobox";
 import {
   Command,
   CommandEmpty,
@@ -349,6 +343,12 @@ function BatchLocalCombobox({
     </Popover>
   );
 }
+
+const BANK_STMT_LIST_FILTER_TYPE_OPTIONS = [
+  { value: "all", label: "Todos" },
+  { value: "income", label: "Ingresos" },
+  { value: "expense", label: "Egresos" },
+];
 
 export default function BankStatementsPage() {
   const { toast } = useToast();
@@ -795,7 +795,6 @@ export default function BankStatementsPage() {
       } else {
         setBankFilter("all");
       }
-      setAccountContextFilter("all");
 
       queryClient.invalidateQueries({ queryKey: ["/api/transactions"] });
       queryClient.invalidateQueries({ queryKey: ["/api/transactions/import-batches"] });
@@ -1293,6 +1292,74 @@ export default function BankStatementsPage() {
         name: l.name,
       })),
     [locals],
+  );
+
+  const uploadBankAccountComboOptions = useMemo(
+    () =>
+      bankAccounts.map((a) => ({
+        value: String(a.id),
+        label: `${a.name}${a.local?.name ? ` · ${a.local.name}` : ""}`,
+      })),
+    [bankAccounts],
+  );
+
+  const uploadDefaultLocalComboOptions = useMemo(
+    () => [
+      { value: "none", label: "Sin local (asignar luego)" },
+      ...locals.map((l) => ({ value: String(l.id), label: l.name })),
+    ],
+    [locals],
+  );
+
+  const newAccountBusinessComboOptions = useMemo(
+    () => [
+      { value: "none", label: "Seleccionar..." },
+      ...businessNames.map((b) => ({ value: String(b.id), label: b.name })),
+    ],
+    [businessNames],
+  );
+
+  const newAccountBankComboOptions = useMemo(
+    () => [
+      { value: "none", label: "Seleccionar..." },
+      ...availableBanks.map((bank) => ({ value: String(bank.id), label: bank.name })),
+    ],
+    [availableBanks],
+  );
+
+  const newAccountLocalComboOptions = useMemo(
+    () => [
+      { value: "none", label: "Sin local" },
+      ...locals.map((l) => ({ value: String(l.id), label: l.name })),
+    ],
+    [locals],
+  );
+
+  const localsSortedForCombo = useMemo(
+    () =>
+      [...locals].sort((a, b) => String(a.name).localeCompare(String(b.name), "es")),
+    [locals],
+  );
+
+  const localsOnlyComboOptions = useMemo(
+    () => localsSortedForCombo.map((l) => ({ value: String(l.id), label: l.name })),
+    [localsSortedForCombo],
+  );
+
+  const categorizeCategoryComboOptions = useMemo(() => {
+    const cats = selectedTransaction?.type === "income" ? incomeCategories : expenseCategories;
+    return [
+      { value: "none", label: "Sin categoria" },
+      ...cats.map((c) => ({ value: String(c.id), label: c.name })),
+    ];
+  }, [selectedTransaction?.type, incomeCategories, expenseCategories]);
+
+  const transactionLocalPickComboOptions = useMemo(
+    () => [
+      { value: "none", label: "Sin asignar" },
+      ...localsSortedForCombo.map((l) => ({ value: String(l.id), label: l.name })),
+    ],
+    [localsSortedForCombo],
   );
 
   const listFiltersActive =
@@ -1800,19 +1867,13 @@ export default function BankStatementsPage() {
                 </div>
                 <div className="space-y-1">
                   <Label className="text-xs">Tipo</Label>
-                  <Select
+                  <DataEntryCombobox
+                    options={BANK_STMT_LIST_FILTER_TYPE_OPTIONS}
                     value={listFilterType}
                     onValueChange={(v) => setListFilterType(v as "all" | "income" | "expense")}
-                  >
-                    <SelectTrigger>
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="all">Todos</SelectItem>
-                      <SelectItem value="income">Ingresos</SelectItem>
-                      <SelectItem value="expense">Egresos</SelectItem>
-                    </SelectContent>
-                  </Select>
+                    placeholder="Tipo"
+                    searchPlaceholder="Buscar…"
+                  />
                 </div>
                 <div className="space-y-1">
                   <Label className="text-xs">Desde</Label>
@@ -2108,23 +2169,17 @@ export default function BankStatementsPage() {
           <div className="space-y-4">
             <div className="space-y-2">
               <Label>Cuenta o caja *</Label>
-              <Select
+              <DataEntryCombobox
+                options={uploadBankAccountComboOptions}
                 value={uploadBankAccountId}
                 onValueChange={setUploadBankAccountId}
+                placeholder={
+                  bankAccounts.length ? "Seleccionar cuenta..." : "Cree una cuenta primero"
+                }
+                searchPlaceholder="Buscar cuenta…"
                 disabled={bankAccounts.length === 0}
-              >
-                <SelectTrigger data-testid="select-upload-bank-account">
-                  <SelectValue placeholder={bankAccounts.length ? "Seleccionar cuenta..." : "Cree una cuenta primero"} />
-                </SelectTrigger>
-                <SelectContent>
-                  {bankAccounts.map((a) => (
-                    <SelectItem key={a.id} value={String(a.id)}>
-                      {a.name}
-                      {a.local?.name ? ` · ${a.local.name}` : ""}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+                data-testid="select-upload-bank-account"
+              />
             </div>
             <div className="space-y-2">
               <Label>Entidad bancaria (automática)</Label>
@@ -2134,19 +2189,14 @@ export default function BankStatementsPage() {
             </div>
             <div className="space-y-2">
               <Label>Local (opcional)</Label>
-              <Select value={uploadDefaultLocalId} onValueChange={setUploadDefaultLocalId}>
-                <SelectTrigger data-testid="select-upload-default-local">
-                  <SelectValue placeholder="Sin local (asignar luego)" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="none">Sin local (asignar luego)</SelectItem>
-                  {locals.map((l) => (
-                    <SelectItem key={l.id} value={String(l.id)}>
-                      {l.name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              <DataEntryCombobox
+                options={uploadDefaultLocalComboOptions}
+                value={uploadDefaultLocalId}
+                onValueChange={setUploadDefaultLocalId}
+                placeholder="Sin local (asignar luego)"
+                searchPlaceholder="Buscar local…"
+                data-testid="select-upload-default-local"
+              />
               <p className="text-xs text-muted-foreground">
                 Si lo elegís, los movimientos sin sucursal/alias se importan con ese local.
               </p>
@@ -2388,47 +2438,29 @@ export default function BankStatementsPage() {
                 data-testid="input-new-account-number"
               />
               <Label className="text-xs text-muted-foreground">Razón social *</Label>
-              <Select value={newAccountBusinessNameId} onValueChange={setNewAccountBusinessNameId}>
-                <SelectTrigger>
-                  <SelectValue placeholder="Seleccionar razón social..." />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="none">Seleccionar...</SelectItem>
-                  {businessNames.map((b) => (
-                    <SelectItem key={b.id} value={String(b.id)}>
-                      {b.name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              <DataEntryCombobox
+                options={newAccountBusinessComboOptions}
+                value={newAccountBusinessNameId}
+                onValueChange={setNewAccountBusinessNameId}
+                placeholder="Seleccionar razón social..."
+                searchPlaceholder="Buscar razón social…"
+              />
               <Label className="text-xs text-muted-foreground">Entidad bancaria *</Label>
-              <Select value={newAccountBankId} onValueChange={setNewAccountBankId}>
-                <SelectTrigger>
-                  <SelectValue placeholder="Seleccionar entidad..." />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="none">Seleccionar...</SelectItem>
-                  {availableBanks.map((bank) => (
-                    <SelectItem key={bank.id} value={bank.id}>
-                      {bank.name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              <DataEntryCombobox
+                options={newAccountBankComboOptions}
+                value={newAccountBankId}
+                onValueChange={setNewAccountBankId}
+                placeholder="Seleccionar entidad..."
+                searchPlaceholder="Buscar entidad…"
+              />
               <Label className="text-xs text-muted-foreground">Local (opcional)</Label>
-              <Select value={newAccountLocalId} onValueChange={setNewAccountLocalId}>
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="none">Sin local</SelectItem>
-                  {locals.map((l) => (
-                    <SelectItem key={l.id} value={String(l.id)}>
-                      {l.name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              <DataEntryCombobox
+                options={newAccountLocalComboOptions}
+                value={newAccountLocalId}
+                onValueChange={setNewAccountLocalId}
+                placeholder="Sin local"
+                searchPlaceholder="Buscar local…"
+              />
               <Button
                 type="button"
                 className="w-full"
@@ -2505,39 +2537,28 @@ export default function BankStatementsPage() {
 
               <div className="space-y-2">
                 <Label>Categoria</Label>
-                <Select 
-                  value={selectedCategoryId} 
-                  onValueChange={setSelectedCategoryId}
-                >
-                  <SelectTrigger data-testid="select-category">
-                    <SelectValue placeholder="Seleccionar categoria..." />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="none">Sin categoria</SelectItem>
-                    {(selectedTransaction.type === "income" ? incomeCategories : expenseCategories).map(cat => (
-                      <SelectItem key={cat.id} value={String(cat.id)}>
-                        {cat.name}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                <DataEntryCombobox
+                  options={categorizeCategoryComboOptions}
+                  value={selectedCategoryId === "" ? "none" : selectedCategoryId}
+                  onValueChange={(v) =>
+                    setSelectedCategoryId(v === "none" ? "" : v)
+                  }
+                  placeholder="Seleccionar categoria..."
+                  searchPlaceholder="Buscar categoria…"
+                  data-testid="select-category"
+                />
               </div>
 
               <div className="space-y-2">
                 <Label>Local</Label>
-                <Select value={selectedLocalId} onValueChange={setSelectedLocalId}>
-                  <SelectTrigger data-testid="select-local">
-                    <SelectValue placeholder="Seleccionar local..." />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="none">Sin asignar</SelectItem>
-                    {locals.map(l => (
-                      <SelectItem key={l.id} value={String(l.id)}>
-                        {l.name}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                <DataEntryCombobox
+                  options={transactionLocalPickComboOptions}
+                  value={selectedLocalId === "" ? "none" : selectedLocalId}
+                  onValueChange={(v) => setSelectedLocalId(v === "none" ? "" : v)}
+                  placeholder="Seleccionar local..."
+                  searchPlaceholder="Buscar local…"
+                  data-testid="select-local"
+                />
               </div>
 
               <div className="flex justify-end gap-2">
@@ -2875,21 +2896,18 @@ export default function BankStatementsPage() {
                 
                 {splitItems.map((item, index) => (
                   <div key={index} className="flex gap-2 items-center">
-                    <Select
-                      value={item.localId ? String(item.localId) : ""}
-                      onValueChange={(v) => updateSplitItem(index, "localId", v ? parseInt(v) : null)}
-                    >
-                      <SelectTrigger className="flex-1" data-testid={`select-split-local-${index}`}>
-                        <SelectValue placeholder="Seleccionar local..." />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {locals.map(local => (
-                          <SelectItem key={local.id} value={String(local.id)}>
-                            {local.name}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
+                    <DataEntryCombobox
+                      options={localsOnlyComboOptions}
+                      value={item.localId != null ? String(item.localId) : ""}
+                      onValueChange={(v) =>
+                        updateSplitItem(index, "localId", v ? parseInt(v, 10) : null)
+                      }
+                      placeholder="Seleccionar local..."
+                      searchPlaceholder="Buscar local…"
+                      emptyOptionLabel="Sin local"
+                      triggerClassName="flex-1 min-w-0"
+                      data-testid={`select-split-local-${index}`}
+                    />
                     <Input
                       type="number"
                       placeholder="Monto"
@@ -2964,21 +2982,18 @@ export default function BankStatementsPage() {
                   <p className="text-sm font-medium">{mapping.alias}</p>
                   <p className="text-xs text-muted-foreground">Nombre en el extracto</p>
                 </div>
-                <Select
-                  value={mapping.localId ? String(mapping.localId) : ""}
-                  onValueChange={(v) => updateBranchMapping(index, v ? parseInt(v) : null)}
-                >
-                  <SelectTrigger className="w-48" data-testid={`select-branch-mapping-${index}`}>
-                    <SelectValue placeholder="Seleccionar local..." />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {locals.map(local => (
-                      <SelectItem key={local.id} value={String(local.id)}>
-                        {local.name}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                <DataEntryCombobox
+                  options={localsOnlyComboOptions}
+                  value={mapping.localId != null ? String(mapping.localId) : ""}
+                  onValueChange={(v) =>
+                    updateBranchMapping(index, v ? parseInt(v, 10) : null)
+                  }
+                  placeholder="Seleccionar local..."
+                  searchPlaceholder="Buscar local…"
+                  emptyOptionLabel="Sin vínculo"
+                  triggerClassName="w-48"
+                  data-testid={`select-branch-mapping-${index}`}
+                />
               </div>
             ))}
           </div>

@@ -28,7 +28,7 @@ import { Switch } from "@/components/ui/switch";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { formatCuit, validateCuit } from "@/lib/formatters";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { DataEntryCombobox } from "@/components/data-entry-combobox";
 import { Edit, Trash2, MapPin } from "lucide-react";
 import type { Local } from "@shared/schema";
 
@@ -37,6 +37,11 @@ const IVA_CONDITIONS = [
   { value: "monotributista", label: "Monotributista" },
   { value: "exento", label: "Exento" },
 ];
+
+const localIvaComboOptions = IVA_CONDITIONS.map((c) => ({
+  value: c.value,
+  label: c.label,
+}));
 
 const formSchema = z.object({
   name: z.string().min(1, "El nombre es requerido"),
@@ -386,20 +391,16 @@ export default function LocalsPage() {
                 render={({ field }) => (
                   <FormItem>
                     <FormLabel>Condicion IVA</FormLabel>
-                    <Select onValueChange={field.onChange} value={field.value}>
-                      <FormControl>
-                        <SelectTrigger data-testid="select-ivaCondition">
-                          <SelectValue placeholder="Seleccionar" />
-                        </SelectTrigger>
-                      </FormControl>
-                      <SelectContent>
-                        {IVA_CONDITIONS.map((cond) => (
-                          <SelectItem key={cond.value} value={cond.value}>
-                            {cond.label}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
+                    <FormControl>
+                      <DataEntryCombobox
+                        options={localIvaComboOptions}
+                        value={field.value || ""}
+                        onValueChange={field.onChange}
+                        placeholder="Seleccionar"
+                        searchPlaceholder="Buscar condición IVA…"
+                        data-testid="select-ivaCondition"
+                      />
+                    </FormControl>
                     <FormMessage />
                   </FormItem>
                 )}

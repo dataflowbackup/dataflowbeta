@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -23,13 +23,7 @@ import {
 } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
+import { DataEntryCombobox } from "@/components/data-entry-combobox";
 import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
@@ -61,6 +55,17 @@ export default function RecipeSubCategoriesPage() {
   const { data: categories = [] } = useQuery<RecipeCategory[]>({
     queryKey: ["/api/recipe-categories"],
   });
+
+  const recipeCategoryComboOptions = useMemo(
+    () =>
+      categories
+        .filter((c) => c.active)
+        .map((c) => ({
+          value: String(c.id),
+          label: c.name,
+        })),
+    [categories],
+  );
 
   const form = useForm<FormData>({
     resolver: zodResolver(formSchema),
@@ -254,22 +259,16 @@ export default function RecipeSubCategoriesPage() {
                 render={({ field }) => (
                   <FormItem>
                     <FormLabel>Categoria padre *</FormLabel>
-                    <Select onValueChange={field.onChange} value={field.value?.toString()}>
-                      <FormControl>
-                        <SelectTrigger data-testid="select-recipe-category">
-                          <SelectValue placeholder="Seleccionar categoria" />
-                        </SelectTrigger>
-                      </FormControl>
-                      <SelectContent>
-                        {categories
-                          .filter((c) => c.active)
-                          .map((c) => (
-                            <SelectItem key={c.id} value={c.id.toString()}>
-                              {c.name}
-                            </SelectItem>
-                          ))}
-                      </SelectContent>
-                    </Select>
+                    <FormControl>
+                      <DataEntryCombobox
+                        options={recipeCategoryComboOptions}
+                        value={field.value != null ? String(field.value) : ""}
+                        onValueChange={(v) => field.onChange(v ? parseInt(v, 10) : undefined)}
+                        placeholder="Seleccionar categoria"
+                        searchPlaceholder="Buscar categoria…"
+                        data-testid="select-recipe-category"
+                      />
+                    </FormControl>
                     <FormMessage />
                   </FormItem>
                 )}

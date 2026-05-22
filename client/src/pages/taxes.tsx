@@ -22,13 +22,7 @@ import {
   FormMessage,
 } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
+import { DataEntryCombobox } from "@/components/data-entry-combobox";
 import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
@@ -46,6 +40,11 @@ const taxTypes = [
   { value: "impuesto_interno", label: "Impuesto Interno" },
   { value: "otro", label: "Otro" },
 ];
+
+const taxTypeComboOptions = taxTypes.map((t) => ({
+  value: t.value,
+  label: t.label,
+}));
 
 const formSchema = z.object({
   name: z.string().min(1, "El nombre es requerido"),
@@ -334,20 +333,16 @@ export default function TaxesPage() {
                   render={({ field }) => (
                     <FormItem>
                       <FormLabel>Tipo *</FormLabel>
-                      <Select onValueChange={field.onChange} value={field.value}>
-                        <FormControl>
-                          <SelectTrigger data-testid="select-type">
-                            <SelectValue placeholder="Seleccionar tipo" />
-                          </SelectTrigger>
-                        </FormControl>
-                        <SelectContent>
-                          {taxTypes.map((type) => (
-                            <SelectItem key={type.value} value={type.value}>
-                              {type.label}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
+                      <FormControl>
+                        <DataEntryCombobox
+                          options={taxTypeComboOptions}
+                          value={field.value || ""}
+                          onValueChange={field.onChange}
+                          placeholder="Seleccionar tipo"
+                          searchPlaceholder="Buscar tipo de impuesto…"
+                          data-testid="select-type"
+                        />
+                      </FormControl>
                       <FormMessage />
                     </FormItem>
                   )}

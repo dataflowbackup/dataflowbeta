@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -21,14 +21,8 @@ import {
   FormLabel,
   FormMessage,
 } from "@/components/ui/form";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 import { Input } from "@/components/ui/input";
+import { DataEntryCombobox } from "@/components/data-entry-combobox";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -56,6 +50,14 @@ const templateFormSchema = z.object({
 type AuditFormData = z.infer<typeof auditFormSchema>;
 type TemplateFormData = z.infer<typeof templateFormSchema>;
 
+const AUDIT_TYPE_COMBO_OPTIONS = [
+  { value: "operativa", label: "Operativa" },
+  { value: "financiera", label: "Financiera" },
+  { value: "administrativa", label: "Administrativa" },
+  { value: "higiene", label: "Higiene y Seguridad" },
+  { value: "calidad", label: "Calidad" },
+];
+
 export default function AuditsPage() {
   const { toast } = useToast();
   const [isAuditDialogOpen, setIsAuditDialogOpen] = useState(false);
@@ -75,6 +77,15 @@ export default function AuditsPage() {
   });
 
   const hasError = isAuditsError || isTemplatesError || isLocalsError;
+
+  const auditLocalComboOptions = useMemo(
+    () =>
+      locals.map((local) => ({
+        value: String(local.id),
+        label: local.name,
+      })),
+    [locals],
+  );
 
   const auditForm = useForm<AuditFormData>({
     resolver: zodResolver(auditFormSchema),
@@ -203,15 +214,8 @@ export default function AuditsPage() {
     },
   ];
 
-  const auditTypes = [
-    { value: "operativa", label: "Operativa" },
-    { value: "financiera", label: "Financiera" },
-    { value: "administrativa", label: "Administrativa" },
-    { value: "higiene", label: "Higiene y Seguridad" },
-    { value: "calidad", label: "Calidad" },
-  ];
+  const completedAudits = audits.filter((a) => a.status === "completed");
 
-  const completedAudits = audits.filter(a => a.status === "completed");
   const avgApproval = completedAudits.length > 0
     ? completedAudits.reduce((sum, a) => sum + parseFloat(String(a.approvalPercentage) || "0"), 0) / completedAudits.length
     : 0;
@@ -323,24 +327,26 @@ export default function AuditsPage() {
                 control={auditForm.control}
                 name="localId"
                 render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>Local</FormLabel>
-                    <Select onValueChange={field.onChange} value={field.value?.toString()}>
+                    <FormItem>
+                      <FormLabel>Local</FormLabel>
                       <FormControl>
-                        <SelectTrigger data-testid="select-local">
-                          <SelectValue placeholder="Seleccionar local" />
-                        </SelectTrigger>
+                        <DataEntryCombobox
+                          options={auditLocalComboOptions}
+                          value={
+                            field.value != null && field.value > 0
+                              ? String(field.value)
+                              : ""
+                          }
+                          onValueChange={(v) =>
+                            field.onChange(v ? parseInt(v, 10) : 0)
+                          }
+                          placeholder="Seleccionar local"
+                          searchPlaceholder="Buscar local…"
+                          data-testid="select-local"
+                        />
                       </FormControl>
-                      <SelectContent>
-                        {locals.map((local) => (
-                          <SelectItem key={local.id} value={local.id.toString()}>
-                            {local.name}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                    <FormMessage />
-                  </FormItem>
+                      <FormMessage />
+                    </FormItem>
                 )}
               />
               
@@ -348,24 +354,20 @@ export default function AuditsPage() {
                 control={auditForm.control}
                 name="auditType"
                 render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>Tipo de Auditoria</FormLabel>
-                    <Select onValueChange={field.onChange} value={field.value}>
+                    <FormItem>
+                      <FormLabel>Tipo de Auditoria</FormLabel>
                       <FormControl>
-                        <SelectTrigger data-testid="select-type">
-                          <SelectValue placeholder="Seleccionar tipo" />
-                        </SelectTrigger>
+                        <DataEntryCombobox
+                          options={AUDIT_TYPE_COMBO_OPTIONS}
+                          value={field.value}
+                          onValueChange={field.onChange}
+                          placeholder="Seleccionar tipo"
+                          searchPlaceholder="Buscar tipo…"
+                          data-testid="select-type"
+                        />
                       </FormControl>
-                      <SelectContent>
-                        {auditTypes.map((type) => (
-                          <SelectItem key={type.value} value={type.value}>
-                            {type.label}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                    <FormMessage />
-                  </FormItem>
+                      <FormMessage />
+                    </FormItem>
                 )}
               />
 
@@ -435,24 +437,20 @@ export default function AuditsPage() {
                 control={templateForm.control}
                 name="auditType"
                 render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>Tipo</FormLabel>
-                    <Select onValueChange={field.onChange} value={field.value}>
+                    <FormItem>
+                      <FormLabel>Tipo</FormLabel>
                       <FormControl>
-                        <SelectTrigger data-testid="select-template-type">
-                          <SelectValue placeholder="Seleccionar tipo" />
-                        </SelectTrigger>
+                        <DataEntryCombobox
+                          options={AUDIT_TYPE_COMBO_OPTIONS}
+                          value={field.value}
+                          onValueChange={field.onChange}
+                          placeholder="Seleccionar tipo"
+                          searchPlaceholder="Buscar tipo…"
+                          data-testid="select-template-type"
+                        />
                       </FormControl>
-                      <SelectContent>
-                        {auditTypes.map((type) => (
-                          <SelectItem key={type.value} value={type.value}>
-                            {type.label}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                    <FormMessage />
-                  </FormItem>
+                      <FormMessage />
+                    </FormItem>
                 )}
               />
 

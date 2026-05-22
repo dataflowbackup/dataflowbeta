@@ -4,13 +4,7 @@ import { PageHeader } from "@/components/page-header";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
+import { DataEntryCombobox } from "@/components/data-entry-combobox";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Skeleton } from "@/components/ui/skeleton";
 import { formatCurrency } from "@/lib/formatters";
@@ -95,6 +89,24 @@ export default function BalancePage() {
   });
 
   const years = Array.from({ length: 5 }, (_, i) => currentYear - 2 + i);
+
+  const yearComboOptions = useMemo(
+    () => years.map((y) => ({ value: String(y), label: String(y) })),
+    [years],
+  );
+
+  const monthComboOptions = useMemo(
+    () => fullMonths.map((m, i) => ({ value: String(i + 1), label: m })),
+    [],
+  );
+
+  const balanceLocalComboOptions = useMemo(
+    () => [
+      { value: "all", label: "Todos los locales" },
+      ...locals.map((l) => ({ value: String(l.id), label: l.name })),
+    ],
+    [locals],
+  );
 
   const month = parseInt(selectedMonth);
 
@@ -445,47 +457,37 @@ export default function BalancePage() {
       />
 
       <div className="flex flex-col sm:flex-row flex-wrap gap-4 items-start sm:items-center">
-        <Select value={selectedYear} onValueChange={setSelectedYear}>
-          <SelectTrigger className="w-32" data-testid="select-year">
-            <SelectValue placeholder="Ano" />
-          </SelectTrigger>
-          <SelectContent>
-            {years.map((year) => (
-              <SelectItem key={year} value={year.toString()}>
-                {year}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
+        <DataEntryCombobox
+          options={yearComboOptions}
+          value={selectedYear}
+          onValueChange={setSelectedYear}
+          placeholder="Año"
+          searchPlaceholder="Buscar año…"
+          triggerClassName="w-32"
+          data-testid="select-year"
+        />
 
         {viewMode === "monthly" && (
-          <Select value={selectedMonth} onValueChange={setSelectedMonth}>
-            <SelectTrigger className="w-44" data-testid="select-month">
-              <SelectValue placeholder="Mes" />
-            </SelectTrigger>
-            <SelectContent>
-              {fullMonths.map((m, i) => (
-                <SelectItem key={i} value={(i + 1).toString()}>
-                  {m}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+          <DataEntryCombobox
+            options={monthComboOptions}
+            value={selectedMonth}
+            onValueChange={setSelectedMonth}
+            placeholder="Mes"
+            searchPlaceholder="Buscar mes…"
+            triggerClassName="w-44"
+            data-testid="select-month"
+          />
         )}
 
-        <Select value={selectedLocalId} onValueChange={setSelectedLocalId}>
-          <SelectTrigger className="w-48" data-testid="select-local">
-            <SelectValue placeholder="Local" />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="all">Todos los locales</SelectItem>
-            {locals.map((local) => (
-              <SelectItem key={local.id} value={local.id.toString()}>
-                {local.name}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
+        <DataEntryCombobox
+          options={balanceLocalComboOptions}
+          value={selectedLocalId}
+          onValueChange={setSelectedLocalId}
+          placeholder="Local"
+          searchPlaceholder="Buscar local…"
+          triggerClassName="w-48"
+          data-testid="select-local"
+        />
       </div>
 
       <Tabs value={viewMode} onValueChange={setViewMode}>

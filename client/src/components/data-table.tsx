@@ -9,7 +9,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { DataEntryCombobox } from "@/components/data-entry-combobox";
 import { ChevronLeft, ChevronRight, Search, Plus, Filter } from "lucide-react";
 import { useState, useMemo, useEffect, type ReactNode } from "react";
 import { cn } from "@/lib/utils";
@@ -191,28 +191,28 @@ export function DataTable<T extends { id: number | string }>({
         {filters.length > 0 && (
           <div className="flex flex-wrap items-center gap-2">
             <Filter className="h-4 w-4 text-muted-foreground" />
-            {filters.map((filter) => (
-              <Select
-                key={filter.key as string}
-                value={activeFilters[filter.key as string] || "__all__"}
-                onValueChange={(value) => {
-                  setActiveFilters((prev) => ({ ...prev, [filter.key]: value }));
-                  setPage(0);
-                }}
-              >
-                <SelectTrigger className="w-[160px] h-9" data-testid={`filter-${filter.key as string}`}>
-                  <SelectValue placeholder={filter.label} />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="__all__">{filter.allLabel || `Todos`}</SelectItem>
-                  {filter.options.map((opt) => (
-                    <SelectItem key={opt.value} value={opt.value}>
-                      {opt.label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            ))}
+            {filters.map((filter) => {
+              const filterKey = filter.key as string;
+              const comboOptions = [
+                { value: "__all__", label: filter.allLabel || "Todos" },
+                ...filter.options.map((o) => ({ value: String(o.value), label: o.label })),
+              ];
+              return (
+                <DataEntryCombobox
+                  key={filterKey}
+                  options={comboOptions}
+                  value={activeFilters[filterKey] || "__all__"}
+                  onValueChange={(v) => {
+                    setActiveFilters((prev) => ({ ...prev, [filterKey]: v }));
+                    setPage(0);
+                  }}
+                  placeholder={filter.label}
+                  searchPlaceholder={`Buscar ${filter.label.toLowerCase()}…`}
+                  triggerClassName="w-[160px] h-9"
+                  data-testid={`filter-${filterKey}`}
+                />
+              );
+            })}
           </div>
         )}
       </div>

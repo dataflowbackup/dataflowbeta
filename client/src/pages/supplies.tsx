@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useMemo } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -23,13 +23,7 @@ import {
   FormMessage,
 } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
+import { DataEntryCombobox } from "@/components/data-entry-combobox";
 import { Badge } from "@/components/ui/badge";
 import { Checkbox } from "@/components/ui/checkbox";
 import { useToast } from "@/hooks/use-toast";
@@ -92,6 +86,31 @@ export default function SuppliesPage() {
   const { data: suppliers = [] } = useQuery<Supplier[]>({
     queryKey: ["/api/suppliers"],
   });
+
+  const supplySubRubroComboOptions = useMemo(() => {
+    const opts: { value: string; label: string }[] = [];
+    for (const rubro of rubros.filter((r) => r.active)) {
+      const srs = subRubros.filter((sr) => sr.rubroId === rubro.id);
+      for (const sr of srs) {
+        opts.push({
+          value: String(sr.id),
+          label: `${rubro.name}: ${sr.name}`,
+        });
+      }
+    }
+    return opts;
+  }, [rubros, subRubros]);
+
+  const supplyUnitComboOptions = useMemo(
+    () =>
+      units
+        .filter((u) => u.active)
+        .map((u) => ({
+          value: String(u.id),
+          label: `${u.name} (${u.abbreviation})`,
+        })),
+    [units],
+  );
 
   const { data: allSupplySuppliers = [] } = useQuery<SupplySupplier[]>({
     queryKey: ["/api/supply-suppliers"],
@@ -612,32 +631,19 @@ export default function SuppliesPage() {
                   render={({ field }) => (
                     <FormItem>
                       <FormLabel>Sub-Rubro</FormLabel>
-                      <Select
-                        onValueChange={(val) => field.onChange(val ? parseInt(val) : undefined)}
-                        value={field.value?.toString() || ""}
-                      >
-                        <FormControl>
-                          <SelectTrigger data-testid="select-sub-rubro">
-                            <SelectValue placeholder="Seleccionar sub-rubro" />
-                          </SelectTrigger>
-                        </FormControl>
-                        <SelectContent>
-                          {rubros.filter(r => r.active).map((rubro) => {
-                            const rubroSubRubros = subRubros.filter(sr => sr.rubroId === rubro.id);
-                            if (rubroSubRubros.length === 0) return null;
-                            return (
-                              <div key={rubro.id}>
-                                <div className="px-2 py-1.5 text-xs font-semibold text-muted-foreground">{rubro.name}</div>
-                                {rubroSubRubros.map((sr) => (
-                                  <SelectItem key={sr.id} value={sr.id.toString()}>
-                                    {sr.name}
-                                  </SelectItem>
-                                ))}
-                              </div>
-                            );
-                          })}
-                        </SelectContent>
-                      </Select>
+                      <FormControl>
+                        <DataEntryCombobox
+                          options={supplySubRubroComboOptions}
+                          value={field.value != null ? String(field.value) : ""}
+                          onValueChange={(val) =>
+                            field.onChange(val ? parseInt(val, 10) : undefined)
+                          }
+                          placeholder="Seleccionar sub-rubro"
+                          searchPlaceholder="Buscar sub-rubro…"
+                          emptyOptionLabel="Sin sub-rubro"
+                          data-testid="select-sub-rubro"
+                        />
+                      </FormControl>
                       <FormMessage />
                     </FormItem>
                   )}
@@ -648,23 +654,19 @@ export default function SuppliesPage() {
                   render={({ field }) => (
                     <FormItem>
                       <FormLabel>Unidad de Medida</FormLabel>
-                      <Select
-                        onValueChange={(val) => field.onChange(val ? parseInt(val) : undefined)}
-                        value={field.value?.toString() || ""}
-                      >
-                        <FormControl>
-                          <SelectTrigger data-testid="select-unit">
-                            <SelectValue placeholder="Seleccionar unidad" />
-                          </SelectTrigger>
-                        </FormControl>
-                        <SelectContent>
-                          {units.filter(u => u.active).map((unit) => (
-                            <SelectItem key={unit.id} value={unit.id.toString()}>
-                              {unit.name} ({unit.abbreviation})
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
+                      <FormControl>
+                        <DataEntryCombobox
+                          options={supplyUnitComboOptions}
+                          value={field.value != null ? String(field.value) : ""}
+                          onValueChange={(val) =>
+                            field.onChange(val ? parseInt(val, 10) : undefined)
+                          }
+                          placeholder="Seleccionar unidad"
+                          searchPlaceholder="Buscar unidad…"
+                          emptyOptionLabel="Sin unidad"
+                          data-testid="select-unit"
+                        />
+                      </FormControl>
                       <FormMessage />
                     </FormItem>
                   )}

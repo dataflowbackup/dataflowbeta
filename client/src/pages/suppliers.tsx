@@ -29,7 +29,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { formatCuit, validateCuit } from "@/lib/formatters";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { DataEntryCombobox } from "@/components/data-entry-combobox";
 import { Edit, Trash2, Upload, Download, Tags } from "lucide-react";
 import type { Supplier, Rubro, SupplierRubro } from "@shared/schema";
 
@@ -40,6 +40,11 @@ const IVA_CONDITIONS = [
   { value: "consumidor_final", label: "Consumidor Final" },
   { value: "no_responsable", label: "No Responsable" },
 ];
+
+const supplierIvaComboOptions = IVA_CONDITIONS.map((c) => ({
+  value: c.value,
+  label: c.label,
+}));
 
 const formSchema = z.object({
   tradeName: z.string().min(1, "El nombre comercial es requerido"),
@@ -574,20 +579,17 @@ export default function SuppliersPage() {
                 render={({ field }) => (
                   <FormItem>
                     <FormLabel>Condicion IVA</FormLabel>
-                    <Select onValueChange={field.onChange} value={field.value || ""}>
-                      <FormControl>
-                        <SelectTrigger data-testid="select-ivaCondition">
-                          <SelectValue placeholder="Seleccionar (opcional)" />
-                        </SelectTrigger>
-                      </FormControl>
-                      <SelectContent>
-                        {IVA_CONDITIONS.map((cond) => (
-                          <SelectItem key={cond.value} value={cond.value}>
-                            {cond.label}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
+                    <FormControl>
+                      <DataEntryCombobox
+                        options={supplierIvaComboOptions}
+                        value={field.value || ""}
+                        onValueChange={field.onChange}
+                        placeholder="Seleccionar (opcional)"
+                        searchPlaceholder="Buscar condición IVA…"
+                        emptyOptionLabel="Sin seleccionar"
+                        data-testid="select-ivaCondition"
+                      />
+                    </FormControl>
                     <FormMessage />
                   </FormItem>
                 )}
