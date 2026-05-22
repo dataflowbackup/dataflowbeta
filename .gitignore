@@ -28,6 +28,7 @@ backups/*.dump
 .vscode
 .local
 .upm/
+__pycache__/
 
 # OS
 Thumbs.db

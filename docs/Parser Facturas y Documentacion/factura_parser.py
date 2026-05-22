@@ -49,7 +49,9 @@ except ImportError:
     HAS_PYMUPDF = False
 
 
-PDF_RENDER_ZOOM = 2.0
+PDF_RENDER_ZOOM = 1.35
+# Anthropic rechaza payloads enormes; raster grande → 400 invalid_request
+MAX_IMAGE_DIMENSION = 1800
 CLAUDE_MAX_TOKENS = 8192
 CLAUDE_MODEL = __import__("os").environ.get("ANTHROPIC_INVOICE_MODEL", "claude-opus-4-5")
 
@@ -174,12 +176,22 @@ def encode_pdf_page_as_png(pdf_path: str, page_index: int) -> tuple[str, str]:
     doc = fitz.open(pdf_path)
     try:
         page = doc[page_index]
-        mat = fitz.Matrix(PDF_RENDER_ZOOM, PDF_RENDER_ZOOM)
-        pix = page.get_pixmap(matrix=mat, alpha=False)
-        png_bytes = pix.tobytes("png")
+        zoom = float(PDF_RENDER_ZOOM)
+        pix = None
+        for _ in range(14):
+            mat = fitz.Matrix(zoom, zoom)
+            pix = page.get_pixmap(matrix=mat, alpha=False)
+            if pix.width <= MAX_IMAGE_DIMENSION and pix.height <= MAX_IMAGE_DIMENSION:
+                break
+            zoom *= 0.72
+        assert pix is not None
+        jpg = pix.tobytes("jpeg", jpg_quality=88)
+        png = pix.tobytes("png")
+        if len(jpg) <= len(png) * 1.05:
+            return base64.standard_b64encode(jpg).decode("utf-8"), "image/jpeg"
+        return base64.standard_b64encode(png).decode("utf-8"), "image/png"
     finally:
         doc.close()
-    return base64.standard_b64encode(png_bytes).decode("utf-8"), "image/png"
 
 
 def extract_invoice_data(
@@ -227,6 +239,18 @@ def extract_invoice_data(
     return data
 
 
+def _unique_paths(paths: list[str]) -> list[str]:
+    """En Windows, *.pdf y *.PDF encuentran los mismos archivos y duplicaban el trabajo."""
+    seen: set[str] = set()
+    out: list[str] = []
+    for p in paths:
+        key = str(Path(p).resolve())
+        if key not in seen:
+            seen.add(key)
+            out.append(p)
+    return out
+
+
 def get_input_files(input_path: str) -> list[str]:
     input_path = Path(input_path)
     if input_path.is_file():
@@ -246,6 +270,7 @@ def get_input_files(input_path: str) -> list[str]:
         files: list[str] = []
         for ext in extensions:
             files.extend(glob.glob(str(input_path / ext)))
+        files = _unique_paths(files)
         files.sort(key=lambda p: p.lower())
         return files
     files = glob.glob(input_path)
@@ -597,11 +622,31 @@ def create_excel(all_data: list[dict], output_path: str):
     return errors_found
 
 
+def _try_load_repo_dotenv() -> None:
+    """Carga .env / .env.local de la raíz del proyecto Dataflow (tres niveles arriba de este script)."""
+    try:
+        from dotenv import load_dotenv  # type: ignore
+    except ImportError:
+        return
+    repo_root = Path(__file__).resolve().parent.parent.parent
+    load_dotenv(repo_root / ".env")
+    load_dotenv(repo_root / ".env.local")
+
+
 def main():
+    _try_load_repo_dotenv()
+
     parser = argparse.ArgumentParser(description="Parser facturas → Excel (DataFlow)")
     parser.add_argument("--input", required=True, help="Carpeta, archivo o glob")
     parser.add_argument("--output", default="facturas_dataflow.xlsx", help="Excel de salida")
     parser.add_argument("--delay", type=float, default=1.0, help="Segundos entre llamadas API")
+    parser.add_argument(
+        "--max-jobs",
+        type=int,
+        default=0,
+        dest="max_jobs",
+        help="Solo procesar los primeros N trabajos (páginas/imágenes); 0 = todos",
+    )
     parser.add_argument(
         "--resume-from",
         type=int,
@@ -622,19 +667,36 @@ def main():
         print("ERROR: Hay PDF pero falta PyMuPDF.\n  pip install pymupdf")
         sys.exit(1)
 
+    api_key = __import__("os").environ.get("ANTHROPIC_API_KEY", "").strip()
+    if not api_key:
+        print(
+            "\nERROR: Falta ANTHROPIC_API_KEY (API de Anthropic / Claude).\n"
+            "  Agregala en el archivo .env de la raíz del proyecto Dataflow, por ejemplo:\n"
+            "    ANTHROPIC_API_KEY=sk-ant-api03-...\n"
+            "  Reiniciá la terminal y volvé a ejecutar este script.\n"
+            "  Documentación: INSTRUCCIONES_PARA_EL_DEV.md\n",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+
     jobs = flatten_jobs(files)
     if args.resume_from > 0:
         jobs = jobs[args.resume_from :]
         print(f"Retomando desde trabajo #{args.resume_from + 1} (total omitidos: {args.resume_from})")
 
-    print(f"\n{'─'*60}")
-    print("  DATAFLOW — PARSER DE FACTURAS")
-    print(f"{'─'*60}")
+    if args.max_jobs > 0:
+        jobs = jobs[: args.max_jobs]
+        print(f"Límite --max-jobs: procesando solo {len(jobs)} trabajo(s)")
+
+    sep = "-" * 60
+    print(f"\n{sep}")
+    print("  DATAFLOW - PARSER DE FACTURAS")
+    print(sep)
     print(f"  Archivos fuente: {len(files)}")
-    print(f"  Trabajos (páginas/imágenes): {len(jobs)}")
+    print(f"  Trabajos (paginas/imagenes): {len(jobs)}")
     print(f"  Output: {args.output}")
     print(f"  Delay: {args.delay}s  |  modelo: {CLAUDE_MODEL}")
-    print(f"{'─'*60}\n")
+    print(f"{sep}\n")
 
     client = anthropic.Anthropic()
     all_data: list[dict] = []
@@ -658,11 +720,11 @@ def main():
             tipo = cab.get("tipo_comprobante", "?")
             proveedor = cab.get("razon_social", cab.get("proveedor_nombre_comercial", "?"))[:28]
             total = data.get("totales", {}).get("total_factura", "?")
-            print(f"✓ {tipo} | {proveedor} | ${total} | {items_count} ítems | {job['estado_pago']}")
+            print(f"[OK] {tipo} | {proveedor} | ${total} | {items_count} items | {job['estado_pago']}")
 
         except json.JSONDecodeError as e:
             error_msg = f"JSON parse error: {str(e)}"
-            print(f"✗ {error_msg[:50]}")
+            print(f"[ERR] {error_msg[:50]}")
             all_data.append(
                 {
                     "_job_key": job["job_key"],
@@ -683,7 +745,7 @@ def main():
 
         except Exception as e:
             error_msg = str(e)
-            print(f"✗ {error_msg[:70]}")
+            print(f"[ERR] {error_msg[:70]}")
             all_data.append(
                 {
                     "_job_key": job["job_key"],
@@ -705,17 +767,18 @@ def main():
         if idx % 10 == 0:
             partial_path = args.output.replace(".xlsx", f"_parcial_{idx}.xlsx")
             create_excel(all_data, partial_path)
-            print(f"  → Guardado parcial: {partial_path}")
+            print(f"  >> Guardado parcial: {partial_path}")
 
         if idx < len(jobs):
             time.sleep(args.delay)
 
-    print(f"\n{'─'*60}")
+    sep2 = "-" * 60
+    print(f"\n{sep2}")
     print("  Generando Excel final...")
     create_excel(all_data, args.output)
-    print(f"  ✓ {args.output}")
+    print(f"  OK archivo: {args.output}")
     print(f"  OK: {len(all_data) - errors}/{len(all_data)}  |  errores: {errors}")
-    print(f"{'─'*60}\n")
+    print(f"{sep2}\n")
 
 
 if __name__ == "__main__":
