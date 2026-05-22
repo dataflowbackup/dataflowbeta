@@ -65,8 +65,8 @@ export default function AuthPage() {
       });
       return res.json();
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/auth/user"] });
+    onSuccess: async () => {
+      await queryClient.refetchQueries({ queryKey: ["/api/auth/user"] });
       toast({ title: "Bienvenido", description: "Sesión iniciada correctamente" });
       navigate(getSafeRedirectPath());
     },

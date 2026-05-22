@@ -22,9 +22,15 @@ import type {
   InsertBusinessName,
   InsertCounterparty,
   InsertCounterpartyIdentifier,
+  User,
 } from "@shared/schema";
 import { computeInvoiceTaxes } from "@shared/invoiceTaxComputation";
 import { registerBulkInvoiceImportRoutes } from "./routesBulkInvoiceImport";
+import { db } from "./db";
+import { users, userCredentials, clients } from "@shared/schema";
+import { eq } from "drizzle-orm";
+import { hashPassword } from "./auth";
+import { isMailConfigured, sendMail, getAppPublicUrl } from "./sendMail";
 
 const upload = multer({ 
   storage: multer.memoryStorage(),
@@ -179,6 +185,91 @@ async function getClientId(req: any): Promise<number> {
   return client.id;
 }
 
+async function getAuthenticatedUserId(req: any): Promise<string | undefined> {
+  const session = req.session as any;
+  if (session?.userId) return String(session.userId);
+  const user = req.user as any;
+  if (!user?.claims?.sub) return undefined;
+  let dbUser = await storage.getUser(user.claims.sub);
+  if (!dbUser && user.claims.email) {
+    dbUser = await storage.getUserByEmail(user.claims.email);
+  }
+  return dbUser?.id;
+}
+
+type TeamPrivileged = { ok: true; clientId: number; actorId: string } | { ok: false };
+
+async function assertTeamPrivileged(req: any, res: any): Promise<TeamPrivileged> {
+  const actorId = await getAuthenticatedUserId(req);
+  if (!actorId) {
+    res.status(401).json({ message: "No autenticado" });
+    return { ok: false };
+  }
+  let clientId: number;
+  try {
+    clientId = await getClientId(req);
+  } catch {
+    res.status(400).json({ message: "No encontramos la empresa asociada a tu usuario." });
+    return { ok: false };
+  }
+  const roleRaw = await storage.getUserRoleInClient(actorId, clientId);
+  const role = String(roleRaw ?? "").trim().toLowerCase();
+  const privilegedRoles = new Set(["socio", "admin", "manager"]);
+  if (!privilegedRoles.has(role)) {
+    res.status(403).json({
+      message: "Solo Socio, Administrador o Gerente puede gestionar equipo e invitaciones por correo.",
+    });
+    return { ok: false };
+  }
+  return { ok: true, clientId, actorId };
+}
+
+function generateProvisionalPassword(): string {
+  const chars = "abcdefghjkmnpqrstuvwxyzABCDEFGHJKMNPQRSTUVWXYZ23456789";
+  const bytes = randomBytes(14);
+  let s = "";
+  for (let i = 0; i < 12; i++) {
+    s += chars[bytes[i]! % chars.length];
+  }
+  return s;
+}
+
+const inviteTeamMemberBodySchema = z.object({
+  email: z.string().email("Email inválido"),
+  role: z.string().trim().max(50).optional(),
+  firstName: z.string().trim().max(100).optional(),
+  lastName: z.string().trim().max(100).optional(),
+});
+
+const TEAM_ROLES = new Set(["socio", "admin", "manager", "encargado", "employee", "viewer"]);
+
+function normalizeTeamRole(raw: unknown): string {
+  const r = String(raw ?? "encargado").trim().toLowerCase();
+  return TEAM_ROLES.has(r) ? r : "encargado";
+}
+
+async function sendTeamWelcomeEmail(opts: {
+  to: string;
+  provisionalPassword: string;
+  companyName?: string | null;
+}): Promise<void> {
+  const loginUrl = `${getAppPublicUrl()}/auth`;
+  const subject = "Bienvenido a Dataflow — credenciales de acceso";
+  const textLines = [
+    "Hola,",
+    "",
+    `Te dieron acceso${opts.companyName ? ` a «${opts.companyName}»` : " a tu empresa"} en Dataflow.`,
+    "",
+    `Contraseña provisoria: ${opts.provisionalPassword}`,
+    "Al iniciar sesión vas a tener que cambiar esta contraseña por una propia.",
+    "",
+    `Ingresá aquí: ${loginUrl}`,
+    "",
+    "Si no esperabas este correo, podés ignorar este mensaje.",
+  ];
+  await sendMail({ to: opts.to, subject, text: textLines.join("\n") });
+}
+
 const isAuthenticated = (req: any, res: any, next: any) => {
   const session = req.session as any;
   if (session?.userId) {
@@ -199,25 +290,28 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
   app.get("/api/auth/user", async (req, res) => {
     const session = req.session as any;
+    const withFlags = async (dbUser: User) => {
+      const flags = await storage.getUserCredentialsFlags(dbUser.id);
+      return { ...dbUser, mustChangePassword: Boolean(flags?.mustChangePassword) };
+    };
+
     if (session?.userId) {
       const dbUser = await storage.getUser(session.userId);
-      return res.json(dbUser || null);
+      return res.json(dbUser ? await withFlags(dbUser) : null);
     }
-    
+
     const user = req.user as any;
     if (!user?.claims?.sub) {
       return res.json(null);
     }
-    
-    // First try by ID
+
     let dbUser = await storage.getUser(user.claims.sub);
-    
-    // If not found by ID, try by email (user might exist with different ID)
+
     if (!dbUser && user.claims.email) {
       dbUser = await storage.getUserByEmail(user.claims.email);
     }
-    
-    res.json(dbUser || null);
+
+    res.json(dbUser ? await withFlags(dbUser) : null);
   });
 
   /** Empresa (cliente multi-tenant) asociada al usuario autenticado — para branding en UI. */
@@ -3727,8 +3821,133 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.get("/api/team/users", isAuthenticated, async (req, res) => {
     try {
       const clientId = await getClientId(req);
-      const users = await storage.getClientUsers(clientId);
-      res.json(users);
+      const rows = await storage.getClientUsers(clientId);
+      res.json(rows);
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
+  const patchTeamMemberSchema = z
+    .object({
+      email: z.string().email().optional(),
+      firstName: z.string().trim().max(100).optional(),
+      lastName: z.string().trim().max(100).optional(),
+    })
+    .strict();
+
+  app.patch("/api/team/users/:targetUserId", isAuthenticated, async (req, res) => {
+    try {
+      const gate = await assertTeamPrivileged(req, res);
+      if (!gate.ok) return;
+      const parsed = patchTeamMemberSchema.safeParse(req.body);
+      if (!parsed.success) {
+        return res.status(400).json({ message: parsed.error.errors[0]?.message || "Datos inválidos" });
+      }
+      const targetUserId = req.params.targetUserId;
+      const body = parsed.data;
+      const patch: { firstName?: string | null; lastName?: string | null; email?: string | null } = {};
+      if (body.firstName !== undefined) patch.firstName = body.firstName === "" ? null : body.firstName;
+      if (body.lastName !== undefined) patch.lastName = body.lastName === "" ? null : body.lastName;
+      if (body.email !== undefined) patch.email = body.email.trim();
+      try {
+        const updated = await storage.updateClientUserProfile(gate.clientId, targetUserId, patch);
+        if (!updated) return res.status(404).json({ message: "Usuario no encontrado en esta empresa" });
+        res.json(updated);
+      } catch (inner: any) {
+        if (String(inner?.message) === "EMAIL_CONFLICT") {
+          return res.status(409).json({ message: "Ese correo ya está en uso por otra cuenta" });
+        }
+        throw inner;
+      }
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
+  app.patch("/api/team/users/:targetUserId/role", isAuthenticated, async (req, res) => {
+    try {
+      const gate = await assertTeamPrivileged(req, res);
+      if (!gate.ok) return;
+      const role = normalizeTeamRole(req.body?.role);
+      const ok = await storage.setUserRoleInClient(gate.clientId, req.params.targetUserId, role);
+      if (!ok) return res.status(404).json({ message: "Usuario no encontrado en esta empresa" });
+      res.json({ success: true, role });
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
+  app.post("/api/team/users/:targetUserId/reset-password", isAuthenticated, async (req, res) => {
+    try {
+      const gate = await assertTeamPrivileged(req, res);
+      if (!gate.ok) return;
+
+      if (!isMailConfigured()) {
+        return res.status(503).json({
+          message:
+            "Falta SMTP (SMTP_HOST, SMTP_USER, SMTP_PASS, etc.). No podemos enviar la nueva contraseña por correo.",
+        });
+      }
+
+      const member = await storage.getUser(req.params.targetUserId);
+      if (!member?.email?.trim()) {
+        return res.status(400).json({ message: "El usuario no tiene email; no se puede resetear por correo" });
+      }
+
+      const inClient = await storage.getUserRoleInClient(member.id, gate.clientId);
+      if (inClient === null) {
+        return res.status(404).json({ message: "Usuario no encontrado en esta empresa" });
+      }
+
+      const provisionalPassword = generateProvisionalPassword();
+      const passwordHash = await hashPassword(provisionalPassword);
+      await storage.setUserPasswordHash(member.id, passwordHash, true);
+
+      const [company] = await db
+        .select({ name: clients.name })
+        .from(clients)
+        .where(eq(clients.id, gate.clientId))
+        .limit(1);
+
+      try {
+        await sendTeamWelcomeEmail({
+          to: member.email.trim().toLowerCase(),
+          provisionalPassword,
+          companyName: company?.name ?? null,
+        });
+      } catch (mailErr: any) {
+        console.error("SMTP reset-password:", mailErr);
+        return res.status(502).json({
+          message: "La contraseña se actualizó pero falló el envío por correo. Revisá la configuración SMTP.",
+        });
+      }
+
+      res.json({ success: true, message: "Se envió una contraseña provisoria por correo." });
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
+  app.delete("/api/team/users/:targetUserId", isAuthenticated, async (req, res) => {
+    try {
+      const gate = await assertTeamPrivileged(req, res);
+      if (!gate.ok) return;
+
+      const targetUserId = req.params.targetUserId;
+      if (targetUserId === gate.actorId) {
+        return res.status(400).json({ message: "No podés quitarte del equipo vos mismo desde acá." });
+      }
+
+      const ok = await storage.removeUserFromClient(gate.clientId, targetUserId);
+      if (!ok) return res.status(404).json({ message: "Usuario no encontrado en esta empresa" });
+
+      const remaining = await storage.countClientsForUser(targetUserId);
+      if (remaining === 0) {
+        await db.update(users).set({ isActive: false, updatedAt: new Date() }).where(eq(users.id, targetUserId));
+      }
+
+      res.json({ success: true });
     } catch (e: any) {
       res.status(500).json({ message: e.message });
     }
@@ -3736,13 +3955,19 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
   app.post("/api/team/reassign", isAuthenticated, async (req, res) => {
     try {
-      const clientId = await getClientId(req);
+      const gate = await assertTeamPrivileged(req, res);
+      if (!gate.ok) return;
+      const clientId = gate.clientId;
       const { userId, role } = req.body;
       if (!userId) {
         return res.status(400).json({ message: "userId requerido" });
       }
-      await storage.reassignUserToClient(userId, clientId, role || "encargado");
-      res.json({ success: true, message: "Usuario reasignado correctamente" });
+      const normalizedRole = normalizeTeamRole(role);
+      const updated = await storage.setUserRoleInClient(clientId, userId, normalizedRole);
+      if (!updated) {
+        return res.status(404).json({ message: "Usuario no encontrado en esta empresa" });
+      }
+      res.json({ success: true, message: "Rol actualizado" });
     } catch (e: any) {
       res.status(500).json({ message: e.message });
     }
@@ -3764,24 +3989,109 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
   app.post("/api/invitations", isAuthenticated, async (req, res) => {
     try {
-      const clientId = await getClientId(req);
-      const user = req.user as any;
-      const inviteCode = Math.random().toString(36).substring(2, 10).toUpperCase() + 
-                         Math.random().toString(36).substring(2, 10).toUpperCase();
-      const expiresAt = new Date();
-      expiresAt.setDate(expiresAt.getDate() + 7);
-      
-      const invitation = await storage.createInvitation({
-        clientId,
-        email: req.body.email || null,
-        inviteCode,
-        role: req.body.role || "encargado",
-        createdBy: user?.id,
-        expiresAt,
+      const gate = await assertTeamPrivileged(req, res);
+      if (!gate.ok) return;
+
+      const parsed = inviteTeamMemberBodySchema.safeParse(req.body);
+      if (!parsed.success) {
+        return res.status(400).json({ message: parsed.error.errors[0]?.message || "Datos inválidos" });
+      }
+
+      if (!isMailConfigured()) {
+        return res.status(503).json({
+          message:
+            "Falta configurar el correo SMTP (SMTP_HOST, SMTP_USER, SMTP_PASS, MAIL_FROM, etc.). No podemos enviar la bienvenida con la contraseña provisoria.",
+        });
+      }
+
+      const normalizedEmail = parsed.data.email.toLowerCase().trim();
+      const role = normalizeTeamRole(parsed.data.role);
+      const fn = parsed.data.firstName?.trim() || "";
+      const ln = parsed.data.lastName?.trim() || "";
+      const provisionalPassword = generateProvisionalPassword();
+      const passwordHash = await hashPassword(provisionalPassword);
+
+      const [company] = await db
+        .select({ name: clients.name })
+        .from(clients)
+        .where(eq(clients.id, gate.clientId))
+        .limit(1);
+
+      const existing = await storage.getUserByEmail(normalizedEmail);
+      let targetUserId: string;
+
+      if (existing) {
+        const already = await storage.getUserRoleInClient(existing.id, gate.clientId);
+        if (already !== null) {
+          return res.status(409).json({ message: "Este correo ya pertenece al equipo." });
+        }
+        await storage.addUserToClient(existing.id, gate.clientId, role);
+        const [credRow] = await db
+          .select({ id: userCredentials.id })
+          .from(userCredentials)
+          .where(eq(userCredentials.userId, existing.id))
+          .limit(1);
+
+        if (credRow) {
+          await storage.setUserPasswordHash(existing.id, passwordHash, true);
+        } else {
+          await db.insert(userCredentials).values({
+            userId: existing.id,
+            passwordHash,
+            loginType: "email",
+            mustChangePassword: true,
+          });
+        }
+
+        const namePatch: { firstName?: string | null; lastName?: string | null } = {};
+        if (fn) namePatch.firstName = fn;
+        if (ln) namePatch.lastName = ln;
+        if (fn || ln) {
+          await storage.updateClientUserProfile(gate.clientId, existing.id, namePatch).catch(() => undefined);
+        }
+        targetUserId = existing.id;
+      } else {
+        targetUserId = randomUUID();
+        await db.insert(users).values({
+          id: targetUserId,
+          email: normalizedEmail,
+          firstName: fn || null,
+          lastName: ln || null,
+          role,
+          isActive: true,
+          emailVerified: false,
+        });
+        await db.insert(userCredentials).values({
+          userId: targetUserId,
+          passwordHash,
+          loginType: "email",
+          mustChangePassword: true,
+        });
+        await storage.addUserToClient(targetUserId, gate.clientId, role);
+      }
+
+      try {
+        await sendTeamWelcomeEmail({
+          to: normalizedEmail,
+          provisionalPassword,
+          companyName: company?.name ?? null,
+        });
+      } catch (mailErr: any) {
+        console.error("SMTP invitation:", mailErr);
+        return res.status(502).json({
+          message:
+            "Se creó o actualizó el usuario pero falló el envío del correo. Revisá SMTP y reintentá, o reseteá la contraseña desde Equipo.",
+        });
+      }
+
+      res.json({
+        success: true,
+        message: `Se envió un correo de bienvenida con la contraseña provisoria a ${normalizedEmail}.`,
+        userId: targetUserId,
       });
-      res.json(invitation);
     } catch (e: any) {
-      res.status(500).json({ message: e.message });
+      console.error("POST /api/invitations:", e);
+      res.status(500).json({ message: e.message || "Error al invitar usuario" });
     }
   });
 

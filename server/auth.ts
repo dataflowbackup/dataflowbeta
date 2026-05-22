@@ -42,6 +42,11 @@ const resetPasswordSchema = z.object({
   password: z.string().min(6, "La contraseña debe tener al menos 6 caracteres"),
 });
 
+const firstPasswordChangeSchema = z.object({
+  currentPassword: z.string().min(1, "Contraseña actual requerida"),
+  newPassword: z.string().min(6, "La nueva contraseña debe tener al menos 6 caracteres"),
+});
+
 function getSessionSecret(): string {
   const configured = process.env.SESSION_SECRET;
   if (configured && configured.length > 0) return configured;
@@ -99,7 +104,8 @@ export function getSession() {
   });
 }
 
-async function hashPassword(password: string): Promise<string> {
+/** Hash de contraseña (invitaciones, reset desde panel, etc.). */
+export async function hashPassword(password: string): Promise<string> {
   return bcrypt.hash(password, SALT_ROUNDS);
 }
 
@@ -436,8 +442,11 @@ export async function setupLocalAuth(app: Express) {
         role: user.role,
       };
 
+      const mustChangePassword = Boolean(credentials.mustChangePassword);
+
       res.json({
         success: true,
+        mustChangePassword,
         user: {
           id: user.id,
           email: user.email,
@@ -445,11 +454,84 @@ export async function setupLocalAuth(app: Express) {
           firstName: user.firstName,
           lastName: user.lastName,
           role: user.role,
+          mustChangePassword,
         },
       });
     } catch (e: any) {
       console.error("Login error:", e);
       res.status(500).json({ message: "Error al iniciar sesión" });
+    }
+  });
+
+  /** Cambio obligatorio tras invitación (usuario ya autenticado con clave provisoria). */
+  app.post("/api/auth/first-password-change", async (req, res) => {
+    try {
+      const session = req.session as any;
+      const userId = session?.userId as string | undefined;
+      if (!userId) {
+        return res.status(401).json({ message: "Tenés que iniciar sesión con email y contraseña." });
+      }
+
+      const parsed = firstPasswordChangeSchema.safeParse(req.body);
+      if (!parsed.success) {
+        return res.status(400).json({ message: parsed.error.errors[0]?.message || "Datos inválidos" });
+      }
+
+      const { currentPassword, newPassword } = parsed.data;
+
+      const [credentials] = await db
+        .select()
+        .from(userCredentials)
+        .where(eq(userCredentials.userId, userId))
+        .limit(1);
+
+      if (!credentials) {
+        return res.status(400).json({ message: "No hay contraseña local para esta cuenta." });
+      }
+
+      if (!credentials.mustChangePassword) {
+        return res.status(400).json({ message: "No es necesario cambiar la contraseña desde este flujo." });
+      }
+
+      const ok = await verifyPassword(currentPassword, credentials.passwordHash);
+      if (!ok) {
+        return res.status(400).json({ message: "La contraseña actual no es correcta" });
+      }
+
+      const same = await verifyPassword(newPassword, credentials.passwordHash);
+      if (same) {
+        return res.status(400).json({ message: "La nueva contraseña debe ser distinta de la provisoria" });
+      }
+
+      const passwordHash = await hashPassword(newPassword);
+
+      await db
+        .update(userCredentials)
+        .set({
+          passwordHash,
+          mustChangePassword: false,
+          failedAttempts: 0,
+          lockedUntil: null,
+        })
+        .where(eq(userCredentials.userId, userId));
+
+      const fullUser = await db.select().from(users).where(eq(users.id, userId)).limit(1);
+      const u = fullUser[0];
+      if (u) {
+        (req.session as any).user = {
+          id: u.id,
+          email: u.email,
+          username: u.username,
+          firstName: u.firstName,
+          lastName: u.lastName,
+          role: u.role,
+        };
+      }
+
+      res.json({ success: true, message: "Contraseña actualizada" });
+    } catch (e: any) {
+      console.error("First password change error:", e);
+      res.status(500).json({ message: "Error al actualizar la contraseña" });
     }
   });
 
@@ -525,7 +607,8 @@ export async function setupLocalAuth(app: Express) {
           passwordResetToken: null,
           passwordResetExpires: null,
           failedAttempts: 0,
-          lockedUntil: null
+          lockedUntil: null,
+          mustChangePassword: false,
         })
         .where(eq(userCredentials.id, credentials.id));
 

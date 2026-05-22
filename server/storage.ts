@@ -3,6 +3,7 @@ import { db } from "./db";
 import { eq, and, desc, asc, gte, lte, sql, isNull, isNotNull, inArray, or, lt } from "drizzle-orm";
 import {
   users,
+  userCredentials,
   clients,
   userClients,
   locals,
@@ -425,8 +426,20 @@ export interface IStorage {
   updatePayroll(clientId: number, id: number, payroll: Partial<InsertPayroll>): Promise<Payroll | undefined>;
   
   getClientUsers(clientId: number): Promise<Array<User & { role: string | null }>>;
+  updateClientUserProfile(
+    clientId: number,
+    userId: string,
+    data: { firstName?: string | null; lastName?: string | null; email?: string | null },
+  ): Promise<User | undefined>;
+  /** @deprecated Borra otras empresas del usuario; preferí addUserToClient / setUserRoleInClient */
   reassignUserToClient(userId: string, newClientId: number, role?: string): Promise<boolean>;
-  
+  addUserToClient(userId: string, clientId: number, role: string): Promise<void>;
+  setUserRoleInClient(clientId: number, userId: string, role: string): Promise<boolean>;
+  removeUserFromClient(clientId: number, userId: string): Promise<boolean>;
+  countClientsForUser(userId: string): Promise<number>;
+  getUserCredentialsFlags(userId: string): Promise<{ mustChangePassword: boolean } | null>;
+  setUserPasswordHash(userId: string, passwordHash: string, mustChangePassword: boolean): Promise<void>;
+
   getClientInvitations(clientId: number): Promise<ClientInvitation[]>;
   getInvitationByCode(inviteCode: string): Promise<ClientInvitation | undefined>;
   createInvitation(invitation: InsertClientInvitation): Promise<ClientInvitation>;
@@ -2843,6 +2856,36 @@ export class DatabaseStorage implements IStorage {
     }));
   }
 
+  async updateClientUserProfile(
+    clientId: number,
+    userId: string,
+    data: { firstName?: string | null; lastName?: string | null; email?: string | null },
+  ): Promise<User | undefined> {
+    const role = await this.getUserRoleInClient(userId, clientId);
+    if (role === null) return undefined;
+
+    if (data.email !== undefined && data.email !== null && String(data.email).trim() !== "") {
+      const normalized = String(data.email).toLowerCase().trim();
+      const other = await this.getUserByEmail(normalized);
+      if (other && other.id !== userId) {
+        throw new Error("EMAIL_CONFLICT");
+      }
+    }
+
+    const patch: Record<string, unknown> = { updatedAt: new Date() };
+    if (data.firstName !== undefined) patch.firstName = data.firstName;
+    if (data.lastName !== undefined) patch.lastName = data.lastName;
+    if (data.email !== undefined) {
+      patch.email =
+        data.email === null || String(data.email).trim() === ""
+          ? null
+          : String(data.email).toLowerCase().trim();
+    }
+
+    const [updated] = await db.update(users).set(patch).where(eq(users.id, userId)).returning();
+    return updated;
+  }
+
   async reassignUserToClient(userId: string, newClientId: number, role: string = "encargado"): Promise<boolean> {
     await db.delete(userClients).where(eq(userClients.userId, userId));
     await db.insert(userClients).values({
@@ -2851,6 +2894,67 @@ export class DatabaseStorage implements IStorage {
       role,
     });
     return true;
+  }
+
+  async addUserToClient(userId: string, clientId: number, role: string): Promise<void> {
+    const [existing] = await db
+      .select()
+      .from(userClients)
+      .where(and(eq(userClients.userId, userId), eq(userClients.clientId, clientId)));
+    if (existing) {
+      await db
+        .update(userClients)
+        .set({ role })
+        .where(and(eq(userClients.userId, userId), eq(userClients.clientId, clientId)));
+      return;
+    }
+    await db.insert(userClients).values({ userId, clientId, role });
+  }
+
+  async setUserRoleInClient(clientId: number, userId: string, role: string): Promise<boolean> {
+    const r = await db
+      .update(userClients)
+      .set({ role })
+      .where(and(eq(userClients.clientId, clientId), eq(userClients.userId, userId)));
+    return (r.rowCount ?? 0) > 0;
+  }
+
+  async removeUserFromClient(clientId: number, userId: string): Promise<boolean> {
+    const r = await db
+      .delete(userClients)
+      .where(and(eq(userClients.clientId, clientId), eq(userClients.userId, userId)));
+    return (r.rowCount ?? 0) > 0;
+  }
+
+  async countClientsForUser(userId: string): Promise<number> {
+    const rows = await db
+      .select({ n: sql<number>`count(*)` })
+      .from(userClients)
+      .where(eq(userClients.userId, userId));
+    return Number(rows[0]?.n ?? 0);
+  }
+
+  async getUserCredentialsFlags(userId: string): Promise<{ mustChangePassword: boolean } | null> {
+    const [c] = await db
+      .select({ mustChangePassword: userCredentials.mustChangePassword })
+      .from(userCredentials)
+      .where(eq(userCredentials.userId, userId));
+    if (!c) return null;
+    return { mustChangePassword: Boolean(c.mustChangePassword) };
+  }
+
+  async setUserPasswordHash(userId: string, passwordHash: string, mustChangePassword: boolean): Promise<void> {
+    await db
+      .update(userCredentials)
+      .set({
+        passwordHash,
+        mustChangePassword,
+        passwordResetToken: null,
+        passwordResetExpires: null,
+        failedAttempts: 0,
+        lockedUntil: null,
+      })
+      .where(eq(userCredentials.userId, userId));
   }
 
   async getClientInvitations(clientId: number): Promise<ClientInvitation[]> {
@@ -2878,7 +2982,14 @@ export class DatabaseStorage implements IStorage {
     if (invitation.expiresAt && new Date(invitation.expiresAt) < new Date()) {
       return false;
     }
-    await this.reassignUserToClient(userId, invitation.clientId, invitation.role ?? "encargado");
+    if (invitation.email?.trim()) {
+      const invEmail = invitation.email.trim().toLowerCase();
+      const u = await this.getUser(userId);
+      if (!u?.email || u.email.trim().toLowerCase() !== invEmail) {
+        return false;
+      }
+    }
+    await this.addUserToClient(userId, invitation.clientId, invitation.role ?? "encargado");
     await db.update(clientInvitations)
       .set({
         status: "used",

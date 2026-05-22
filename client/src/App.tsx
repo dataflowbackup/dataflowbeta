@@ -6,6 +6,7 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { ThemeProvider } from "@/components/theme-provider";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { useAuth } from "@/hooks/useAuth";
+import { ForcePasswordChangeGate } from "@/components/force-password-change-dialog";
 import { AppSidebar } from "@/components/app-sidebar";
 import { SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -145,7 +146,12 @@ function AppContent() {
     );
   }
 
-  return <AuthenticatedLayout />;
+  return (
+    <>
+      <AuthenticatedLayout />
+      <ForcePasswordChangeGate open={Boolean(user.mustChangePassword)} />
+    </>
+  );
 }
 
 function App() {

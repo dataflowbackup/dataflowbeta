@@ -78,6 +78,8 @@ export const userCredentials = pgTable("user_credentials", {
   lockedUntil: timestamp("locked_until"),
   passwordResetToken: varchar("password_reset_token", { length: 255 }),
   passwordResetExpires: timestamp("password_reset_expires"),
+  /** Obligar a cambiar contraseña al próximo uso (usuarios invitados con clave provisional) */
+  mustChangePassword: boolean("must_change_password").default(false),
   createdAt: timestamp("created_at").defaultNow(),
   updatedAt: timestamp("updated_at").defaultNow(),
 });

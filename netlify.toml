@@ -5,6 +5,12 @@
 
 [build.environment]
   NPM_FLAGS = "--include=dev"
+  # URLs en mails de invitación / resets (sitio público sin barra final)
+  APP_PUBLIC_URL = "https://playful-liger-bf4118.netlify.app"
+
+# Expuesto también en tiempo de ejecución de Functions (invitaciones, SMTP links)
+[context.production.environment]
+  APP_PUBLIC_URL = "https://playful-liger-bf4118.netlify.app"
 
 # Respaldo (A): más margen para POST pesados (p. ej. factura + recálculo de recetas).
 # El tope efectivo depende del plan Netlify; si el deploy rechaza la clave, quitar o ajustar.
