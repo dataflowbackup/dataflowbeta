@@ -49,6 +49,7 @@ import {
   breakevenAnalyses,
   breakevenFixedCosts,
   cmvCalculations,
+  auditLog,
   operationalAudits,
   auditTemplates,
   auditTemplateItems,
@@ -1449,12 +1450,41 @@ export class DatabaseStorage implements IStorage {
   async deleteInvoice(clientId: number, id: number): Promise<boolean> {
     const existing = await this.getInvoice(clientId, id);
     if (!existing) return false;
-    
+
     await db.delete(invoiceTaxes).where(eq(invoiceTaxes.invoiceId, id));
     await db.delete(invoiceItems).where(eq(invoiceItems.invoiceId, id));
     await db.delete(costHistory).where(eq(costHistory.invoiceId, id));
     const result = await db.delete(invoices).where(and(eq(invoices.id, id), eq(invoices.clientId, clientId)));
     return (result.rowCount ?? 0) > 0;
+  }
+
+  /** Libera (desasigna) los pagos aplicados a una factura. Los pagos en sí no se borran. */
+  async releaseInvoiceAllocations(invoiceId: number): Promise<number> {
+    const allocs = await db.select().from(paymentAllocations).where(eq(paymentAllocations.invoiceId, invoiceId));
+    if (allocs.length === 0) return 0;
+    await db.delete(paymentAllocations).where(eq(paymentAllocations.invoiceId, invoiceId));
+    return allocs.length;
+  }
+
+  /** Registro de auditoría (red de seguridad ante correcciones/borrados de datos financieros). */
+  async createAuditLog(entry: {
+    clientId?: number | null;
+    userId?: string | null;
+    action: string;
+    tableName: string;
+    recordId?: number | null;
+    oldData?: unknown;
+    newData?: unknown;
+  }): Promise<void> {
+    await db.insert(auditLog).values({
+      clientId: entry.clientId ?? null,
+      userId: entry.userId ?? null,
+      action: entry.action,
+      tableName: entry.tableName,
+      recordId: entry.recordId ?? null,
+      oldData: entry.oldData ?? null,
+      newData: entry.newData ?? null,
+    } as any);
   }
 
   async reverseInvoice(clientId: number, invoiceId: number, userId: string, reason: string): Promise<Invoice | undefined> {

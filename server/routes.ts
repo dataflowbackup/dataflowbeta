@@ -324,6 +324,79 @@ const isAuthenticated = (req: any, res: any, next: any) => {
   return isAuthenticatedOIDC(req, res, next);
 };
 
+/**
+ * Construye y crea una factura desde el payload crudo (ítems + taxes), computando IVA/totales.
+ * Reutilizado por POST /api/invoices y por la corrección de facturas. Lanza Error con
+ * `statusCode` 400 si ya existe el comprobante (mismo PV+número+proveedor).
+ */
+async function prepareAndCreateInvoice(clientId: number, body: any) {
+  const { items: rawItems, taxes: rawInvoiceTaxes, ...invoice } = body;
+  const items = Array.isArray(rawItems) ? rawItems : [];
+  const invoiceLevelTaxes = Array.isArray(rawInvoiceTaxes) ? rawInvoiceTaxes : [];
+
+  const salePoint = String(invoice.invoiceSalePoint ?? "").trim();
+  const voucherNum = String(invoice.invoiceNumber ?? "").trim();
+  if (salePoint && voucherNum && invoice.supplierId) {
+    const existing = await storage.getInvoiceByVoucherComposite(clientId, invoice.supplierId, salePoint, voucherNum);
+    if (existing) {
+      const err: any = new Error("Ya existe una factura con ese punto de venta y numero para este proveedor");
+      err.statusCode = 400;
+      throw err;
+    }
+  }
+
+  const allTaxes = await storage.getTaxes(clientId);
+  const taxesById = new Map(allTaxes.map((t) => [t.id, t]));
+  const taxComputation = computeInvoiceTaxes({
+    items,
+    discount: parseFloat(String(invoice.discount ?? 0)) || 0,
+    invoiceLevelTaxes,
+    taxesById,
+  });
+
+  const advancePayment = parseFloat(String(invoice.advancePayment ?? 0)) || 0;
+  const total = taxComputation.subtotalAfterDiscount + taxComputation.taxGrandTotal;
+  const balance = total - advancePayment;
+
+  const invoiceDate = new Date(invoice.invoiceDate);
+  const paymentDays = invoice.paymentDays || 0;
+  const dueDate = new Date(invoiceDate);
+  dueDate.setDate(dueDate.getDate() + paymentDays);
+
+  const normalizedItems = items.map((item: Record<string, unknown>) => {
+    const tid = item.taxId;
+    let taxId: number | undefined;
+    if (tid !== undefined && tid !== null && tid !== "") {
+      const n = typeof tid === "number" ? tid : parseInt(String(tid), 10);
+      taxId = Number.isFinite(n) && n > 0 ? n : undefined;
+    }
+    return { ...item, taxId };
+  });
+
+  const persistedTaxRows = taxComputation.rows.map((r) => ({
+    taxId: r.taxId,
+    baseAmount: String(r.baseAmount),
+    taxAmount: String(r.taxAmount),
+  }));
+
+  return await storage.createInvoice(
+    {
+      ...invoice,
+      clientId,
+      invoiceSalePoint: salePoint,
+      invoiceNumber: voucherNum,
+      dueDate: dueDate.toISOString().split("T")[0],
+      subtotal: String(taxComputation.itemsSubtotal),
+      discount: String(parseFloat(String(invoice.discount ?? 0)) || 0),
+      taxTotal: String(taxComputation.taxGrandTotal),
+      total: String(total),
+      balance: String(balance),
+    },
+    normalizedItems as unknown as Parameters<typeof storage.createInvoice>[1],
+    persistedTaxRows as unknown as Parameters<typeof storage.createInvoice>[2],
+  );
+}
+
 export async function registerRoutes(httpServer: Server, app: Express): Promise<Server> {
   app.use("/uploads", express.static(path.join(process.cwd(), "uploads")));
 
@@ -1317,80 +1390,76 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.post("/api/invoices", isAuthenticated, async (req, res) => {
     try {
       const clientId = await getClientId(req);
-      const { items: rawItems, taxes: rawInvoiceTaxes, ...invoice } = req.body;
-      const items = Array.isArray(rawItems) ? rawItems : [];
-      const invoiceLevelTaxes = Array.isArray(rawInvoiceTaxes) ? rawInvoiceTaxes : [];
-
-      const salePoint = String(invoice.invoiceSalePoint ?? "").trim();
-      const voucherNum = String(invoice.invoiceNumber ?? "").trim();
-      if (salePoint && voucherNum && invoice.supplierId) {
-        const existing = await storage.getInvoiceByVoucherComposite(
-          clientId,
-          invoice.supplierId,
-          salePoint,
-          voucherNum,
-        );
-        if (existing) {
-          return res.status(400).json({
-            message: "Ya existe una factura con ese punto de venta y numero para este proveedor",
-          });
-        }
-      }
-
-      const allTaxes = await storage.getTaxes(clientId);
-      const taxesById = new Map(allTaxes.map((t) => [t.id, t]));
-
-      const taxComputation = computeInvoiceTaxes({
-        items,
-        discount: parseFloat(String(invoice.discount ?? 0)) || 0,
-        invoiceLevelTaxes,
-        taxesById,
-      });
-
-      const advancePayment = parseFloat(String(invoice.advancePayment ?? 0)) || 0;
-      const total = taxComputation.subtotalAfterDiscount + taxComputation.taxGrandTotal;
-      const balance = total - advancePayment;
-
-      const invoiceDate = new Date(invoice.invoiceDate);
-      const paymentDays = invoice.paymentDays || 0;
-      const dueDate = new Date(invoiceDate);
-      dueDate.setDate(dueDate.getDate() + paymentDays);
-
-      const normalizedItems = items.map((item: Record<string, unknown>) => {
-        const tid = item.taxId;
-        let taxId: number | undefined;
-        if (tid !== undefined && tid !== null && tid !== "") {
-          const n = typeof tid === "number" ? tid : parseInt(String(tid), 10);
-          taxId = Number.isFinite(n) && n > 0 ? n : undefined;
-        }
-        return { ...item, taxId };
-      });
-
-      const persistedTaxRows = taxComputation.rows.map((r) => ({
-        taxId: r.taxId,
-        baseAmount: String(r.baseAmount),
-        taxAmount: String(r.taxAmount),
-      }));
-
-      const data = await storage.createInvoice(
-        {
-          ...invoice,
-          clientId,
-          invoiceSalePoint: salePoint,
-          invoiceNumber: voucherNum,
-          dueDate: dueDate.toISOString().split("T")[0],
-          subtotal: String(taxComputation.itemsSubtotal),
-          discount: String(parseFloat(String(invoice.discount ?? 0)) || 0),
-          taxTotal: String(taxComputation.taxGrandTotal),
-          total: String(total),
-          balance: String(balance),
-        },
-        normalizedItems as unknown as Parameters<typeof storage.createInvoice>[1],
-        persistedTaxRows as unknown as Parameters<typeof storage.createInvoice>[2],
-      );
+      const data = await prepareAndCreateInvoice(clientId, req.body);
       res.json(data);
     } catch (e: any) {
-      res.status(500).json({ message: e.message });
+      res.status(e.statusCode ?? 500).json({ message: e.message });
+    }
+  });
+
+  // Corregir factura (Facturas — editar con clave). Reemplaza la factura vieja por una nueva
+  // corregida, recalculando TODO lo vinculado (costos, CPP, stock, costHistory, CMC/PAP/CMV).
+  // Secuencia segura: reversar (deshace costos) → liberar pagos → borrar vieja → crear nueva.
+  // Si la creación falla, se restaura la vieja desde un snapshot (no se pierde el dato).
+  app.post("/api/invoices/:id/correct", isAuthenticated, async (req, res) => {
+    try {
+      const clientId = await getClientId(req);
+      const userId = (await getAuthenticatedUserId(req)) ?? "";
+      const oldId = parseInt(req.params.id, 10);
+      const { confirmCode, ...newBody } = req.body ?? {};
+
+      const old = await storage.getInvoice(clientId, oldId);
+      if (!old) return res.status(404).json({ message: "Factura no encontrada" });
+      if (old.status === "reversed") return res.status(400).json({ message: "La factura ya fue reversada; no se puede corregir." });
+
+      // Clave: debe coincidir el número del comprobante (igual que al eliminar un extracto).
+      if (String(confirmCode ?? "").trim() !== String(old.invoiceNumber ?? "").trim()) {
+        return res.status(400).json({ message: "El código no coincide con el número de la factura." });
+      }
+
+      // Snapshot para auditoría y compensación.
+      const snapItems = await storage.getInvoiceItems(oldId);
+      const snapTaxes = await storage.getInvoiceTaxes(oldId);
+
+      // 1) Reversar (deshace costos/stock). Puede lanzar si falta stock para revertir → nada cambió aún.
+      await storage.reverseInvoice(clientId, oldId, userId, "Corrección de factura");
+      // 2) Liberar pagos asignados (quedan sin aplicar).
+      const releasedPayments = await storage.releaseInvoiceAllocations(oldId);
+      // 3) Borrar la factura vieja (libera el número).
+      await storage.deleteInvoice(clientId, oldId);
+
+      // 4) Crear la nueva corregida. Si falla, restaurar la vieja desde el snapshot.
+      let created;
+      try {
+        created = await prepareAndCreateInvoice(clientId, { ...newBody, clientId });
+      } catch (createErr: any) {
+        try {
+          const { id: _i, createdAt: _c, updatedAt: _u, status: _s, reversedAt: _ra, reversedBy: _rb, reversalReason: _rr, ...oldFields } = old as any;
+          await storage.createInvoice(
+            { ...oldFields, status: "active" },
+            snapItems.map(({ id, invoiceId, ...rest }: any) => rest) as any,
+            snapTaxes.map(({ id, invoiceId, ...rest }: any) => rest) as any,
+          );
+        } catch { /* compensación best-effort */ }
+        return res.status(createErr.statusCode ?? 500).json({
+          message: `No se pudo crear la factura corregida (se restauró la original): ${createErr.message}`,
+        });
+      }
+
+      // 5) Auditoría (red de seguridad: queda quién, cuándo y la foto de la factura vieja).
+      await storage.createAuditLog({
+        clientId,
+        userId,
+        action: "correct_invoice",
+        tableName: "invoices",
+        recordId: created.id,
+        oldData: { invoice: old, items: snapItems, taxes: snapTaxes },
+        newData: created,
+      });
+
+      res.json({ invoice: created, releasedPayments });
+    } catch (e: any) {
+      res.status(e.statusCode ?? 500).json({ message: e.message });
     }
   });
 
