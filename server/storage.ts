@@ -408,6 +408,16 @@ export interface IStorage {
     }>;
   }>;
 
+  /** PAP: total entregado (facturas CON IVA) y total pagado, con % vs venta CON IVA. */
+  getPapReport(clientId: number, opts: { dateFrom?: string; dateTo?: string; localIds?: number[]; supplierIds?: number[] }): Promise<{
+    totalEntregado: number;
+    totalPagado: number;
+    salesWithIva: number;
+    pctEntregado: number | null;
+    pctPagado: number | null;
+    bySupplier: Array<{ supplierId: number | null; name: string; entregado: number; pagado: number; saldo: number }>;
+  }>;
+
   getPermissions(): Promise<Permission[]>;
   createPermission(permission: InsertPermission): Promise<Permission>;
   
@@ -2755,6 +2765,82 @@ export class DatabaseStorage implements IStorage {
 
     const total = rubrosOut.reduce((acc, r) => acc + r.total, 0);
     return { total, salesGross, salesNet, pct: pctOf(total), rubros: rubrosOut };
+  }
+
+  async getPapReport(
+    clientId: number,
+    opts: { dateFrom?: string; dateTo?: string; localIds?: number[]; supplierIds?: number[] },
+  ) {
+    const hasLocals = opts.localIds && opts.localIds.length > 0;
+    const hasSuppliers = opts.supplierIds && opts.supplierIds.length > 0;
+
+    // Entregado: total de facturas (CON IVA), por invoiceDate.
+    const invConds = [eq(invoices.clientId, clientId), eq(invoices.status, "active")];
+    if (opts.dateFrom) invConds.push(sql`${invoices.invoiceDate} >= ${opts.dateFrom}`);
+    if (opts.dateTo) invConds.push(sql`${invoices.invoiceDate} <= ${opts.dateTo}`);
+    if (hasLocals) invConds.push(inArray(invoices.localId, opts.localIds!));
+    if (hasSuppliers) invConds.push(inArray(invoices.supplierId, opts.supplierIds!));
+    const invRows = await db
+      .select({ supplierId: invoices.supplierId, total: invoices.total })
+      .from(invoices)
+      .where(and(...invConds));
+
+    // Pagado: monto de pagos, por paymentDate.
+    const payConds = [eq(payments.clientId, clientId)];
+    if (opts.dateFrom) payConds.push(sql`${payments.paymentDate} >= ${opts.dateFrom}`);
+    if (opts.dateTo) payConds.push(sql`${payments.paymentDate} <= ${opts.dateTo}`);
+    if (hasLocals) payConds.push(inArray(payments.localId, opts.localIds!));
+    if (hasSuppliers) payConds.push(inArray(payments.supplierId, opts.supplierIds!));
+    const payRows = await db
+      .select({ supplierId: payments.supplierId, amount: payments.amount })
+      .from(payments)
+      .where(and(...payConds));
+
+    type Row = { supplierId: number | null; entregado: number; pagado: number };
+    const map = new Map<number, Row>();
+    const UNKNOWN = -1;
+    for (const r of invRows) {
+      const k = r.supplierId ?? UNKNOWN;
+      const e = map.get(k) ?? { supplierId: r.supplierId ?? null, entregado: 0, pagado: 0 };
+      e.entregado += parseFloat(String(r.total)) || 0;
+      map.set(k, e);
+    }
+    for (const r of payRows) {
+      const k = r.supplierId ?? UNKNOWN;
+      const e = map.get(k) ?? { supplierId: r.supplierId ?? null, entregado: 0, pagado: 0 };
+      e.pagado += parseFloat(String(r.amount)) || 0;
+      map.set(k, e);
+    }
+
+    const supRows = await db
+      .select({ id: suppliers.id, tradeName: suppliers.tradeName })
+      .from(suppliers)
+      .where(eq(suppliers.clientId, clientId));
+    const supMap = new Map(supRows.map((s) => [s.id, s.tradeName]));
+
+    const totalEntregado = invRows.reduce((a, r) => a + (parseFloat(String(r.total)) || 0), 0);
+    const totalPagado = payRows.reduce((a, r) => a + (parseFloat(String(r.amount)) || 0), 0);
+    const salesWithIva = await this.getSalesTotalByPeriod(clientId, opts);
+    const pctOf = (amount: number) => (salesWithIva > 0 ? (amount / salesWithIva) * 100 : null);
+
+    const bySupplier = Array.from(map.values())
+      .map((r) => ({
+        supplierId: r.supplierId,
+        name: r.supplierId != null ? (supMap.get(r.supplierId) ?? "Proveedor s/d") : "Sin proveedor",
+        entregado: r.entregado,
+        pagado: r.pagado,
+        saldo: r.entregado - r.pagado,
+      }))
+      .sort((a, b) => b.entregado - a.entregado);
+
+    return {
+      totalEntregado,
+      totalPagado,
+      salesWithIva,
+      pctEntregado: pctOf(totalEntregado),
+      pctPagado: pctOf(totalPagado),
+      bySupplier,
+    };
   }
 
   async getPermissions(): Promise<Permission[]> {

@@ -3137,6 +3137,25 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
   });
 
+  // PAP (Pago a Proveedores) — Fase 5. Reporte gateado por RBAC granular.
+  app.get("/api/finance/pap", isAuthenticated, requirePermission("pap.view", "view"), async (req, res) => {
+    try {
+      const { clientId } = (req as any).rbac;
+      const dateFrom = typeof req.query.dateFrom === "string" && req.query.dateFrom ? req.query.dateFrom : undefined;
+      const dateTo = typeof req.query.dateTo === "string" && req.query.dateTo ? req.query.dateTo : undefined;
+      const parseIds = (raw: unknown): number[] | undefined =>
+        typeof raw === "string" && raw && raw !== "all"
+          ? raw.split(",").map((s) => parseInt(s, 10)).filter((n) => Number.isFinite(n))
+          : undefined;
+      const localIds = parseIds(req.query.localIds ?? req.query.localId);
+      const supplierIds = parseIds(req.query.supplierIds ?? req.query.supplierId);
+      const data = await storage.getPapReport(clientId, { dateFrom, dateTo, localIds, supplierIds });
+      res.json(data);
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
   app.get("/api/balance-report/export", isAuthenticated, async (req, res) => {
     try {
       const clientId = await getClientId(req);
