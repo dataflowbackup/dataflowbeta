@@ -33,6 +33,7 @@ import {
   Upload,
   ShoppingCart,
   Truck,
+  Target,
 } from "lucide-react";
 import { useAuth } from "@/hooks/useAuth";
 import { usePermissions } from "@/hooks/usePermissions";
@@ -126,6 +127,7 @@ const menuSections: MenuSection[] = [
       { title: "PAP", url: "/pap", icon: Truck, permission: "pap.view" },
       { title: "Valorizar Stock", url: "/valorizar-stock", icon: Package, permission: "stock_valuation.view" },
       { title: "CMV", url: "/cmv", icon: Calculator, permission: "cmv.view" },
+      { title: "Punto de Equilibrio", url: "/punto-equilibrio", icon: Target, permission: "breakeven.view" },
       { title: "Dashboard", url: "/dashboard", icon: BarChart3 },
     ],
   },
