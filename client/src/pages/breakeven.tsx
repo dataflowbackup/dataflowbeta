@@ -25,6 +25,8 @@ export default function BreakevenPage() {
   const [recipeId, setRecipeId] = useState("");
   const [price, setPrice] = useState("");
   const [cost, setCost] = useState("");
+  const [mode, setMode] = useState<"product" | "margin">("product");
+  const [marginPctInput, setMarginPctInput] = useState("");
   const [fixed, setFixed] = useState<FixedCostRow[]>([{ transactionCategoryId: "", label: "", amount: "" }]);
 
   const { data: locals = [] } = useQuery<Local[]>({ queryKey: ["/api/locals"] });
@@ -57,21 +59,44 @@ export default function BreakevenPage() {
 
   const priceN = parseFloat(price) || 0;
   const costN = parseFloat(cost) || 0;
-  const contribution = priceN - costN;
   const totalFixed = useMemo(() => fixed.reduce((a, f) => a + (parseFloat(f.amount) || 0), 0), [fixed]);
-  const units = contribution > 0 ? totalFixed / contribution : null;
-  const revenue = units != null ? units * priceN : null;
+
+  const isMargin = mode === "margin";
+  // % de margen de contribución: en modo producto se deriva del precio/costo; en modo margen lo carga el usuario.
+  const marginPct = isMargin
+    ? parseFloat(marginPctInput) || 0
+    : priceN > 0
+      ? ((priceN - costN) / priceN) * 100
+      : 0;
+  const contribution = priceN - costN; // $ por unidad (solo modo producto)
+  const valid = isMargin ? marginPct > 0 && marginPct < 100 : contribution > 0;
+  // PE en unidades solo aplica en modo producto (hay precio por unidad).
+  const units = !isMargin && contribution > 0 ? totalFixed / contribution : null;
+  // PE en facturación: modo producto = units*precio; modo margen = fijos / (margen%/100).
+  const revenue = isMargin
+    ? marginPct > 0
+      ? totalFixed / (marginPct / 100)
+      : null
+    : units != null
+      ? units * priceN
+      : null;
 
   const saveMutation = useMutation({
     mutationFn: async () => {
       if (!name.trim()) throw new Error("Poné un nombre al análisis");
-      if (contribution <= 0) throw new Error("El precio de venta debe ser mayor al costo variable");
+      if (!valid) {
+        throw new Error(isMargin ? "El margen debe estar entre 0 y 100%" : "El precio de venta debe ser mayor al costo variable");
+      }
+      // En modo margen no hay precio por unidad: se usa una base nocional de 100 para conservar
+      // la razón de contribución (precio 100, costo 100−margen%) → la facturación de PE es exacta.
+      const salePriceNoIva = isMargin ? 100 : priceN;
+      const variableCostNoIva = isMargin ? 100 - marginPct : costN;
       const res = await apiRequest("POST", "/api/finance/breakeven", {
         name,
         localId: localId === "all" ? null : parseInt(localId, 10),
-        recipeId: recipeId ? parseInt(recipeId, 10) : null,
-        salePriceNoIva: priceN,
-        variableCostNoIva: costN,
+        recipeId: isMargin || !recipeId ? null : parseInt(recipeId, 10),
+        salePriceNoIva,
+        variableCostNoIva,
         fixedCosts: fixed
           .filter((f) => parseFloat(f.amount) > 0)
           .map((f) => ({
@@ -106,21 +131,39 @@ export default function BreakevenPage() {
                 <Label className="text-xs">Local</Label>
                 <DataEntryCombobox options={localOptions} value={localId} onValueChange={setLocalId} placeholder="Local" searchPlaceholder="Buscar…" data-testid="select-local" />
               </div>
-              <div className="space-y-1">
-                <Label className="text-xs">Producto (receta)</Label>
-                <DataEntryCombobox options={recipeOptions} value={recipeId} onValueChange={onPickRecipe} placeholder="Elegí un producto" searchPlaceholder="Buscar producto…" data-testid="select-recipe" />
-              </div>
-              <div className="grid grid-cols-2 gap-2">
+            </div>
+
+            <div className="flex gap-1 rounded-md border p-1 w-fit">
+              <Button size="sm" variant={mode === "product" ? "default" : "ghost"} onClick={() => setMode("product")} data-testid="mode-product">
+                Por producto
+              </Button>
+              <Button size="sm" variant={mode === "margin" ? "default" : "ghost"} onClick={() => setMode("margin")} data-testid="mode-margin">
+                Por margen %
+              </Button>
+            </div>
+
+            {mode === "product" ? (
+              <div className="grid gap-4 sm:grid-cols-[1fr_auto_auto]">
+                <div className="space-y-1">
+                  <Label className="text-xs">Producto (receta)</Label>
+                  <DataEntryCombobox options={recipeOptions} value={recipeId} onValueChange={onPickRecipe} placeholder="Elegí un producto" searchPlaceholder="Buscar producto…" data-testid="select-recipe" />
+                </div>
                 <div className="space-y-1">
                   <Label className="text-xs">Precio venta (sin IVA)</Label>
-                  <Input type="number" step="any" value={price} onChange={(e) => setPrice(e.target.value)} data-testid="input-price" />
+                  <Input type="number" step="any" value={price} onChange={(e) => setPrice(e.target.value)} data-testid="input-price" className="w-40" />
                 </div>
                 <div className="space-y-1">
                   <Label className="text-xs">Costo variable (sin IVA)</Label>
-                  <Input type="number" step="any" value={cost} onChange={(e) => setCost(e.target.value)} data-testid="input-cost" />
+                  <Input type="number" step="any" value={cost} onChange={(e) => setCost(e.target.value)} data-testid="input-cost" className="w-40" />
                 </div>
               </div>
-            </div>
+            ) : (
+              <div className="space-y-1 max-w-xs">
+                <Label className="text-xs">Margen de contribución (%)</Label>
+                <Input type="number" step="any" value={marginPctInput} onChange={(e) => setMarginPctInput(e.target.value)} placeholder="Ej: 65" data-testid="input-margin" />
+                <p className="text-xs text-muted-foreground">Calcula el PE en facturación a partir del margen, sin elegir un producto puntual.</p>
+              </div>
+            )}
 
             <div className="space-y-2">
               <div className="flex items-center justify-between">
@@ -166,12 +209,22 @@ export default function BreakevenPage() {
             <CardTitle className="text-base flex items-center gap-2"><Target className="h-4 w-4" /> Resultado</CardTitle>
           </CardHeader>
           <CardContent className="space-y-2 text-sm">
-            <div className="flex justify-between"><span className="text-muted-foreground">Margen de contribución</span><span className={`font-mono ${contribution <= 0 ? "text-red-600" : ""}`}>{formatCurrency(contribution)}</span></div>
+            {!isMargin && (
+              <div className="flex justify-between"><span className="text-muted-foreground">Margen contribución ($/u)</span><span className={`font-mono ${contribution <= 0 ? "text-red-600" : ""}`}>{formatCurrency(contribution)}</span></div>
+            )}
+            <div className="flex justify-between">
+              <span className="text-muted-foreground">% Margen de contribución</span>
+              <span className={`font-mono ${!valid ? "text-red-600" : ""}`} data-testid="text-margin-pct">
+                {marginPct > 0 ? `${marginPct.toFixed(2)}%` : "—"}
+              </span>
+            </div>
             <div className="flex justify-between"><span className="text-muted-foreground">Costos fijos</span><span className="font-mono">{formatCurrency(totalFixed)}</span></div>
-            <div className="flex justify-between border-t pt-2 font-bold"><span>PE (unidades)</span><span className="font-mono" data-testid="text-pe-units">{units == null ? "—" : units.toFixed(2)}</span></div>
-            <div className="flex justify-between font-bold"><span>PE (facturación)</span><span className="font-mono" data-testid="text-pe-revenue">{revenue == null ? "—" : formatCurrency(revenue)}</span></div>
-            {contribution <= 0 && <p className="text-xs text-red-600">El precio debe superar al costo variable.</p>}
-            <Button className="w-full mt-2" onClick={() => saveMutation.mutate()} disabled={saveMutation.isPending || contribution <= 0} data-testid="button-save">
+            {!isMargin && (
+              <div className="flex justify-between border-t pt-2 font-bold"><span>PE (unidades)</span><span className="font-mono" data-testid="text-pe-units">{units == null ? "—" : units.toFixed(2)}</span></div>
+            )}
+            <div className={`flex justify-between font-bold ${isMargin ? "border-t pt-2" : ""}`}><span>PE (facturación)</span><span className="font-mono" data-testid="text-pe-revenue">{revenue == null ? "—" : formatCurrency(revenue)}</span></div>
+            {!valid && <p className="text-xs text-red-600">{isMargin ? "El margen debe estar entre 0 y 100%." : "El precio debe superar al costo variable."}</p>}
+            <Button className="w-full mt-2" onClick={() => saveMutation.mutate()} disabled={saveMutation.isPending || !valid} data-testid="button-save">
               <Save className="h-4 w-4 mr-2" /> {saveMutation.isPending ? "Guardando..." : "Guardar"}
             </Button>
           </CardContent>
