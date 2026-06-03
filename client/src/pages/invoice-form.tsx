@@ -5,6 +5,7 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import { useLocation, useParams } from "wouter";
 import { PageHeader } from "@/components/page-header";
+import { CodeConfirmDialog } from "@/components/code-confirm-dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -175,6 +176,10 @@ export default function InvoiceFormPage() {
   const [confirmedItems, setConfirmedItems] = useState<Set<number>>(new Set());
   const [openSupplyPickerIndex, setOpenSupplyPickerIndex] = useState<number | null>(null);
   const [addTaxComboKey, setAddTaxComboKey] = useState(0);
+  // Corrección de factura: editar una factura existente (reemplaza la vieja por una nueva) con clave.
+  const [isCorrecting, setIsCorrecting] = useState(false);
+  const [showCorrectCodeDialog, setShowCorrectCodeDialog] = useState(false);
+  const [pendingCorrection, setPendingCorrection] = useState<FormData | null>(null);
 
   const { data: existingInvoice, isLoading: isLoadingInvoice } = useQuery<InvoiceDetail>({
     queryKey: ["/api/invoices", params.id],
@@ -646,15 +651,56 @@ export default function InvoiceFormPage() {
     },
   });
 
+  const correctMutation = useMutation({
+    mutationFn: async (data: FormData) => {
+      const supplier = suppliers.find((s) => s.id === data.supplierId);
+      if (data.supplierRubroId && supplier && supplier.rubroId !== data.supplierRubroId) {
+        await apiRequest("PATCH", `/api/suppliers/${supplier.id}`, { rubroId: data.supplierRubroId });
+      }
+      const { supplierRubroId, ...rest } = data;
+      const payload = {
+        ...rest,
+        subtotal: calculations.subtotal,
+        taxTotal: calculations.taxTotal,
+        total: calculations.total,
+        balance: calculations.balance,
+        confirmCode: existingInvoice?.invoiceNumber ?? "",
+      };
+      const res = await apiRequest("POST", `/api/invoices/${params.id}/correct`, payload);
+      return res.json();
+    },
+    onSuccess: (resp: any) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/invoices"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/invoices/stats"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/supplies"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/recipes"], exact: false });
+      const released = resp?.releasedPayments ?? 0;
+      toast({
+        title: "Factura corregida",
+        description: released > 0 ? `Se liberaron ${released} pago(s) — reasignalos a la factura corregida.` : undefined,
+      });
+      navigate("/facturas");
+    },
+    onError: (error: Error) => {
+      toast({ title: "Error al corregir factura", description: error.message, variant: "destructive" });
+    },
+  });
+
   const onSubmit = (data: FormData) => {
+    if (isCorrecting) {
+      // Pide la clave (número de comprobante) antes de aplicar la corrección.
+      setPendingCorrection(data);
+      setShowCorrectCodeDialog(true);
+      return;
+    }
     createMutation.mutate(data);
   };
 
   return (
     <div className="space-y-6">
       <PageHeader
-        title={isViewing ? "Detalle de Factura" : "Nueva Factura"}
-        description={isViewing ? "Informacion del comprobante registrado" : "Complete los datos del comprobante"}
+        title={isCorrecting ? "Corregir Factura" : isViewing ? "Detalle de Factura" : "Nueva Factura"}
+        description={isCorrecting ? "Modificá los datos; al guardar se pide la clave" : isViewing ? "Informacion del comprobante registrado" : "Complete los datos del comprobante"}
         backHref="/facturas"
       />
 
@@ -666,9 +712,21 @@ export default function InvoiceFormPage() {
         </Card>
       )}
 
-      {isViewing && existingInvoice && (
+      {isViewing && !isCorrecting && existingInvoice && (
         <Card>
           <CardContent className="py-4">
+            <div className="flex items-center justify-end pb-3">
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => setIsCorrecting(true)}
+                disabled={(existingInvoice as any).status === "reversed"}
+                data-testid="button-correct-invoice"
+              >
+                Corregir Factura
+              </Button>
+            </div>
             <div className="grid gap-4 sm:grid-cols-2 md:grid-cols-4">
               <div>
                 <p className="text-xs text-muted-foreground">Proveedor</p>
@@ -700,7 +758,15 @@ export default function InvoiceFormPage() {
         </Card>
       )}
 
-      {!isViewing && (
+      {isCorrecting && existingInvoice && (
+        <div className="rounded-md border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-sm text-amber-700 dark:text-amber-400">
+          <strong>Corrigiendo factura {existingInvoice.invoiceNumber}.</strong> Al guardar se te pedirá
+          el número del comprobante como clave. La factura vieja se reemplaza por la corregida y se
+          recalculan costos, stock y reportes. Si tenía pagos asignados, se liberan para reasignar.
+        </div>
+      )}
+
+      {(!isViewing || isCorrecting) && (
       <Form {...form}>
         <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-6">
           <div className="grid gap-6 lg:grid-cols-3">
@@ -1507,16 +1573,22 @@ export default function InvoiceFormPage() {
                     <Button
                       type="submit"
                       className="w-full"
-                      disabled={createMutation.isPending}
+                      disabled={createMutation.isPending || correctMutation.isPending}
                       data-testid="button-submit"
                     >
-                      {createMutation.isPending ? "Guardando..." : "Guardar Factura"}
+                      {isCorrecting
+                        ? correctMutation.isPending
+                          ? "Corrigiendo..."
+                          : "Guardar Corrección"
+                        : createMutation.isPending
+                          ? "Guardando..."
+                          : "Guardar Factura"}
                     </Button>
                     <Button
                       type="button"
                       variant="outline"
                       className="w-full"
-                      onClick={() => navigate("/facturas")}
+                      onClick={() => (isCorrecting ? setIsCorrecting(false) : navigate("/facturas"))}
                       data-testid="button-cancel"
                     >
                       Cancelar
@@ -1529,6 +1601,23 @@ export default function InvoiceFormPage() {
         </form>
       </Form>
       )}
+
+      <CodeConfirmDialog
+        open={showCorrectCodeDialog}
+        onOpenChange={(o) => {
+          setShowCorrectCodeDialog(o);
+          if (!o) setPendingCorrection(null);
+        }}
+        title="Corregir factura"
+        description="Esta acción reemplaza la factura por la versión corregida y recalcula costos, stock y reportes. La factura original deja de existir (queda registro en auditoría)."
+        confirmCode={existingInvoice?.invoiceNumber ?? ""}
+        confirmLabel="Corregir"
+        isLoading={correctMutation.isPending}
+        onConfirm={() => {
+          if (pendingCorrection) correctMutation.mutate(pendingCorrection);
+          setShowCorrectCodeDialog(false);
+        }}
+      />
     </div>
   );
 }
