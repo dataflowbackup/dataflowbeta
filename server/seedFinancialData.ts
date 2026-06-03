@@ -27,6 +27,7 @@ const FINANCIAL_GROUPS = [
   // Otros Movimientos como grupos padre propios (no afectan rentabilidad; sí los saldos).
   { name: "Préstamos", type: "income", displayOrder: 90 },
   { name: "Alivios", type: "expense", displayOrder: 91 },
+  { name: "Aporte de Capital", type: "income", displayOrder: 92 },
 ];
 
 /**
@@ -38,13 +39,16 @@ const SPECIAL_GROUP_TYPES: Record<string, string> = {
   "Otros Ingresos": "other_income",
   "Retiros Socios": "owner_withdrawal",
   "Transferencias": "internal_transfer",
-  // Alias / posibles grupos padre propios del cliente (se reconocen por nombre en el backfill).
+  // Los 6 grupos padre "Otros Movimientos" (no afectan Ventas ni rentabilidad; sí los saldos).
   "Retiros": "owner_withdrawal",
   "Préstamos": "loan",
   "Prestamos": "loan",
   "Alivios": "cash_relief",
   "Alivio": "cash_relief",
   "Alivios de Caja": "cash_relief",
+  "Aporte de Capital": "capital_contribution",
+  "Aportes de Capital": "capital_contribution",
+  "Aporte de Capital Socios": "capital_contribution",
 };
 
 /** Categorías de "Otros Ingresos" que conviene tipificar como préstamo/capital (no cambia la exclusión). */
@@ -102,12 +106,10 @@ const CATEGORIES_BY_GROUP: Record<string, { name: string; type: "income" | "expe
     { name: "Rendimiento Mercado Pago", type: "income" },
     { name: "Rendimientos FIMA", type: "income" },
     { name: "Otros Rendimientos", type: "income" },
-    { name: "Ingreso de Capital Socios", type: "income" },
     { name: "Ajustes y diferencia de caja (sobrante efec.) (Mayorista)", type: "income" },
     { name: "Rendimientos Mercado Pago (Mayorista)", type: "income" },
     { name: "Rendimientos FIMA (Mayorista)", type: "income" },
     { name: "Otros Rendimientos (Mayorista)", type: "income" },
-    { name: "Ingreso de Capital Socios (Mayorista)", type: "income" },
   ],
   "Préstamos": [
     { name: "Préstamos", type: "income" },
@@ -116,6 +118,10 @@ const CATEGORIES_BY_GROUP: Record<string, { name: string; type: "income" | "expe
   ],
   "Alivios": [
     { name: "Alivio de caja", type: "expense" },
+  ],
+  "Aporte de Capital": [
+    { name: "Ingreso de Capital Socios", type: "income" },
+    { name: "Ingreso de Capital Socios (Mayorista)", type: "income" },
   ],
   "Banco, Tarjetas y Comisiones": [
     { name: "Comisiones Mercado Pago", type: "expense" },
@@ -504,19 +510,27 @@ export async function restructureSpecialParentGroupsForClient(
 
   const prestamosGroupId = await ensureGroup("Préstamos", "income", 90);
   await ensureGroup("Alivios", "expense", 91);
+  const aporteGroupId = await ensureGroup("Aporte de Capital", "income", 92);
 
-  // Mover SOLO el capital del préstamo (ingreso) al grupo "Préstamos".
-  // IMPORTANTE: NO mover "interés sobre cuota de préstamo" ni similares: el interés es un
-  // gasto financiero real que SÍ afecta la rentabilidad y debe quedar en su grupo de gastos.
+  // Mover categorías a sus nuevos grupos padre (las que aún no estén ahí):
+  // - "Préstamos": SOLO el capital del préstamo (ingreso). NO el "interés sobre cuota de préstamo"
+  //   (ese es un gasto financiero real que SÍ afecta la rentabilidad y queda en su grupo de gastos).
+  // - "Aporte de Capital": el capital de socios (ingreso).
   const cats = await db.select().from(transactionCategories).where(eq(transactionCategories.clientId, clientId));
   for (const c of cats) {
     const nm = String((c as any).name ?? "");
-    const esCapitalPrestamo =
-      /pr[eé]stamo/i.test(nm) && !/inter[eé]s/i.test(nm) && (c as any).type === "income";
-    if (esCapitalPrestamo && (c as any).financialGroupId !== prestamosGroupId) {
+    const esIngreso = (c as any).type === "income";
+    const esCapitalSocios = /capital\s+socios/i.test(nm) && esIngreso;
+    const esCapitalPrestamo = /pr[eé]stamo/i.test(nm) && !/inter[eé]s/i.test(nm) && esIngreso;
+
+    let target: number | null = null;
+    if (esCapitalSocios) target = aporteGroupId;
+    else if (esCapitalPrestamo) target = prestamosGroupId;
+
+    if (target != null && (c as any).financialGroupId !== target) {
       await db
         .update(transactionCategories)
-        .set({ financialGroupId: prestamosGroupId })
+        .set({ financialGroupId: target })
         .where(eq(transactionCategories.id, (c as any).id));
       categoriesMoved++;
     }

@@ -176,7 +176,8 @@ import {
 export const OTROS_MOVIMIENTOS_SPECIAL_TYPES = new Set<string>([
   "opening_balance", // Inicio de mes
   "owner_withdrawal", // Retiros socios
-  "loan", // Préstamos / capital
+  "loan", // Préstamos
+  "capital_contribution", // Aporte de Capital (socios)
   "other_income", // Otros ingresos (no venta)
   "cash_relief", // Alivios de caja
   "internal_transfer", // Transferencias entre cuentas

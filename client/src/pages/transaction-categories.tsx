@@ -44,16 +44,18 @@ const OTROS_MOVIMIENTOS_TYPES = new Set([
   "opening_balance",
   "owner_withdrawal",
   "loan",
+  "capital_contribution",
   "other_income",
   "cash_relief",
   "internal_transfer",
 ]);
 
 const specialTypes = [
-  // Otros Movimientos (excluidos del resultado neto del balance)
+  // Otros Movimientos (excluidos de Ventas y de la rentabilidad; sí cuentan para saldos)
   { value: "opening_balance", label: "Inicio de mes (Otros Mov.)" },
   { value: "owner_withdrawal", label: "Retiro de socios (Otros Mov.)" },
-  { value: "loan", label: "Préstamo / Capital (Otros Mov.)" },
+  { value: "loan", label: "Préstamo (Otros Mov.)" },
+  { value: "capital_contribution", label: "Aporte de Capital (Otros Mov.)" },
   { value: "other_income", label: "Otros ingresos (Otros Mov.)" },
   { value: "cash_relief", label: "Alivio de caja (Otros Mov.)" },
   { value: "internal_transfer", label: "Transferencia interna (Otros Mov.)" },
