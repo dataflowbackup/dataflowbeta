@@ -1,14 +1,26 @@
 import { useMemo, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useMutation } from "@tanstack/react-query";
 import { PageHeader } from "@/components/page-header";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { DataEntryCombobox } from "@/components/data-entry-combobox";
 import { Skeleton } from "@/components/ui/skeleton";
+import { useToast } from "@/hooks/use-toast";
+import { apiRequest, queryClient } from "@/lib/queryClient";
 import { formatCurrency } from "@/lib/formatters";
-import { Calculator } from "lucide-react";
+import { Calculator, Save } from "lucide-react";
 import type { Local } from "@shared/schema";
+
+interface CmvSaved {
+  id: number;
+  periodFrom: string | null;
+  periodTo: string | null;
+  cmv: string | number;
+  cmvPct: string | number | null;
+  ventaNeta: string | number;
+}
 
 interface ValuationRow {
   id: number;
@@ -79,6 +91,26 @@ export default function CmvPage() {
     },
   });
 
+  const { toast } = useToast();
+  const { data: saved = [] } = useQuery<CmvSaved[]>({ queryKey: ["/api/finance/cmv-calculations"] });
+  const saveMutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("POST", "/api/finance/cmv-calculations", {
+        stockInicialId,
+        stockFinalId,
+        localId: localId === "all" ? null : localId,
+        dateFrom,
+        dateTo,
+      });
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/finance/cmv-calculations"] });
+      toast({ title: "CMV guardado", description: "Quedó registrado el cálculo." });
+    },
+    onError: (e: Error) => toast({ title: "No se pudo guardar", description: e.message, variant: "destructive" }),
+  });
+
   const Line = ({ label, value, op, strong }: { label: string; value: number; op?: string; strong?: boolean }) => (
     <div className={`grid grid-cols-[auto_1fr_auto] items-center gap-2 ${strong ? "border-t pt-2 font-bold" : ""}`}>
       <span className="w-6 text-center font-mono text-muted-foreground">{op ?? ""}</span>
@@ -131,6 +163,14 @@ export default function CmvPage() {
         <Card>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-3">
             <CardTitle className="text-base flex items-center gap-2"><Calculator className="h-4 w-4" /> Resultado</CardTitle>
+            <Button
+              size="sm"
+              onClick={() => saveMutation.mutate()}
+              disabled={!data || isLoading || saveMutation.isPending}
+              data-testid="button-save-cmv"
+            >
+              <Save className="h-4 w-4 mr-2" /> {saveMutation.isPending ? "Guardando..." : "Guardar"}
+            </Button>
           </CardHeader>
           <CardContent>
             {isLoading ? (
@@ -155,6 +195,36 @@ export default function CmvPage() {
                 </div>
               </div>
             ) : null}
+          </CardContent>
+        </Card>
+      )}
+
+      {saved.length > 0 && (
+        <Card>
+          <CardHeader className="pb-3"><CardTitle className="text-base">CMV guardados</CardTitle></CardHeader>
+          <CardContent className="p-0 md:p-6">
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="bg-muted/50">
+                    <th className="text-left px-3 py-2 font-medium border-b">Período</th>
+                    <th className="text-right px-3 py-2 font-medium border-b">CMV</th>
+                    <th className="text-right px-3 py-2 font-medium border-b">Venta sin IVA</th>
+                    <th className="text-right px-3 py-2 font-medium border-b">CMV %</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {saved.map((c) => (
+                    <tr key={c.id} className="border-b">
+                      <td className="px-3 py-2">{c.periodFrom ?? "—"} → {c.periodTo ?? "—"}</td>
+                      <td className="px-3 py-2 text-right font-mono">{formatCurrency(parseFloat(String(c.cmv)) || 0)}</td>
+                      <td className="px-3 py-2 text-right font-mono text-muted-foreground">{formatCurrency(parseFloat(String(c.ventaNeta)) || 0)}</td>
+                      <td className="px-3 py-2 text-right font-mono font-semibold">{c.cmvPct == null ? "—" : `${(parseFloat(String(c.cmvPct)) || 0).toFixed(2)}%`}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           </CardContent>
         </Card>
       )}

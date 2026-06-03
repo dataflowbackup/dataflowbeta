@@ -1124,6 +1124,32 @@ export type InsertBreakevenFixedCost = z.infer<typeof insertBreakevenFixedCostSc
 export type BreakevenFixedCost = typeof breakevenFixedCosts.$inferSelect;
 
 // ==========================================
+// CMV CALCULATIONS (Registros de Costo de Mercadería Vendida - Fase 7)
+// Snapshot de un cálculo: stock inicial + compras − stock final, con % vs venta sin IVA.
+// ==========================================
+export const cmvCalculations = pgTable("cmv_calculations", {
+  id: serial("id").primaryKey(),
+  clientId: integer("client_id").notNull().references(() => clients.id, { onDelete: "cascade" }),
+  localId: integer("local_id").references(() => locals.id),
+  stockInicialId: integer("stock_inicial_id").references(() => stockValuations.id),
+  stockFinalId: integer("stock_final_id").references(() => stockValuations.id),
+  periodFrom: date("period_from"),
+  periodTo: date("period_to"),
+  stockInicial: decimal("stock_inicial", { precision: 14, scale: 2 }).default("0"),
+  compras: decimal("compras", { precision: 14, scale: 2 }).default("0"),
+  stockFinal: decimal("stock_final", { precision: 14, scale: 2 }).default("0"),
+  cmv: decimal("cmv", { precision: 14, scale: 2 }).default("0"),
+  ventaNeta: decimal("venta_neta", { precision: 14, scale: 2 }).default("0"),
+  cmvPct: decimal("cmv_pct", { precision: 8, scale: 2 }),
+  createdBy: varchar("created_by").references(() => users.id),
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
+export const insertCmvCalculationSchema = createInsertSchema(cmvCalculations).omit({ id: true, createdAt: true });
+export type InsertCmvCalculation = z.infer<typeof insertCmvCalculationSchema>;
+export type CmvCalculation = typeof cmvCalculations.$inferSelect;
+
+// ==========================================
 // OPERATIONAL AUDITS (Auditorías Operativas)
 // ==========================================
 export const operationalAudits = pgTable("operational_audits", {

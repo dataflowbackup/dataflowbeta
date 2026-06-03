@@ -48,6 +48,7 @@ import {
   stockValuationItems,
   breakevenAnalyses,
   breakevenFixedCosts,
+  cmvCalculations,
   operationalAudits,
   auditTemplates,
   auditTemplateItems,
@@ -145,6 +146,7 @@ import {
   type InsertStockValuationItem,
   type BreakevenAnalysis,
   type BreakevenFixedCost,
+  type CmvCalculation,
   type OperationalAudit,
   type InsertOperationalAudit,
   type AuditTemplate,
@@ -471,6 +473,9 @@ export interface IStorage {
     ventaNeta: number;
     cmvPct: number | null;
   }>;
+  /** Guarda un cálculo de CMV como registro (recalcula server-side para integridad). */
+  saveCmvCalculation(clientId: number, opts: { localId?: number; stockInicialId: number; stockFinalId: number; dateFrom?: string; dateTo?: string; createdBy?: string | null }): Promise<CmvCalculation>;
+  listCmvCalculations(clientId: number): Promise<CmvCalculation[]>;
 
   getPermissions(): Promise<Permission[]>;
   createPermission(permission: InsertPermission): Promise<Permission>;
@@ -3108,6 +3113,40 @@ export class DatabaseStorage implements IStorage {
       ventaNeta,
       cmvPct,
     };
+  }
+
+  async saveCmvCalculation(
+    clientId: number,
+    opts: { localId?: number; stockInicialId: number; stockFinalId: number; dateFrom?: string; dateTo?: string; createdBy?: string | null },
+  ): Promise<CmvCalculation> {
+    // Se recalcula server-side para que el registro sea íntegro (no se confía en el cliente).
+    const r = await this.computeCmv(clientId, {
+      localId: opts.localId,
+      stockInicialId: opts.stockInicialId,
+      stockFinalId: opts.stockFinalId,
+      dateFrom: opts.dateFrom,
+      dateTo: opts.dateTo,
+    });
+    const [created] = await db.insert(cmvCalculations).values({
+      clientId,
+      localId: opts.localId ?? null,
+      stockInicialId: opts.stockInicialId,
+      stockFinalId: opts.stockFinalId,
+      periodFrom: opts.dateFrom ?? null,
+      periodTo: opts.dateTo ?? null,
+      stockInicial: String(r.stockInicial),
+      compras: String(r.compras),
+      stockFinal: String(r.stockFinal),
+      cmv: String(r.cmv),
+      ventaNeta: String(r.ventaNeta),
+      cmvPct: r.cmvPct != null ? String(r.cmvPct) : null,
+      createdBy: opts.createdBy ?? null,
+    } as any).returning();
+    return created;
+  }
+
+  async listCmvCalculations(clientId: number): Promise<CmvCalculation[]> {
+    return db.select().from(cmvCalculations).where(eq(cmvCalculations.clientId, clientId)).orderBy(desc(cmvCalculations.id));
   }
 
   async getPermissions(): Promise<Permission[]> {

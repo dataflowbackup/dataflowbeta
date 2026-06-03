@@ -3238,6 +3238,34 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
   });
 
+  // CMV — guardar / listar cálculos (registro del CMV calculado).
+  app.get("/api/finance/cmv-calculations", isAuthenticated, requirePermission("cmv.view", "view"), async (req, res) => {
+    try {
+      const { clientId } = (req as any).rbac;
+      res.json(await storage.listCmvCalculations(clientId));
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
+  app.post("/api/finance/cmv-calculations", isAuthenticated, requirePermission("cmv.view", "create"), async (req, res) => {
+    try {
+      const { clientId, actorId } = (req as any).rbac;
+      const stockInicialId = parseInt(req.body?.stockInicialId, 10);
+      const stockFinalId = parseInt(req.body?.stockFinalId, 10);
+      if (!Number.isFinite(stockInicialId) || !Number.isFinite(stockFinalId)) {
+        return res.status(400).json({ message: "Elegí stock inicial y stock final" });
+      }
+      const localId = req.body?.localId && req.body.localId !== "all" ? parseInt(String(req.body.localId), 10) : undefined;
+      const dateFrom = typeof req.body?.dateFrom === "string" && req.body.dateFrom ? req.body.dateFrom : undefined;
+      const dateTo = typeof req.body?.dateTo === "string" && req.body.dateTo ? req.body.dateTo : undefined;
+      const saved = await storage.saveCmvCalculation(clientId, { localId, stockInicialId, stockFinalId, dateFrom, dateTo, createdBy: actorId });
+      res.json(saved);
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
   // Punto de Equilibrio — Fase 8 (gateado por RBAC granular).
   app.get("/api/finance/breakeven", isAuthenticated, requirePermission("breakeven.view", "view"), async (req, res) => {
     try {
