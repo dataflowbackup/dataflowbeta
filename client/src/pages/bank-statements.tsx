@@ -42,6 +42,7 @@ import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { formatCurrency, formatDate } from "@/lib/formatters";
 import { cn } from "@/lib/utils";
+import { GenericBankMappingDialog } from "@/components/generic-bank-mapping-dialog";
 import { 
   Upload, 
   TrendingUp, 
@@ -398,6 +399,7 @@ export default function BankStatementsPage() {
   const mpSilentDismissRef = useRef(false);
   const mpPanelWasOpenRef = useRef(false);
   const [isAccountsDialogOpen, setIsAccountsDialogOpen] = useState(false);
+  const [isGenericMappingOpen, setIsGenericMappingOpen] = useState(false);
   const [purgeAccountTarget, setPurgeAccountTarget] = useState<BankAccountWithLocal | null>(null);
   const [newAccountName, setNewAccountName] = useState("");
   const [newAccountLocalId, setNewAccountLocalId] = useState<string>("none");
@@ -1574,12 +1576,21 @@ export default function BankStatementsPage() {
               <Landmark className="h-4 w-4 mr-2" />
               Cuentas
             </Button>
+            <Button variant="outline" onClick={() => setIsGenericMappingOpen(true)} data-testid="button-generic-mapping">
+              <ListChecks className="h-4 w-4 mr-2" />
+              Mapear banco
+            </Button>
             <Button onClick={() => setIsUploadOpen(true)} data-testid="button-import">
               <Upload className="h-4 w-4 mr-2" />
               Importar Excel
             </Button>
           </div>
         }
+      />
+
+      <GenericBankMappingDialog
+        open={isGenericMappingOpen}
+        onOpenChange={setIsGenericMappingOpen}
       />
 
       {isTransactionsError && (
