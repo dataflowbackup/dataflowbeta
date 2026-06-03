@@ -2720,12 +2720,45 @@ export class DatabaseStorage implements IStorage {
     clientId: number,
     opts: { dateFrom?: string; dateTo?: string; localIds?: number[] },
   ): Promise<number> {
-    const conds = [eq(sales.clientId, clientId)];
-    if (opts.dateFrom) conds.push(sql`${sales.saleDate} >= ${opts.dateFrom}`);
-    if (opts.dateTo) conds.push(sql`${sales.saleDate} <= ${opts.dateTo}`);
-    if (opts.localIds && opts.localIds.length > 0) conds.push(inArray(sales.localId, opts.localIds));
-    const rows = await db.select({ total: sales.total }).from(sales).where(and(...conds));
-    return rows.reduce((acc, r) => acc + (parseFloat(String(r.total)) || 0), 0);
+    // La "venta" = transacciones de INGRESO del grupo "Ventas" (importe bruto, con IVA tal como
+    // entró). NO se usa la tabla `sales` (ventas por producto, puede estar vacía). Se prioriza el
+    // grupo "Ventas" para dar la venta REAL aunque todavía no se haya marcado Inicio de mes;
+    // fallback: ingresos no especiales (= "Ventas" del balance post-migración).
+    const groups = await db
+      .select({ id: financialGroups.id, name: financialGroups.name, type: financialGroups.type })
+      .from(financialGroups)
+      .where(eq(financialGroups.clientId, clientId));
+    const ventasGroupIds = new Set(
+      groups.filter((g) => String(g.type) === "income" && String(g.name ?? "").trim().toLowerCase() === "ventas").map((g) => g.id),
+    );
+    const cats = await db
+      .select({ id: transactionCategories.id, type: transactionCategories.type, financialGroupId: transactionCategories.financialGroupId, specialType: transactionCategories.specialType })
+      .from(transactionCategories)
+      .where(eq(transactionCategories.clientId, clientId));
+    const salesCatIds = new Set(
+      (ventasGroupIds.size > 0
+        ? cats.filter((c) => c.financialGroupId != null && ventasGroupIds.has(c.financialGroupId))
+        : cats.filter(
+            (c) =>
+              String(c.type) === "income" &&
+              !(typeof c.specialType === "string" && OTROS_MOVIMIENTOS_SPECIAL_TYPES.has(c.specialType)),
+          )
+      ).map((c) => c.id),
+    );
+
+    const conds = [eq(transactions.clientId, clientId), eq(transactions.type, "income")];
+    if (opts.dateFrom) conds.push(sql`${transactions.transactionDate} >= ${opts.dateFrom}`);
+    if (opts.dateTo) conds.push(sql`${transactions.transactionDate} <= ${opts.dateTo}`);
+    if (opts.localIds && opts.localIds.length > 0) conds.push(inArray(transactions.localId, opts.localIds));
+    const rows = await db
+      .select({ amount: transactions.amount, categoryId: transactions.categoryId })
+      .from(transactions)
+      .where(and(...conds));
+
+    return rows.reduce((acc, r) => {
+      if (r.categoryId == null || !salesCatIds.has(r.categoryId)) return acc;
+      return acc + (parseFloat(String(r.amount)) || 0);
+    }, 0);
   }
 
   async getCmcReport(
