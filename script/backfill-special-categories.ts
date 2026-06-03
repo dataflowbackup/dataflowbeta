@@ -12,30 +12,31 @@
 import "../server/env";
 import { db } from "../server/db";
 import { clients } from "@shared/schema";
-import { seedSpecialCategoryFlagsForClient } from "../server/seedFinancialData";
+import { restructureSpecialParentGroupsForClient } from "../server/seedFinancialData";
 
 async function main() {
   const dryRun = process.argv.includes("--dry-run");
   const allClients = await db.select().from(clients);
   console.log(`[backfill] ${allClients.length} clientes. ${dryRun ? "(DRY-RUN)" : "(APLICANDO)"}`);
 
-  let totalUpdated = 0;
-  let totalOk = 0;
+  let totalGroups = 0;
+  let totalMoved = 0;
+  let totalFlagged = 0;
   for (const c of allClients) {
     if (dryRun) {
-      // En dry-run no escribimos: solo informamos cuántas quedarían por marcar no es trivial
-      // sin replicar la lógica, así que reportamos por cliente al aplicar.
       console.log(`  - cliente ${c.id} (${c.name}): pendiente de aplicar`);
       continue;
     }
-    const { updated, alreadyOk } = await seedSpecialCategoryFlagsForClient(c.id);
-    totalUpdated += updated;
-    totalOk += alreadyOk;
-    console.log(`  - cliente ${c.id} (${c.name}): ${updated} marcadas, ${alreadyOk} ya OK`);
+    // Crea grupos padre Préstamos/Alivios, mueve categorías de préstamo y marca flags. Idempotente.
+    const { groupsCreated, categoriesMoved, flagged } = await restructureSpecialParentGroupsForClient(c.id);
+    totalGroups += groupsCreated;
+    totalMoved += categoriesMoved;
+    totalFlagged += flagged;
+    console.log(`  - cliente ${c.id} (${c.name}): ${groupsCreated} grupos nuevos, ${categoriesMoved} cat. movidas, ${flagged} flags marcados`);
   }
 
   if (!dryRun) {
-    console.log(`[backfill] LISTO. ${totalUpdated} categorías marcadas, ${totalOk} ya estaban OK.`);
+    console.log(`[backfill] LISTO. ${totalGroups} grupos creados, ${totalMoved} categorías movidas, ${totalFlagged} flags marcados.`);
   }
   process.exit(0);
 }

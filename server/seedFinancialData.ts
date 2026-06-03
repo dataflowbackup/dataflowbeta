@@ -24,6 +24,9 @@ const FINANCIAL_GROUPS = [
   { name: "RRHH", type: "expense", displayOrder: 19 },
   { name: "Retiros Socios", type: "expense", displayOrder: 20 },
   { name: "Transferencias", type: "transfer", displayOrder: 21 },
+  // Otros Movimientos como grupos padre propios (no afectan rentabilidad; sí los saldos).
+  { name: "Préstamos", type: "income", displayOrder: 90 },
+  { name: "Alivios", type: "expense", displayOrder: 91 },
 ];
 
 /**
@@ -94,20 +97,25 @@ const CATEGORIES_BY_GROUP: Record<string, { name: string; type: "income" | "expe
     { name: "Inicio de mes", type: "income" },
   ],
   "Otros Ingresos": [
-    { name: "Préstamos", type: "income" },
     { name: "Ajustes y diferencia de caja (sobrante efec.)", type: "income" },
     { name: "Rendimientos por Billeteras Virtuales", type: "income" },
     { name: "Rendimiento Mercado Pago", type: "income" },
     { name: "Rendimientos FIMA", type: "income" },
     { name: "Otros Rendimientos", type: "income" },
-    { name: "Ingreso de Capital Préstamo", type: "income" },
     { name: "Ingreso de Capital Socios", type: "income" },
     { name: "Ajustes y diferencia de caja (sobrante efec.) (Mayorista)", type: "income" },
     { name: "Rendimientos Mercado Pago (Mayorista)", type: "income" },
     { name: "Rendimientos FIMA (Mayorista)", type: "income" },
     { name: "Otros Rendimientos (Mayorista)", type: "income" },
-    { name: "Ingreso de Capital Préstamo (Mayorista)", type: "income" },
     { name: "Ingreso de Capital Socios (Mayorista)", type: "income" },
+  ],
+  "Préstamos": [
+    { name: "Préstamos", type: "income" },
+    { name: "Ingreso de Capital Préstamo", type: "income" },
+    { name: "Ingreso de Capital Préstamo (Mayorista)", type: "income" },
+  ],
+  "Alivios": [
+    { name: "Alivio de caja", type: "expense" },
   ],
   "Banco, Tarjetas y Comisiones": [
     { name: "Comisiones Mercado Pago", type: "expense" },
@@ -462,4 +470,59 @@ export async function seedSpecialCategoryFlagsForClient(
   }
 
   return { updated, alreadyOk };
+}
+
+/**
+ * Reestructura los "Otros Movimientos" en 5 grupos padre (ROADMAP_BETA Fase 1, aclaración):
+ * crea los grupos padre "Préstamos" (income) y "Alivios" (expense) si faltan, mueve las
+ * categorías de préstamo desde "Otros Ingresos" al grupo "Préstamos", y re-marca los flags
+ * isSpecial/specialType de todos los grupos especiales.
+ *
+ * IDEMPOTENTE y SEGURO para producción: no borra grupos ni categorías; solo crea los grupos
+ * faltantes y reasigna el financialGroupId de las categorías de préstamo. Reversible.
+ */
+export async function restructureSpecialParentGroupsForClient(
+  clientId: number,
+): Promise<{ groupsCreated: number; categoriesMoved: number; flagged: number }> {
+  let groupsCreated = 0;
+  let categoriesMoved = 0;
+
+  const groups = await db.select().from(financialGroups).where(eq(financialGroups.clientId, clientId));
+  const byName = new Map(groups.map((g) => [String(g.name ?? "").trim().toLowerCase(), g]));
+
+  async function ensureGroup(name: string, type: "income" | "expense" | "transfer", displayOrder: number): Promise<number> {
+    const existing = byName.get(name.trim().toLowerCase());
+    if (existing) return existing.id;
+    const [created] = await db
+      .insert(financialGroups)
+      .values({ clientId, name, type, displayOrder, isSystem: true, active: true })
+      .returning();
+    groupsCreated++;
+    byName.set(name.trim().toLowerCase(), created as any);
+    return (created as any).id;
+  }
+
+  const prestamosGroupId = await ensureGroup("Préstamos", "income", 90);
+  await ensureGroup("Alivios", "expense", 91);
+
+  // Mover SOLO el capital del préstamo (ingreso) al grupo "Préstamos".
+  // IMPORTANTE: NO mover "interés sobre cuota de préstamo" ni similares: el interés es un
+  // gasto financiero real que SÍ afecta la rentabilidad y debe quedar en su grupo de gastos.
+  const cats = await db.select().from(transactionCategories).where(eq(transactionCategories.clientId, clientId));
+  for (const c of cats) {
+    const nm = String((c as any).name ?? "");
+    const esCapitalPrestamo =
+      /pr[eé]stamo/i.test(nm) && !/inter[eé]s/i.test(nm) && (c as any).type === "income";
+    if (esCapitalPrestamo && (c as any).financialGroupId !== prestamosGroupId) {
+      await db
+        .update(transactionCategories)
+        .set({ financialGroupId: prestamosGroupId })
+        .where(eq(transactionCategories.id, (c as any).id));
+      categoriesMoved++;
+    }
+  }
+
+  // Re-marcar flags (cubre los nuevos grupos especiales).
+  const { updated } = await seedSpecialCategoryFlagsForClient(clientId);
+  return { groupsCreated, categoriesMoved, flagged: updated };
 }
