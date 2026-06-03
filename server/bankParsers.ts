@@ -1214,11 +1214,20 @@ parsers.set("nacion", Object.assign(new GenericParser(), { bankId: "nacion", ban
 parsers.set("macro", Object.assign(new GenericParser(), { bankId: "macro", bankName: "Banco Macro" }));
 parsers.set("generic", new GenericParser());
 
+/**
+ * Bancos que NO se ofrecen al usuario pero cuyo parser sigue registrado (para no romper
+ * datos históricos ya importados con ese bankId). "frances" = BBVA absorbió a Banco Francés;
+ * se usa "bbva" como única entidad.
+ */
+const HIDDEN_BANK_IDS = new Set<string>(["frances"]);
+
 export function getAvailableBanks(): Array<{ id: string; name: string }> {
-  return Array.from(parsers.entries()).map(([id, parser]) => ({
-    id,
-    name: parser.bankName
-  }));
+  return Array.from(parsers.entries())
+    .filter(([id]) => !HIDDEN_BANK_IDS.has(id))
+    .map(([id, parser]) => ({
+      id,
+      name: parser.bankName,
+    }));
 }
 
 export function getBankParser(bankId: string): BankParser {
