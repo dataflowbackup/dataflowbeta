@@ -39,6 +39,7 @@ import BalancePage from "@/pages/balance";
 import CmcPage from "@/pages/cmc";
 import PapPage from "@/pages/pap";
 import StockValuationPage from "@/pages/stock-valuation";
+import CmvPage from "@/pages/cmv";
 import DashboardPage from "@/pages/dashboard";
 import StockPage from "@/pages/stock";
 import EmployeesPage from "@/pages/employees";
@@ -84,6 +85,7 @@ function AppRouter() {
       <Route path="/cmc" component={CmcPage} />
       <Route path="/pap" component={PapPage} />
       <Route path="/valorizar-stock" component={StockValuationPage} />
+      <Route path="/cmv" component={CmvPage} />
       <Route path="/dashboard" component={DashboardPage} />
       <Route path="/stock" component={StockPage} />
       <Route path="/empleados" component={EmployeesPage} />
