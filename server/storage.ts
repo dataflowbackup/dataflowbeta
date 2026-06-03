@@ -440,6 +440,19 @@ export interface IStorage {
   }): Promise<StockValuation>;
   reverseStockValuation(clientId: number, id: number): Promise<StockValuation | undefined>;
 
+  /** CMV = stock inicial + compras (CMC) − stock final; CMV% sobre venta sin IVA. */
+  computeCmv(clientId: number, opts: { localId?: number; stockInicialId: number; stockFinalId: number; dateFrom?: string; dateTo?: string }): Promise<{
+    stockInicial: number;
+    stockInicialDate: string;
+    stockFinal: number;
+    stockFinalDate: string;
+    compras: number;
+    cmv: number;
+    salesGross: number;
+    ventaNeta: number;
+    cmvPct: number | null;
+  }>;
+
   getPermissions(): Promise<Permission[]>;
   createPermission(permission: InsertPermission): Promise<Permission>;
   
@@ -2949,6 +2962,42 @@ export class DatabaseStorage implements IStorage {
       .where(and(eq(stockValuations.id, id), eq(stockValuations.clientId, clientId)))
       .returning();
     return updated;
+  }
+
+  async computeCmv(
+    clientId: number,
+    opts: { localId?: number; stockInicialId: number; stockFinalId: number; dateFrom?: string; dateTo?: string },
+  ) {
+    const [ini] = await db.select().from(stockValuations)
+      .where(and(eq(stockValuations.id, opts.stockInicialId), eq(stockValuations.clientId, clientId)));
+    const [fin] = await db.select().from(stockValuations)
+      .where(and(eq(stockValuations.id, opts.stockFinalId), eq(stockValuations.clientId, clientId)));
+    if (!ini) throw new Error("Stock inicial no encontrado");
+    if (!fin) throw new Error("Stock final no encontrado");
+
+    const stockInicial = parseFloat(String(ini.totalValued)) || 0;
+    const stockFinal = parseFloat(String(fin.totalValued)) || 0;
+
+    const localIds = opts.localId != null ? [opts.localId] : undefined;
+    const cmc = await this.getCmcReport(clientId, { dateFrom: opts.dateFrom, dateTo: opts.dateTo, localIds });
+    const compras = cmc.total; // sin IVA
+    const salesGross = await this.getSalesTotalByPeriod(clientId, { dateFrom: opts.dateFrom, dateTo: opts.dateTo, localIds });
+    const ventaNeta = salesGross / 1.21; // venta bruta sin IVA
+
+    const cmv = stockInicial + compras - stockFinal;
+    const cmvPct = ventaNeta > 0 ? (cmv / ventaNeta) * 100 : null;
+
+    return {
+      stockInicial,
+      stockInicialDate: String(ini.valuationDate),
+      stockFinal,
+      stockFinalDate: String(fin.valuationDate),
+      compras,
+      cmv,
+      salesGross,
+      ventaNeta,
+      cmvPct,
+    };
   }
 
   async getPermissions(): Promise<Permission[]> {

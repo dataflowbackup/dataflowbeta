@@ -3219,6 +3219,25 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
   });
 
+  // CMV (Costo de Mercadería Vendida) — Fase 7. Reporte gateado por RBAC granular.
+  app.get("/api/finance/cmv", isAuthenticated, requirePermission("cmv.view", "view"), async (req, res) => {
+    try {
+      const { clientId } = (req as any).rbac;
+      const stockInicialId = parseInt(req.query.stockInicialId as string, 10);
+      const stockFinalId = parseInt(req.query.stockFinalId as string, 10);
+      if (!Number.isFinite(stockInicialId) || !Number.isFinite(stockFinalId)) {
+        return res.status(400).json({ message: "Elegí stock inicial y stock final" });
+      }
+      const localId = req.query.localId && req.query.localId !== "all" ? parseInt(req.query.localId as string, 10) : undefined;
+      const dateFrom = typeof req.query.dateFrom === "string" && req.query.dateFrom ? req.query.dateFrom : undefined;
+      const dateTo = typeof req.query.dateTo === "string" && req.query.dateTo ? req.query.dateTo : undefined;
+      const data = await storage.computeCmv(clientId, { localId, stockInicialId, stockFinalId, dateFrom, dateTo });
+      res.json(data);
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
   app.get("/api/balance-report/export", isAuthenticated, async (req, res) => {
     try {
       const clientId = await getClientId(req);
