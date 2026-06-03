@@ -808,6 +808,12 @@ export const clientBanks = pgTable("client_banks", {
   displayName: varchar("display_name", { length: 100 }),
   isActive: boolean("is_active").default(true),
   displayOrder: integer("display_order").default(0),
+  /**
+   * Banco genérico (ROADMAP_BETA Fase 2): mapeo manual de columnas del extracto.
+   * Shape: { headerRows?, dateCol, desc1Col?, desc2Col?, debitCol?, creditCol?, amountCol?, balanceCol? }
+   * (índices de columna 0-based). Null para bancos con parser dedicado.
+   */
+  columnMapping: jsonb("column_mapping"),
   createdAt: timestamp("created_at").defaultNow(),
 }, (table) => [
   unique().on(table.clientId, table.bankId),

@@ -48,9 +48,32 @@ function pushSkipReason(reasons: string[], message: string) {
   }
 }
 
+/**
+ * Mapeo manual de columnas para el "Banco genérico" (ROADMAP_BETA Fase 2).
+ * Índices de columna 0-based dentro de la hoja del extracto.
+ */
+export interface GenericColumnMapping {
+  /** Filas de encabezado a saltar antes de los datos (default 1). */
+  headerRows?: number;
+  /** Columna de fecha (obligatoria). */
+  dateCol: number;
+  /** Primera columna de descripción. */
+  desc1Col?: number;
+  /** Segunda columna de descripción. */
+  desc2Col?: number;
+  /** Columna de débitos (egresos). */
+  debitCol?: number;
+  /** Columna de créditos (ingresos). */
+  creditCol?: number;
+  /** Alternativa a débito/crédito: una sola columna con monto con signo. */
+  amountCol?: number;
+}
+
 export interface ParserOptions {
   /** Mercado Pago: override de MONTO BRUTO por número de fila Excel (string del entero, ej. "234") */
   grossOverridesByExcelRow?: Record<string, number>;
+  /** Banco genérico: mapeo manual de columnas. Si está presente, se usa en vez del auto-detect. */
+  columnMapping?: GenericColumnMapping | null;
 }
 
 export interface BankParser {
@@ -325,8 +348,13 @@ class GaliciaParser implements BankParser {
 class GenericParser implements BankParser {
   bankId = "generic";
   bankName = "Genérico (Auto-detectar)";
-  
-  parse(rawData: any[][], _options?: ParserOptions): ParseResult {
+
+  parse(rawData: any[][], options?: ParserOptions): ParseResult {
+    const mapping = options?.columnMapping;
+    if (mapping && typeof mapping.dateCol === "number") {
+      return this.parseWithMapping(rawData, mapping);
+    }
+
     const transactions: ParsedTransaction[] = [];
     const skippedReasons: string[] = [];
     let skipped = 0;
@@ -412,6 +440,87 @@ class GenericParser implements BankParser {
       });
     }
     
+    return { transactions, skipped, skippedReasons, total };
+  }
+
+  /**
+   * Parseo con mapeo manual de columnas (Banco genérico, ROADMAP_BETA Fase 2).
+   * Usa índices 0-based explícitos en vez de auto-detectar por encabezado.
+   */
+  parseWithMapping(rawData: any[][], mapping: GenericColumnMapping): ParseResult {
+    const transactions: ParsedTransaction[] = [];
+    const skippedReasons: string[] = [];
+    let skipped = 0;
+
+    const headerRows = Number.isFinite(mapping.headerRows) ? Math.max(0, Number(mapping.headerRows)) : 1;
+    if (rawData.length <= headerRows) {
+      return { transactions, skipped: 0, skippedReasons: ["Archivo vacío"], total: 0 };
+    }
+
+    const hasDebitCredit =
+      typeof mapping.debitCol === "number" || typeof mapping.creditCol === "number";
+    const total = rawData.length - headerRows;
+
+    for (let i = headerRows; i < rawData.length; i++) {
+      const row = rawData[i];
+      if (!row || row.length === 0) {
+        skipped++;
+        continue;
+      }
+
+      const dateValue = parseExcelDate(row[mapping.dateCol]);
+      if (!dateValue) {
+        skipped++;
+        pushSkipReason(skippedReasons, `Fila ${i + 1}: Fecha inválida`);
+        continue;
+      }
+
+      const desc1 =
+        typeof mapping.desc1Col === "number" ? String(row[mapping.desc1Col] ?? "").trim() : "";
+      const desc2 =
+        typeof mapping.desc2Col === "number" ? String(row[mapping.desc2Col] ?? "").trim() : "";
+
+      let amount = 0;
+      let type: "income" | "expense" = "expense";
+
+      if (hasDebitCredit) {
+        const debitVal =
+          typeof mapping.debitCol === "number" ? parseArgentineNumber(row[mapping.debitCol]) : 0;
+        const creditVal =
+          typeof mapping.creditCol === "number" ? parseArgentineNumber(row[mapping.creditCol]) : 0;
+        if (creditVal !== 0) {
+          amount = Math.abs(creditVal);
+          type = "income";
+        } else if (debitVal !== 0) {
+          amount = Math.abs(debitVal);
+          type = "expense";
+        } else {
+          skipped++;
+          continue;
+        }
+      } else if (typeof mapping.amountCol === "number") {
+        const rawAmount = parseArgentineNumber(row[mapping.amountCol]);
+        if (rawAmount === 0) {
+          skipped++;
+          continue;
+        }
+        amount = Math.abs(rawAmount);
+        type = rawAmount > 0 ? "income" : "expense";
+      } else {
+        skipped++;
+        pushSkipReason(skippedReasons, `Fila ${i + 1}: Mapeo sin columna de monto (débito/crédito o monto)`);
+        continue;
+      }
+
+      transactions.push({
+        date: dateValue,
+        description: desc1 || "Movimiento importado",
+        description2: desc2 || undefined,
+        amount,
+        type,
+      });
+    }
+
     return { transactions, skipped, skippedReasons, total };
   }
 }

@@ -10,6 +10,7 @@ import {
   pickMercadoPagoReconciliationCandidates,
   mpAmountsMatchCent,
   type ParseResult,
+  type GenericColumnMapping,
 } from "./bankParsers";
 import type { InsertFinancialImportBatch, InsertTransaction } from "@shared/schema";
 
@@ -150,7 +151,10 @@ export async function runBankStatementImport(input: BankStatementImportInput): P
         grossOverridesByExcelRow: mpGrossOverrides,
       });
     } else {
-      parseResult = parser.parse(rawData);
+      // Banco genérico: si el cliente configuró un mapeo de columnas, se usa en vez del auto-detect.
+      const clientBank = await storage.getClientBankByBankId(clientId, bankId);
+      const columnMapping = (clientBank?.columnMapping as GenericColumnMapping | null) ?? null;
+      parseResult = parser.parse(rawData, columnMapping ? { columnMapping } : undefined);
     }
     openingBalanceDetected = parseResult.openingBalance ?? null;
     closingBalanceDetected = parseResult.closingBalance ?? null;
@@ -208,8 +212,19 @@ export async function runBankStatementImport(input: BankStatementImportInput): P
   const closingBalanceManual = z.coerce.number().safeParse(closingBalanceRaw);
   const openingBalanceToUse =
     openingBalanceManual.success ? openingBalanceManual.data : openingBalanceDetected;
-  const closingBalanceToUse =
+  let closingBalanceToUse =
     closingBalanceManual.success ? closingBalanceManual.data : closingBalanceDetected;
+
+  // Fallback de cierre: si no hay cierre (detectado ni manual) pero sí saldo inicial,
+  // se computa cierre = inicial + Σ(ingresos) − Σ(egresos) del extracto. Así el próximo
+  // extracto puede validar continuidad. No aplica a MP/BBVA (tienen su propia detección).
+  if (closingBalanceToUse == null && openingBalanceToUse != null && bankId !== "mercadopago" && bankId !== "bbva") {
+    const net = parseResult.transactions.reduce(
+      (acc, t) => acc + (t.type === "income" ? t.amount : -t.amount),
+      0,
+    );
+    closingBalanceToUse = Number((Number(openingBalanceToUse) + net).toFixed(2));
+  }
 
   const txCountForAccount = await storage.getTransactionCountForBankAccount(clientId, bankAccountId);
   const lastBatch = await storage.getLastFinancialImportBatchForAccount(clientId, bankAccountId);

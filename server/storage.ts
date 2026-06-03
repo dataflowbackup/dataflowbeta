@@ -287,6 +287,7 @@ export interface IStorage {
   deleteFinancialGroup(clientId: number, id: number): Promise<boolean>;
   
   getClientBanks(clientId: number): Promise<ClientBank[]>;
+  getClientBankByBankId(clientId: number, bankId: string): Promise<ClientBank | undefined>;
   createClientBank(bank: InsertClientBank): Promise<ClientBank>;
   updateClientBank(clientId: number, id: number, bank: Partial<InsertClientBank>): Promise<ClientBank | undefined>;
   deleteClientBank(clientId: number, id: number): Promise<boolean>;
@@ -1744,6 +1745,12 @@ export class DatabaseStorage implements IStorage {
     return db.select().from(clientBanks)
       .where(eq(clientBanks.clientId, clientId))
       .orderBy(clientBanks.displayOrder);
+  }
+
+  async getClientBankByBankId(clientId: number, bankId: string): Promise<ClientBank | undefined> {
+    const [row] = await db.select().from(clientBanks)
+      .where(and(eq(clientBanks.clientId, clientId), eq(clientBanks.bankId, bankId)));
+    return row;
   }
 
   async getBusinessNames(clientId: number): Promise<BusinessName[]> {

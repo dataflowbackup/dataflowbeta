@@ -2063,6 +2063,43 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
   });
 
+  // Banco genérico (ROADMAP_BETA Fase 2): configurar el mapeo manual de columnas.
+  // Endpoint NUEVO, gateado por RBAC granular (primer uso de requirePermission).
+  app.put(
+    "/api/client-banks/:id/column-mapping",
+    isAuthenticated,
+    requirePermission("bank.config", "edit"),
+    async (req, res) => {
+      try {
+        const { clientId } = (req as any).rbac;
+        const columnMappingSchema = z
+          .object({
+            headerRows: z.coerce.number().int().min(0).max(50).optional(),
+            dateCol: z.coerce.number().int().min(0),
+            desc1Col: z.coerce.number().int().min(0).optional(),
+            desc2Col: z.coerce.number().int().min(0).optional(),
+            debitCol: z.coerce.number().int().min(0).optional(),
+            creditCol: z.coerce.number().int().min(0).optional(),
+            amountCol: z.coerce.number().int().min(0).optional(),
+          })
+          .refine((m) => m.debitCol != null || m.creditCol != null || m.amountCol != null, {
+            message: "Mapeá al menos débito/crédito o una columna de monto.",
+          });
+        const parsed = columnMappingSchema.safeParse(req.body?.columnMapping ?? req.body);
+        if (!parsed.success) {
+          return res.status(400).json({ message: "Mapeo inválido", errors: parsed.error.flatten() });
+        }
+        const data = await storage.updateClientBank(clientId, parseInt(req.params.id), {
+          columnMapping: parsed.data,
+        } as any);
+        if (!data) return res.status(404).json({ message: "Banco no encontrado" });
+        res.json(data);
+      } catch (e: any) {
+        res.status(500).json({ message: e.message });
+      }
+    },
+  );
+
   app.get("/api/transaction-categories", isAuthenticated, async (req, res) => {
     try {
       const clientId = await getClientId(req);
