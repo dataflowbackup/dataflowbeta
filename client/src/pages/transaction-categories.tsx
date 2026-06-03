@@ -175,10 +175,7 @@ export default function TransactionCategoriesPage() {
   };
 
   const openEdit = (category: CategoryWithGroup) => {
-    if (category.isSystem) {
-      toast({ title: "No editable", description: "Las categorías del sistema no se pueden editar", variant: "destructive" });
-      return;
-    }
+    // Fase 3: las categorías de sistema se pueden RENOMBRAR; el resto de campos quedan bloqueados.
     setEditingCategory(category);
     form.reset({
       name: category.name,
@@ -353,6 +350,12 @@ export default function TransactionCategoriesPage() {
           </DialogHeader>
           <Form {...form}>
             <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
+              {editingCategory?.isSystem && (
+                <div className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-400">
+                  Categoría del sistema: solo podés editar el <strong>nombre</strong>. El tipo, el grupo y la
+                  clasificación especial quedan bloqueados para no afectar el balance.
+                </div>
+              )}
               <FormField
                 control={form.control}
                 name="name"
@@ -380,6 +383,7 @@ export default function TransactionCategoriesPage() {
                           onValueChange={field.onChange}
                           placeholder="Seleccionar tipo"
                           searchPlaceholder="Buscar tipo…"
+                          disabled={editingCategory?.isSystem === true}
                           data-testid="select-type"
                         />
                       </FormControl>
@@ -403,6 +407,7 @@ export default function TransactionCategoriesPage() {
                           placeholder="Seleccionar grupo"
                           searchPlaceholder="Buscar grupo…"
                           emptyOptionLabel="Sin grupo"
+                          disabled={editingCategory?.isSystem === true}
                           data-testid="select-group"
                         />
                       </FormControl>
@@ -429,6 +434,7 @@ export default function TransactionCategoriesPage() {
                         <Switch
                           checked={field.value}
                           onCheckedChange={field.onChange}
+                          disabled={editingCategory?.isSystem === true}
                           data-testid="switch-isSpecial"
                         />
                       </FormControl>
@@ -450,6 +456,7 @@ export default function TransactionCategoriesPage() {
                             onValueChange={field.onChange}
                             placeholder="Seleccionar tipo"
                             searchPlaceholder="Buscar tipo…"
+                            disabled={editingCategory?.isSystem === true}
                             data-testid="select-specialType"
                           />
                         </FormControl>

@@ -137,10 +137,7 @@ export default function FinancialGroupsPage() {
   };
 
   const openEdit = (group: FinancialGroup) => {
-    if (group.isSystem) {
-      toast({ title: "No se puede editar", description: "Los grupos del sistema no se pueden modificar", variant: "destructive" });
-      return;
-    }
+    // Fase 3: los grupos de sistema se pueden RENOMBRAR; el tipo queda bloqueado y no se borran.
     setEditingGroup(group);
     form.reset({
       name: group.name,
@@ -239,7 +236,6 @@ export default function FinancialGroupsPage() {
             variant="ghost"
             size="icon"
             onClick={() => openEdit(row)}
-            disabled={row.isSystem ?? false}
             data-testid={`button-edit-${row.id}`}
           >
             <Edit className="h-4 w-4" />
@@ -321,6 +317,12 @@ export default function FinancialGroupsPage() {
           </DialogHeader>
           <Form {...form}>
             <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
+              {editingGroup?.isSystem && (
+                <div className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-400">
+                  Grupo del sistema: solo podés editar el <strong>nombre</strong> y el orden. El tipo
+                  queda bloqueado para no afectar el balance.
+                </div>
+              )}
               <FormField
                 control={form.control}
                 name="name"
@@ -347,6 +349,7 @@ export default function FinancialGroupsPage() {
                         onValueChange={field.onChange}
                         placeholder="Seleccionar tipo"
                         searchPlaceholder="Buscar tipo…"
+                        disabled={editingGroup?.isSystem === true}
                         data-testid="select-type"
                       />
                     </FormControl>

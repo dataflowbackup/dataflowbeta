@@ -1728,8 +1728,22 @@ export class DatabaseStorage implements IStorage {
   }
 
   async updateFinancialGroup(clientId: number, id: number, group: Partial<InsertFinancialGroup>): Promise<FinancialGroup | undefined> {
+    // Salvaguarda Fase 3: los grupos de sistema se pueden RENOMBRAR (y reordenar/activar),
+    // pero NO se les puede cambiar `type` ni `isSystem` (rompería el balance y los parsers).
+    const [existing] = await db.select().from(financialGroups)
+      .where(and(eq(financialGroups.id, id), eq(financialGroups.clientId, clientId)));
+    if (!existing) return undefined;
+
+    let patch: Partial<InsertFinancialGroup> = group;
+    if (existing.isSystem) {
+      patch = {};
+      if (group.name !== undefined) patch.name = group.name;
+      if (group.displayOrder !== undefined) patch.displayOrder = group.displayOrder;
+      if (group.active !== undefined) patch.active = group.active;
+    }
+
     const [updated] = await db.update(financialGroups)
-      .set(group)
+      .set(patch)
       .where(and(eq(financialGroups.id, id), eq(financialGroups.clientId, clientId)))
       .returning();
     return updated;
@@ -1868,8 +1882,22 @@ export class DatabaseStorage implements IStorage {
   }
 
   async updateTransactionCategory(clientId: number, id: number, category: Partial<InsertTransactionCategory>): Promise<TransactionCategory | undefined> {
+    // Salvaguarda Fase 3: las categorías de sistema se pueden RENOMBRAR (y activar/desactivar),
+    // pero NO se les puede cambiar type / isSpecial / specialType / financialGroupId / isSystem
+    // (eso preservaría la lógica del balance y de "Otros Movimientos").
+    const [existing] = await db.select().from(transactionCategories)
+      .where(and(eq(transactionCategories.id, id), eq(transactionCategories.clientId, clientId)));
+    if (!existing) return undefined;
+
+    let patch: Partial<InsertTransactionCategory> = category;
+    if (existing.isSystem) {
+      patch = {};
+      if (category.name !== undefined) patch.name = category.name;
+      if (category.active !== undefined) patch.active = category.active;
+    }
+
     const [updated] = await db.update(transactionCategories)
-      .set(category)
+      .set(patch)
       .where(and(eq(transactionCategories.id, id), eq(transactionCategories.clientId, clientId)))
       .returning();
     return updated;
