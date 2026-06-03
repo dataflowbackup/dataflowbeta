@@ -3119,6 +3119,24 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
   });
 
+  // CMC (Costo de Mercadería Comprada) — Fase 4. Reporte gateado por RBAC granular.
+  app.get("/api/finance/cmc", isAuthenticated, requirePermission("cmc.view", "view"), async (req, res) => {
+    try {
+      const { clientId } = (req as any).rbac;
+      const dateFrom = typeof req.query.dateFrom === "string" && req.query.dateFrom ? req.query.dateFrom : undefined;
+      const dateTo = typeof req.query.dateTo === "string" && req.query.dateTo ? req.query.dateTo : undefined;
+      const localIdsRaw = req.query.localIds ?? req.query.localId;
+      const localIds =
+        typeof localIdsRaw === "string" && localIdsRaw && localIdsRaw !== "all"
+          ? localIdsRaw.split(",").map((s) => parseInt(s, 10)).filter((n) => Number.isFinite(n))
+          : undefined;
+      const data = await storage.getCmcReport(clientId, { dateFrom, dateTo, localIds });
+      res.json(data);
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
   app.get("/api/balance-report/export", isAuthenticated, async (req, res) => {
     try {
       const clientId = await getClientId(req);

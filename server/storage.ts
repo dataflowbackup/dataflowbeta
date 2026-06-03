@@ -391,7 +391,23 @@ export interface IStorage {
   }>;
   
   getSales(clientId: number): Promise<Sale[]>;
-  
+  /** Suma de ventas (bruto, con IVA) por período/local. Reusable por CMC/CMV/PAP. */
+  getSalesTotalByPeriod(clientId: number, opts: { dateFrom?: string; dateTo?: string; localIds?: number[] }): Promise<number>;
+  /** CMC: costo de insumos comprados SIN IVA, desglosado por rubro padre → sub-rubro, con % vs venta sin IVA. */
+  getCmcReport(clientId: number, opts: { dateFrom?: string; dateTo?: string; localIds?: number[] }): Promise<{
+    total: number;
+    salesGross: number;
+    salesNet: number;
+    pct: number | null;
+    rubros: Array<{
+      id: number | null;
+      name: string;
+      total: number;
+      pct: number | null;
+      subRubros: Array<{ id: number | null; name: string; total: number; pct: number | null }>;
+    }>;
+  }>;
+
   getPermissions(): Promise<Permission[]>;
   createPermission(permission: InsertPermission): Promise<Permission>;
   
@@ -2635,6 +2651,110 @@ export class DatabaseStorage implements IStorage {
 
   async getSales(clientId: number): Promise<Sale[]> {
     return db.select().from(sales).where(eq(sales.clientId, clientId)).orderBy(desc(sales.saleDate));
+  }
+
+  async getSalesTotalByPeriod(
+    clientId: number,
+    opts: { dateFrom?: string; dateTo?: string; localIds?: number[] },
+  ): Promise<number> {
+    const conds = [eq(sales.clientId, clientId)];
+    if (opts.dateFrom) conds.push(sql`${sales.saleDate} >= ${opts.dateFrom}`);
+    if (opts.dateTo) conds.push(sql`${sales.saleDate} <= ${opts.dateTo}`);
+    if (opts.localIds && opts.localIds.length > 0) conds.push(inArray(sales.localId, opts.localIds));
+    const rows = await db.select({ total: sales.total }).from(sales).where(and(...conds));
+    return rows.reduce((acc, r) => acc + (parseFloat(String(r.total)) || 0), 0);
+  }
+
+  async getCmcReport(
+    clientId: number,
+    opts: { dateFrom?: string; dateTo?: string; localIds?: number[] },
+  ) {
+    // 1) Facturas en alcance (activas, por fecha/local).
+    const invConds = [eq(invoices.clientId, clientId), eq(invoices.status, "active")];
+    if (opts.dateFrom) invConds.push(sql`${invoices.invoiceDate} >= ${opts.dateFrom}`);
+    if (opts.dateTo) invConds.push(sql`${invoices.invoiceDate} <= ${opts.dateTo}`);
+    if (opts.localIds && opts.localIds.length > 0) invConds.push(inArray(invoices.localId, opts.localIds));
+    const invs = await db.select({ id: invoices.id }).from(invoices).where(and(...invConds));
+    const invIds = invs.map((i) => i.id);
+
+    const salesGross = await this.getSalesTotalByPeriod(clientId, opts);
+    const salesNet = salesGross / 1.21; // criterio CMC: venta sin IVA
+    const pctOf = (amount: number) => (salesNet > 0 ? (amount / salesNet) * 100 : null);
+
+    if (invIds.length === 0) {
+      return { total: 0, salesGross, salesNet, pct: pctOf(0), rubros: [] };
+    }
+
+    // 2) Ítems de esas facturas (subtotal = base SIN IVA).
+    const items = await db
+      .select({ subtotal: invoiceItems.subtotal, supplyId: invoiceItems.supplyId, rubroId: invoiceItems.rubroId })
+      .from(invoiceItems)
+      .where(inArray(invoiceItems.invoiceId, invIds));
+
+    // 3) Mapas de lookup (insumo → sub-rubro/rubro; sub-rubro → rubro padre; rubro → nombre).
+    const supplyRows = await db
+      .select({ id: supplies.id, subRubroId: supplies.subRubroId, rubroId: supplies.rubroId })
+      .from(supplies)
+      .where(eq(supplies.clientId, clientId));
+    const supplyMap = new Map(supplyRows.map((s) => [s.id, s]));
+    const subRubroRows = await db.select().from(subRubros).where(eq(subRubros.clientId, clientId));
+    const subRubroMap = new Map(subRubroRows.map((s) => [s.id, s]));
+    const rubroRows = await db.select().from(rubros).where(eq(rubros.clientId, clientId));
+    const rubroMap = new Map(rubroRows.map((r) => [r.id, r]));
+
+    // 4) Agregación por rubro padre → sub-rubro.
+    const UNCLASS = -1;
+    type Sub = { id: number | null; name: string; total: number };
+    type Rub = { id: number | null; name: string; total: number; subs: Map<number, Sub> };
+    const agg = new Map<number, Rub>();
+
+    for (const it of items) {
+      const amount = parseFloat(String(it.subtotal)) || 0;
+      if (amount === 0) continue;
+
+      let subRubroId: number | null = null;
+      let rubroFromSupply: number | null = null;
+      if (it.supplyId != null && supplyMap.has(it.supplyId)) {
+        const s = supplyMap.get(it.supplyId)!;
+        subRubroId = (s.subRubroId as number | null) ?? null;
+        rubroFromSupply = (s.rubroId as number | null) ?? null;
+      }
+      let parentRubroId: number | null = rubroFromSupply;
+      if (subRubroId != null && subRubroMap.has(subRubroId)) {
+        parentRubroId = (subRubroMap.get(subRubroId)!.rubroId as number | null) ?? parentRubroId;
+      }
+      if (parentRubroId == null && it.rubroId != null) parentRubroId = it.rubroId;
+
+      const rKey = parentRubroId ?? UNCLASS;
+      const rName = parentRubroId != null ? (rubroMap.get(parentRubroId)?.name ?? "Sin clasificar") : "Sin clasificar";
+      const sKey = subRubroId ?? UNCLASS;
+      const sName = subRubroId != null ? (subRubroMap.get(subRubroId)?.name ?? "Sin sub-rubro") : "Sin sub-rubro";
+
+      let rub = agg.get(rKey);
+      if (!rub) {
+        rub = { id: parentRubroId, name: rName, total: 0, subs: new Map() };
+        agg.set(rKey, rub);
+      }
+      rub.total += amount;
+      const sub = rub.subs.get(sKey);
+      if (!sub) rub.subs.set(sKey, { id: subRubroId, name: sName, total: amount });
+      else sub.total += amount;
+    }
+
+    const rubrosOut = Array.from(agg.values())
+      .map((r) => ({
+        id: r.id,
+        name: r.name,
+        total: r.total,
+        pct: pctOf(r.total),
+        subRubros: Array.from(r.subs.values())
+          .map((s) => ({ id: s.id, name: s.name, total: s.total, pct: pctOf(s.total) }))
+          .sort((a, b) => b.total - a.total),
+      }))
+      .sort((a, b) => b.total - a.total);
+
+    const total = rubrosOut.reduce((acc, r) => acc + r.total, 0);
+    return { total, salesGross, salesNet, pct: pctOf(total), rubros: rubrosOut };
   }
 
   async getPermissions(): Promise<Permission[]> {
