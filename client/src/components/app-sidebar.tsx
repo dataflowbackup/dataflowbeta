@@ -31,6 +31,7 @@ import {
   Briefcase,
   Banknote,
   Upload,
+  ShoppingCart,
 } from "lucide-react";
 import { useAuth } from "@/hooks/useAuth";
 import { usePermissions } from "@/hooks/usePermissions";
@@ -120,6 +121,7 @@ const menuSections: MenuSection[] = [
       { title: "Categorias Mov.", url: "/categorias-movimientos", icon: Tags },
       { title: "Grupos Financ.", url: "/grupos-financieros", icon: FolderTree },
       { title: "Balances Financieros", url: "/balance", icon: BarChart3 },
+      { title: "CMC", url: "/cmc", icon: ShoppingCart, permission: "cmc.view" },
       { title: "Dashboard", url: "/dashboard", icon: BarChart3 },
     ],
   },

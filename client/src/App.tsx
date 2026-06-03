@@ -36,6 +36,7 @@ import FinancialGroupsPage from "@/pages/financial-groups";
 import BankStatementsPage from "@/pages/bank-statements";
 import CashPage from "@/pages/cash";
 import BalancePage from "@/pages/balance";
+import CmcPage from "@/pages/cmc";
 import DashboardPage from "@/pages/dashboard";
 import StockPage from "@/pages/stock";
 import EmployeesPage from "@/pages/employees";
@@ -78,6 +79,7 @@ function AppRouter() {
       <Route path="/extractos" component={BankStatementsPage} />
       <Route path="/efectivo" component={CashPage} />
       <Route path="/balance" component={BalancePage} />
+      <Route path="/cmc" component={CmcPage} />
       <Route path="/dashboard" component={DashboardPage} />
       <Route path="/stock" component={StockPage} />
       <Route path="/empleados" component={EmployeesPage} />
