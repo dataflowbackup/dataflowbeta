@@ -1054,6 +1054,40 @@ export type InsertStockAdjustment = z.infer<typeof insertStockAdjustmentSchema>;
 export type StockAdjustment = typeof stockAdjustments.$inferSelect;
 
 // ==========================================
+// STOCK VALUATIONS (Valorización de Stock - ROADMAP_BETA Fase 6)
+// Snapshot inmutable: cantidad × costo de reposición (última compra) por insumo.
+// ==========================================
+export const stockValuations = pgTable("stock_valuations", {
+  id: serial("id").primaryKey(),
+  clientId: integer("client_id").notNull().references(() => clients.id, { onDelete: "cascade" }),
+  localId: integer("local_id").references(() => locals.id),
+  valuationDate: date("valuation_date").notNull(),
+  totalValued: decimal("total_valued", { precision: 14, scale: 2 }).default("0"),
+  status: varchar("status", { length: 20 }).default("active"), // active | reversed
+  notes: text("notes"),
+  createdBy: varchar("created_by").references(() => users.id),
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
+export const insertStockValuationSchema = createInsertSchema(stockValuations).omit({ id: true, createdAt: true });
+export type InsertStockValuation = z.infer<typeof insertStockValuationSchema>;
+export type StockValuation = typeof stockValuations.$inferSelect;
+
+export const stockValuationItems = pgTable("stock_valuation_items", {
+  id: serial("id").primaryKey(),
+  valuationId: integer("valuation_id").notNull().references(() => stockValuations.id, { onDelete: "cascade" }),
+  supplyId: integer("supply_id").notNull().references(() => supplies.id),
+  unitOfMeasureId: integer("unit_of_measure_id").references(() => unitsOfMeasure.id),
+  quantity: decimal("quantity", { precision: 14, scale: 4 }).notNull(),
+  replacementUnitCost: decimal("replacement_unit_cost", { precision: 14, scale: 4 }).default("0"),
+  lineTotal: decimal("line_total", { precision: 14, scale: 2 }).default("0"),
+});
+
+export const insertStockValuationItemSchema = createInsertSchema(stockValuationItems).omit({ id: true });
+export type InsertStockValuationItem = z.infer<typeof insertStockValuationItemSchema>;
+export type StockValuationItem = typeof stockValuationItems.$inferSelect;
+
+// ==========================================
 // OPERATIONAL AUDITS (Auditorías Operativas)
 // ==========================================
 export const operationalAudits = pgTable("operational_audits", {

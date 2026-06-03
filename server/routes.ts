@@ -3156,6 +3156,69 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
   });
 
+  // Valorización de Stock — Fase 6 (CRUD gateado por RBAC granular).
+  app.get("/api/finance/stock-valuations", isAuthenticated, requirePermission("stock_valuation.view", "view"), async (req, res) => {
+    try {
+      const { clientId } = (req as any).rbac;
+      const localId = req.query.localId && req.query.localId !== "all" ? parseInt(req.query.localId as string, 10) : undefined;
+      res.json(await storage.listStockValuations(clientId, localId));
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
+  app.get("/api/finance/stock-valuations/:id", isAuthenticated, requirePermission("stock_valuation.view", "view"), async (req, res) => {
+    try {
+      const { clientId } = (req as any).rbac;
+      const data = await storage.getStockValuation(clientId, parseInt(req.params.id, 10));
+      if (!data) return res.status(404).json({ message: "Valorización no encontrada" });
+      res.json(data);
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
+  app.post("/api/finance/stock-valuations", isAuthenticated, requirePermission("stock_valuation.create", "create"), async (req, res) => {
+    try {
+      const { clientId, actorId } = (req as any).rbac;
+      const bodySchema = z.object({
+        localId: z.coerce.number().int().positive().nullable().optional(),
+        valuationDate: z.string().min(1),
+        notes: z.string().optional().nullable(),
+        items: z.array(z.object({
+          supplyId: z.coerce.number().int().positive(),
+          quantity: z.coerce.number(),
+          unitOfMeasureId: z.coerce.number().int().positive().nullable().optional(),
+          replacementUnitCost: z.coerce.number().nullable().optional(),
+        })).min(1, "Cargá al menos un insumo con cantidad"),
+      });
+      const parsed = bodySchema.safeParse(req.body);
+      if (!parsed.success) return res.status(400).json({ message: "Datos inválidos", errors: parsed.error.flatten() });
+      const created = await storage.createStockValuation({
+        clientId,
+        localId: parsed.data.localId ?? null,
+        valuationDate: parsed.data.valuationDate,
+        notes: parsed.data.notes ?? null,
+        createdBy: actorId,
+        items: parsed.data.items,
+      });
+      res.json(created);
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
+  app.post("/api/finance/stock-valuations/:id/reverse", isAuthenticated, requirePermission("stock_valuation.delete", "delete"), async (req, res) => {
+    try {
+      const { clientId } = (req as any).rbac;
+      const reversed = await storage.reverseStockValuation(clientId, parseInt(req.params.id, 10));
+      if (!reversed) return res.status(404).json({ message: "Valorización no encontrada" });
+      res.json(reversed);
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
   app.get("/api/balance-report/export", isAuthenticated, async (req, res) => {
     try {
       const clientId = await getClientId(req);

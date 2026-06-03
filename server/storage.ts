@@ -44,6 +44,8 @@ import {
   stockMovements,
   stockLevels,
   stockAdjustments,
+  stockValuations,
+  stockValuationItems,
   operationalAudits,
   auditTemplates,
   auditTemplateItems,
@@ -135,6 +137,10 @@ import {
   type InsertStockLevel,
   type StockAdjustment,
   type InsertStockAdjustment,
+  type StockValuation,
+  type InsertStockValuation,
+  type StockValuationItem,
+  type InsertStockValuationItem,
   type OperationalAudit,
   type InsertOperationalAudit,
   type AuditTemplate,
@@ -417,6 +423,22 @@ export interface IStorage {
     pctPagado: number | null;
     bySupplier: Array<{ supplierId: number | null; name: string; entregado: number; pagado: number; saldo: number }>;
   }>;
+
+  // Valorización de Stock (Fase 6)
+  listStockValuations(clientId: number, localId?: number): Promise<StockValuation[]>;
+  getStockValuation(clientId: number, id: number): Promise<
+    | { valuation: StockValuation; items: Array<StockValuationItem & { supplyName: string | null; unitName: string | null }> }
+    | undefined
+  >;
+  createStockValuation(input: {
+    clientId: number;
+    localId?: number | null;
+    valuationDate: string;
+    notes?: string | null;
+    createdBy?: string | null;
+    items: Array<{ supplyId: number; quantity: number; unitOfMeasureId?: number | null; replacementUnitCost?: number | null }>;
+  }): Promise<StockValuation>;
+  reverseStockValuation(clientId: number, id: number): Promise<StockValuation | undefined>;
 
   getPermissions(): Promise<Permission[]>;
   createPermission(permission: InsertPermission): Promise<Permission>;
@@ -2841,6 +2863,92 @@ export class DatabaseStorage implements IStorage {
       pctPagado: pctOf(totalPagado),
       bySupplier,
     };
+  }
+
+  async listStockValuations(clientId: number, localId?: number): Promise<StockValuation[]> {
+    const conds = [eq(stockValuations.clientId, clientId)];
+    if (localId != null) conds.push(eq(stockValuations.localId, localId));
+    return db.select().from(stockValuations).where(and(...conds)).orderBy(desc(stockValuations.valuationDate), desc(stockValuations.id));
+  }
+
+  async getStockValuation(clientId: number, id: number) {
+    const [valuation] = await db.select().from(stockValuations)
+      .where(and(eq(stockValuations.id, id), eq(stockValuations.clientId, clientId)));
+    if (!valuation) return undefined;
+
+    const rawItems = await db.select().from(stockValuationItems).where(eq(stockValuationItems.valuationId, id));
+    const supplyRows = await db.select({ id: supplies.id, name: supplies.name }).from(supplies).where(eq(supplies.clientId, clientId));
+    const supplyName = new Map(supplyRows.map((s) => [s.id, s.name]));
+    const unitRows = await db.select({ id: unitsOfMeasure.id, name: unitsOfMeasure.name }).from(unitsOfMeasure).where(eq(unitsOfMeasure.clientId, clientId));
+    const unitName = new Map(unitRows.map((u) => [u.id, u.name]));
+
+    const items = rawItems.map((it) => ({
+      ...it,
+      supplyName: it.supplyId != null ? (supplyName.get(it.supplyId) ?? null) : null,
+      unitName: it.unitOfMeasureId != null ? (unitName.get(it.unitOfMeasureId) ?? null) : null,
+    }));
+    return { valuation, items };
+  }
+
+  async createStockValuation(input: {
+    clientId: number;
+    localId?: number | null;
+    valuationDate: string;
+    notes?: string | null;
+    createdBy?: string | null;
+    items: Array<{ supplyId: number; quantity: number; unitOfMeasureId?: number | null; replacementUnitCost?: number | null }>;
+  }): Promise<StockValuation> {
+    // Costo de reposición = última compra (supplies.lastCost) si no se provee explícito.
+    const supplyRows = await db
+      .select({ id: supplies.id, lastCost: supplies.lastCost, unitOfMeasureId: supplies.unitOfMeasureId })
+      .from(supplies)
+      .where(eq(supplies.clientId, input.clientId));
+    const supplyMap = new Map(supplyRows.map((s) => [s.id, s]));
+
+    const prepared = input.items
+      .filter((it) => it.supplyId != null && Number(it.quantity) > 0)
+      .map((it) => {
+        const s = supplyMap.get(it.supplyId);
+        const cost = it.replacementUnitCost != null ? Number(it.replacementUnitCost) : parseFloat(String(s?.lastCost ?? 0)) || 0;
+        const qty = Number(it.quantity) || 0;
+        const uom = it.unitOfMeasureId ?? (s?.unitOfMeasureId as number | null) ?? null;
+        const lineTotal = Math.round(qty * cost * 100) / 100;
+        return { supplyId: it.supplyId, unitOfMeasureId: uom, quantity: qty, replacementUnitCost: cost, lineTotal };
+      });
+
+    const totalValued = Math.round(prepared.reduce((a, it) => a + it.lineTotal, 0) * 100) / 100;
+
+    const [created] = await db.insert(stockValuations).values({
+      clientId: input.clientId,
+      localId: input.localId ?? null,
+      valuationDate: input.valuationDate,
+      totalValued: String(totalValued),
+      status: "active",
+      notes: input.notes ?? null,
+      createdBy: input.createdBy ?? null,
+    } as any).returning();
+
+    if (prepared.length > 0) {
+      await db.insert(stockValuationItems).values(
+        prepared.map((it) => ({
+          valuationId: created.id,
+          supplyId: it.supplyId,
+          unitOfMeasureId: it.unitOfMeasureId,
+          quantity: String(it.quantity),
+          replacementUnitCost: String(it.replacementUnitCost),
+          lineTotal: String(it.lineTotal),
+        })) as any,
+      );
+    }
+    return created;
+  }
+
+  async reverseStockValuation(clientId: number, id: number): Promise<StockValuation | undefined> {
+    const [updated] = await db.update(stockValuations)
+      .set({ status: "reversed" })
+      .where(and(eq(stockValuations.id, id), eq(stockValuations.clientId, clientId)))
+      .returning();
+    return updated;
   }
 
   async getPermissions(): Promise<Permission[]> {
