@@ -383,6 +383,16 @@ export interface IStorage {
   getRolePermissions(clientId: number, role?: string): Promise<RolePermission[]>;
   setRolePermission(rolePermission: InsertRolePermission): Promise<RolePermission>;
   deleteRolePermission(clientId: number, role: string, permissionId: number): Promise<boolean>;
+  /**
+   * Resuelve si un rol tiene un permiso efectivo para una acción concreta.
+   * `socio` siempre devuelve true (override de dueño). El resto se valida contra `role_permissions`.
+   */
+  getEffectivePermission(
+    clientId: number,
+    role: string,
+    code: string,
+    action: "view" | "create" | "edit" | "delete",
+  ): Promise<boolean>;
   
   getUserLocalAssignments(clientId: number, userId?: string): Promise<UserLocalAssignment[]>;
   createUserLocalAssignment(assignment: InsertUserLocalAssignment): Promise<UserLocalAssignment>;
@@ -2585,6 +2595,43 @@ export class DatabaseStorage implements IStorage {
         eq(rolePermissions.permissionId, permissionId)
       ));
     return (result.rowCount ?? 0) > 0;
+  }
+
+  async getEffectivePermission(
+    clientId: number,
+    role: string,
+    code: string,
+    action: "view" | "create" | "edit" | "delete",
+  ): Promise<boolean> {
+    const normalizedRole = String(role ?? "").trim().toLowerCase();
+    // Override de dueño: el socio siempre tiene acceso completo.
+    if (normalizedRole === "socio") return true;
+    if (!normalizedRole) return false;
+
+    // Join permissions <-> role_permissions para ubicar el flag del code/role/cliente.
+    const [row] = await db
+      .select({
+        canView: rolePermissions.canView,
+        canCreate: rolePermissions.canCreate,
+        canEdit: rolePermissions.canEdit,
+        canDelete: rolePermissions.canDelete,
+      })
+      .from(rolePermissions)
+      .innerJoin(permissions, eq(rolePermissions.permissionId, permissions.id))
+      .where(and(
+        eq(rolePermissions.clientId, clientId),
+        eq(rolePermissions.role, normalizedRole),
+        eq(permissions.code, code),
+      ));
+
+    if (!row) return false;
+    switch (action) {
+      case "view": return !!row.canView;
+      case "create": return !!row.canCreate;
+      case "edit": return !!row.canEdit;
+      case "delete": return !!row.canDelete;
+      default: return false;
+    }
   }
 
   async getUserLocalAssignments(clientId: number, userId?: string): Promise<UserLocalAssignment[]> {

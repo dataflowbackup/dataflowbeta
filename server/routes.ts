@@ -229,6 +229,47 @@ async function assertTeamPrivileged(req: any, res: any): Promise<TeamPrivileged>
   return { ok: true, clientId, actorId };
 }
 
+type PermissionAction = "view" | "create" | "edit" | "delete";
+
+/**
+ * Middleware factory de RBAC granular. Usar SIEMPRE después de `isAuthenticated`.
+ * Resuelve el rol del usuario en su empresa y valida el flag (`canView/canCreate/canEdit/canDelete`)
+ * del permiso `code` contra `role_permissions`. El socio siempre pasa (override en storage).
+ *
+ * Pensado para endpoints NUEVOS: no se aplica a rutas existentes para no alterar accesos vigentes.
+ */
+function requirePermission(code: string, action: PermissionAction = "view") {
+  return async (req: any, res: any, next: any) => {
+    const actorId = await getAuthenticatedUserId(req);
+    if (!actorId) {
+      return res.status(401).json({ message: "No autenticado" });
+    }
+    let clientId: number;
+    try {
+      clientId = await getClientId(req);
+    } catch {
+      return res.status(400).json({ message: "No encontramos la empresa asociada a tu usuario." });
+    }
+    const role = String((await storage.getUserRoleInClient(actorId, clientId)) ?? "")
+      .trim()
+      .toLowerCase();
+    let allowed = false;
+    try {
+      allowed = await storage.getEffectivePermission(clientId, role, code, action);
+    } catch {
+      return res.status(500).json({ message: "Error verificando permisos" });
+    }
+    if (!allowed) {
+      return res.status(403).json({
+        message: `No tenés permiso para esta acción (${code}:${action}).`,
+      });
+    }
+    // Exponer el contexto resuelto para que el handler no recompute clientId/role.
+    (req as any).rbac = { clientId, actorId, role };
+    return next();
+  };
+}
+
 function generateProvisionalPassword(): string {
   const chars = "abcdefghjkmnpqrstuvwxyzABCDEFGHJKMNPQRSTUVWXYZ23456789";
   const bytes = randomBytes(14);
@@ -3368,18 +3409,37 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         { code: "settings.manage", name: "Gestionar Configuración", module: "settings" },
         { code: "users.view", name: "Ver Usuarios", module: "users" },
         { code: "users.manage", name: "Gestionar Usuarios", module: "users" },
+
+        // === Permisos nuevos — sub-módulos financieros (ROADMAP_BETA Fase 0 §2.2) ===
+        { code: "financial_groups.edit", name: "Renombrar Grupos y Categorías", module: "financial_groups" },
+        { code: "bank.config", name: "Configurar Bancos (banco genérico)", module: "bank" },
+        { code: "cmc.view", name: "Ver CMC (Costo de Mercadería Comprada)", module: "cmc" },
+        { code: "pap.view", name: "Ver PAP (Pago a Proveedores)", module: "pap" },
+        { code: "stock_valuation.view", name: "Ver Valorización de Stock", module: "stock_valuation" },
+        { code: "stock_valuation.create", name: "Cargar/Importar Valorización de Stock", module: "stock_valuation" },
+        { code: "stock_valuation.delete", name: "Reversar Valorización de Stock", module: "stock_valuation" },
+        { code: "cmv.view", name: "Ver CMV (Costo de Mercadería Vendida)", module: "cmv" },
+        { code: "breakeven.view", name: "Ver Punto de Equilibrio", module: "breakeven" },
+        { code: "breakeven.create", name: "Crear Punto de Equilibrio", module: "breakeven" },
       ];
 
+      // Inserción idempotente y aditiva: solo se crean los `code` que aún no existen.
+      // Nunca se actualiza ni se borra un permiso existente (seguro para datos de producción).
+      const existing = await storage.getPermissions();
+      const existingCodes = new Set(existing.map((p) => p.code));
+      let created = 0;
       for (const perm of defaultPermissions) {
+        if (existingCodes.has(perm.code)) continue;
         try {
           await storage.createPermission(perm);
+          created++;
         } catch (e) {
-          // Ignore duplicates
+          // Carrera/duplicado: ignorar (el code es UNIQUE, nunca se pisa).
         }
       }
-      
+
       const allPerms = await storage.getPermissions();
-      res.json(allPerms);
+      res.json({ created, total: allPerms.length, permissions: allPerms });
     } catch (e: any) {
       res.status(500).json({ message: e.message });
     }
