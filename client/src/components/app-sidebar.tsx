@@ -124,6 +124,7 @@ const menuSections: MenuSection[] = [
       { title: "Balances Financieros", url: "/balance", icon: BarChart3 },
       { title: "CMC", url: "/cmc", icon: ShoppingCart, permission: "cmc.view" },
       { title: "PAP", url: "/pap", icon: Truck, permission: "pap.view" },
+      { title: "Valorizar Stock", url: "/valorizar-stock", icon: Package, permission: "stock_valuation.view" },
       { title: "Dashboard", url: "/dashboard", icon: BarChart3 },
     ],
   },
