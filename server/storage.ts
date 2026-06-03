@@ -46,6 +46,8 @@ import {
   stockAdjustments,
   stockValuations,
   stockValuationItems,
+  breakevenAnalyses,
+  breakevenFixedCosts,
   operationalAudits,
   auditTemplates,
   auditTemplateItems,
@@ -141,6 +143,8 @@ import {
   type InsertStockValuation,
   type StockValuationItem,
   type InsertStockValuationItem,
+  type BreakevenAnalysis,
+  type BreakevenFixedCost,
   type OperationalAudit,
   type InsertOperationalAudit,
   type AuditTemplate,
@@ -439,6 +443,20 @@ export interface IStorage {
     items: Array<{ supplyId: number; quantity: number; unitOfMeasureId?: number | null; replacementUnitCost?: number | null }>;
   }): Promise<StockValuation>;
   reverseStockValuation(clientId: number, id: number): Promise<StockValuation | undefined>;
+
+  // Punto de Equilibrio (Fase 8)
+  listBreakevenAnalyses(clientId: number): Promise<BreakevenAnalysis[]>;
+  getBreakevenAnalysis(clientId: number, id: number): Promise<{ analysis: BreakevenAnalysis; fixedCosts: BreakevenFixedCost[] } | undefined>;
+  createBreakevenAnalysis(input: {
+    clientId: number;
+    localId?: number | null;
+    name: string;
+    recipeId?: number | null;
+    salePriceNoIva: number;
+    variableCostNoIva: number;
+    createdBy?: string | null;
+    fixedCosts: Array<{ transactionCategoryId?: number | null; label?: string | null; amount: number }>;
+  }): Promise<BreakevenAnalysis>;
 
   /** CMV = stock inicial + compras (CMC) − stock final; CMV% sobre venta sin IVA. */
   computeCmv(clientId: number, opts: { localId?: number; stockInicialId: number; stockFinalId: number; dateFrom?: string; dateTo?: string }): Promise<{
@@ -2962,6 +2980,64 @@ export class DatabaseStorage implements IStorage {
       .where(and(eq(stockValuations.id, id), eq(stockValuations.clientId, clientId)))
       .returning();
     return updated;
+  }
+
+  async listBreakevenAnalyses(clientId: number): Promise<BreakevenAnalysis[]> {
+    return db.select().from(breakevenAnalyses).where(eq(breakevenAnalyses.clientId, clientId)).orderBy(desc(breakevenAnalyses.id));
+  }
+
+  async getBreakevenAnalysis(clientId: number, id: number) {
+    const [analysis] = await db.select().from(breakevenAnalyses)
+      .where(and(eq(breakevenAnalyses.id, id), eq(breakevenAnalyses.clientId, clientId)));
+    if (!analysis) return undefined;
+    const fixedCosts = await db.select().from(breakevenFixedCosts).where(eq(breakevenFixedCosts.analysisId, id));
+    return { analysis, fixedCosts };
+  }
+
+  async createBreakevenAnalysis(input: {
+    clientId: number;
+    localId?: number | null;
+    name: string;
+    recipeId?: number | null;
+    salePriceNoIva: number;
+    variableCostNoIva: number;
+    createdBy?: string | null;
+    fixedCosts: Array<{ transactionCategoryId?: number | null; label?: string | null; amount: number }>;
+  }): Promise<BreakevenAnalysis> {
+    const price = Number(input.salePriceNoIva) || 0;
+    const variable = Number(input.variableCostNoIva) || 0;
+    const contribution = price - variable;
+    const totalFixed = Math.round(input.fixedCosts.reduce((a, f) => a + (Number(f.amount) || 0), 0) * 100) / 100;
+    // PE en unidades = costos fijos / margen de contribución (si el margen es positivo).
+    const units = contribution > 0 ? Math.round((totalFixed / contribution) * 100) / 100 : 0;
+    const revenue = Math.round(units * price * 100) / 100;
+
+    const [created] = await db.insert(breakevenAnalyses).values({
+      clientId: input.clientId,
+      localId: input.localId ?? null,
+      name: input.name,
+      recipeId: input.recipeId ?? null,
+      salePriceNoIva: String(price),
+      variableCostNoIva: String(variable),
+      contributionMargin: String(contribution),
+      totalFixedCosts: String(totalFixed),
+      breakevenUnits: String(units),
+      breakevenRevenue: String(revenue),
+      createdBy: input.createdBy ?? null,
+    } as any).returning();
+
+    const rows = input.fixedCosts.filter((f) => Number(f.amount) > 0);
+    if (rows.length > 0) {
+      await db.insert(breakevenFixedCosts).values(
+        rows.map((f) => ({
+          analysisId: created.id,
+          transactionCategoryId: f.transactionCategoryId ?? null,
+          label: f.label ?? null,
+          amount: String(Number(f.amount) || 0),
+        })) as any,
+      );
+    }
+    return created;
   }
 
   async computeCmv(

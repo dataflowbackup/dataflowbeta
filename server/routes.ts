@@ -3238,6 +3238,63 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
   });
 
+  // Punto de Equilibrio — Fase 8 (gateado por RBAC granular).
+  app.get("/api/finance/breakeven", isAuthenticated, requirePermission("breakeven.view", "view"), async (req, res) => {
+    try {
+      const { clientId } = (req as any).rbac;
+      res.json(await storage.listBreakevenAnalyses(clientId));
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
+  app.get("/api/finance/breakeven/:id", isAuthenticated, requirePermission("breakeven.view", "view"), async (req, res) => {
+    try {
+      const { clientId } = (req as any).rbac;
+      const data = await storage.getBreakevenAnalysis(clientId, parseInt(req.params.id, 10));
+      if (!data) return res.status(404).json({ message: "Análisis no encontrado" });
+      res.json(data);
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
+  app.post("/api/finance/breakeven", isAuthenticated, requirePermission("breakeven.create", "create"), async (req, res) => {
+    try {
+      const { clientId, actorId } = (req as any).rbac;
+      const bodySchema = z.object({
+        name: z.string().min(1, "El nombre es requerido"),
+        localId: z.coerce.number().int().positive().nullable().optional(),
+        recipeId: z.coerce.number().int().positive().nullable().optional(),
+        salePriceNoIva: z.coerce.number(),
+        variableCostNoIva: z.coerce.number(),
+        fixedCosts: z.array(z.object({
+          transactionCategoryId: z.coerce.number().int().positive().nullable().optional(),
+          label: z.string().optional().nullable(),
+          amount: z.coerce.number(),
+        })).default([]),
+      });
+      const parsed = bodySchema.safeParse(req.body);
+      if (!parsed.success) return res.status(400).json({ message: "Datos inválidos", errors: parsed.error.flatten() });
+      if (parsed.data.salePriceNoIva - parsed.data.variableCostNoIva <= 0) {
+        return res.status(400).json({ message: "El precio de venta debe ser mayor al costo variable (margen de contribución positivo)." });
+      }
+      const created = await storage.createBreakevenAnalysis({
+        clientId,
+        localId: parsed.data.localId ?? null,
+        name: parsed.data.name,
+        recipeId: parsed.data.recipeId ?? null,
+        salePriceNoIva: parsed.data.salePriceNoIva,
+        variableCostNoIva: parsed.data.variableCostNoIva,
+        createdBy: actorId,
+        fixedCosts: parsed.data.fixedCosts,
+      });
+      res.json(created);
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
   app.get("/api/balance-report/export", isAuthenticated, async (req, res) => {
     try {
       const clientId = await getClientId(req);

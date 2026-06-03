@@ -1088,6 +1088,42 @@ export type InsertStockValuationItem = z.infer<typeof insertStockValuationItemSc
 export type StockValuationItem = typeof stockValuationItems.$inferSelect;
 
 // ==========================================
+// BREAKEVEN (Punto de Equilibrio - ROADMAP_BETA Fase 8)
+// PE = costos fijos / (precio venta sin IVA − costo variable sin IVA)
+// ==========================================
+export const breakevenAnalyses = pgTable("breakeven_analyses", {
+  id: serial("id").primaryKey(),
+  clientId: integer("client_id").notNull().references(() => clients.id, { onDelete: "cascade" }),
+  localId: integer("local_id").references(() => locals.id),
+  name: varchar("name", { length: 255 }).notNull(),
+  recipeId: integer("recipe_id").references(() => recipes.id),
+  salePriceNoIva: decimal("sale_price_no_iva", { precision: 14, scale: 4 }).default("0"),
+  variableCostNoIva: decimal("variable_cost_no_iva", { precision: 14, scale: 4 }).default("0"),
+  contributionMargin: decimal("contribution_margin", { precision: 14, scale: 4 }).default("0"),
+  totalFixedCosts: decimal("total_fixed_costs", { precision: 14, scale: 2 }).default("0"),
+  breakevenUnits: decimal("breakeven_units", { precision: 14, scale: 2 }).default("0"),
+  breakevenRevenue: decimal("breakeven_revenue", { precision: 14, scale: 2 }).default("0"),
+  createdBy: varchar("created_by").references(() => users.id),
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
+export const insertBreakevenAnalysisSchema = createInsertSchema(breakevenAnalyses).omit({ id: true, createdAt: true });
+export type InsertBreakevenAnalysis = z.infer<typeof insertBreakevenAnalysisSchema>;
+export type BreakevenAnalysis = typeof breakevenAnalyses.$inferSelect;
+
+export const breakevenFixedCosts = pgTable("breakeven_fixed_costs", {
+  id: serial("id").primaryKey(),
+  analysisId: integer("analysis_id").notNull().references(() => breakevenAnalyses.id, { onDelete: "cascade" }),
+  transactionCategoryId: integer("transaction_category_id").references(() => transactionCategories.id),
+  label: varchar("label", { length: 255 }),
+  amount: decimal("amount", { precision: 14, scale: 2 }).notNull(),
+});
+
+export const insertBreakevenFixedCostSchema = createInsertSchema(breakevenFixedCosts).omit({ id: true });
+export type InsertBreakevenFixedCost = z.infer<typeof insertBreakevenFixedCostSchema>;
+export type BreakevenFixedCost = typeof breakevenFixedCosts.$inferSelect;
+
+// ==========================================
 // OPERATIONAL AUDITS (Auditorías Operativas)
 // ==========================================
 export const operationalAudits = pgTable("operational_audits", {
