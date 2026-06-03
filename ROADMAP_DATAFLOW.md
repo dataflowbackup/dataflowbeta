@@ -277,6 +277,7 @@ Tablas representativas (no lista completa): `sessions`, `users`, `user_credentia
 
 | Periodo / tema | Qué se hizo |
 |----------------|-------------|
+| **2026-06-03 — Backup completo pre-continuar desarrollo** | `git pull` (ya al día); tag **`backup-pre-continuar-2026-06-03`** en `4f0aaf1` (pusheado). `backups/dev.db.backup-2026-06-03_091149.db`; `backups/dataflow_dev_2026-06-03_091157.sql` (pg_dump); `backups/turso_2026-06-03_091206.sql` (~5,3 MB, 6.698 filas, 56 tablas, vía `script/backup-turso.ts`). |
 | **2026-05-19 — UI data entry unificada (`ea86f4a` → `24dde1f`)** | **Facturas** (`ea86f4a`): combobox con teclado/búsqueda y orden de ítems. **Resto del cliente** (`24dde1f`): reemplazo masivo de `Select` shadcn por **`DataEntryCombobox`** en ~25 archivos (`data-table` filtros, dashboard, balance, cuentas, stock, pagos, catálogos varios, recetas, financiero, efectivo, extractos, RRHH, auditorías, equipo). Sin cambio de contrato API. Pusheado a `origin/main`. |
 | **2026-05-19 — Arranque jornada pruebas (`bf87a7f`)** | `git pull`/árbol limpio; backup Turso `backups/turso_2026-05-19_094852.sql` (~11,7 MB, 16.439 filas, 56 tablas); tag `backup-pre-pruebas-2026-05-19`. |
 | **2026-05-11 — Listados grandes: cursor + índice en transacciones (`723cfab`)** | Mitiga **502** sistemáticos por **`OFFSET` profundo**: API `afterDate`/`afterId`, `getTransactions` sin offset en modo cursor, **COUNT omitido** en páginas de continuación, índice `(client_id, transaction_date, id)`. Cliente en `bank-statements.tsx` hidrata en bucle por cursor. |
@@ -317,6 +318,17 @@ Antes de la jornada de pruebas se generó:
 | Git tag | `backup-pre-pruebas-2026-05-19` (anotado y pusheado a `origin`) |
 
 Postgres local / SQLite legacy: no se repitieron en esta sesión (sin `data/dev.db` en repo; `pg_dump` opcional si trabajás contra `dataflow_dev` en esta máquina — ver §12.1).
+
+### Backups y red de seguridad (2026-06-03)
+
+Antes de retomar desarrollo:
+
+| Origen | Archivo / referencia |
+|--------|----------------------|
+| Git tag | `backup-pre-continuar-2026-06-03` → commit `4f0aaf1` |
+| SQLite `data/dev.db` | `backups/dev.db.backup-2026-06-03_091149.db` |
+| Postgres local `dataflow_dev` | `backups/dataflow_dev_2026-06-03_091157.sql` |
+| Turso producción (`dataflow-db-mbeduzzi`) | `backups/turso_2026-06-03_091206.sql` (~5,3 MB, 6.698 filas) |
 
 ---
 
@@ -376,7 +388,7 @@ Postgres local / SQLite legacy: no se repitieron en esta sesión (sin `data/dev.
 
 **Este apartado es la referencia única** para no volver a perderse con Turso, credenciales o dónde quedan los archivos. Antes de `db:push:turso`, migraciones manuales, `npm run seed:bootstrap` contra prod, o **cualquier prueba drástica**, seguir el **checklist §12.0**.
 
-> Última ejecución documentada en roadmap: **2026-05-19** (Turso + tag; ver §8).
+> Última ejecución documentada en roadmap: **2026-06-03** (checklist §12 completo; ver §8).
 
 ### 12.0 Checklist completo (orden recomendado)
 
