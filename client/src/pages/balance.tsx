@@ -346,6 +346,21 @@ export default function BalancePage() {
                     {formatCurrency(spreadsheet.summary.otrosMovimientos?.[month] ?? 0)}
                   </span>
                 </div>
+
+                <div className="grid grid-cols-1 gap-2 sm:grid-cols-[1fr_auto] border-t-2 pt-2">
+                  <span className="font-bold uppercase">Movimiento neto del período (caja)</span>
+                  <span
+                    className="font-mono text-right font-bold"
+                    data-testid="text-movimiento-neto-caja"
+                  >
+                    {formatCurrency(monthlyUtilidad + (spreadsheet.summary.otrosMovimientos?.[month] ?? 0))}
+                  </span>
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  Utilidad (rentabilidad) + Otros Movimientos. Este total es el que impacta los
+                  saldos de caja/cuentas — por eso los Otros Movimientos quedan asentados aunque no
+                  afecten la rentabilidad.
+                </p>
               </div>
             )}
           </div>

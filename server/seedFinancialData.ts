@@ -35,6 +35,13 @@ const SPECIAL_GROUP_TYPES: Record<string, string> = {
   "Otros Ingresos": "other_income",
   "Retiros Socios": "owner_withdrawal",
   "Transferencias": "internal_transfer",
+  // Alias / posibles grupos padre propios del cliente (se reconocen por nombre en el backfill).
+  "Retiros": "owner_withdrawal",
+  "Préstamos": "loan",
+  "Prestamos": "loan",
+  "Alivios": "cash_relief",
+  "Alivio": "cash_relief",
+  "Alivios de Caja": "cash_relief",
 };
 
 /** Categorías de "Otros Ingresos" que conviene tipificar como préstamo/capital (no cambia la exclusión). */
