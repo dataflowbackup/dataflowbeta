@@ -158,6 +158,20 @@ import {
   type SupplierRubro,
 } from "@shared/schema";
 
+/**
+ * specialType canónicos de "Otros Movimientos" (ROADMAP_BETA Fase 1): categorías que
+ * quedan asentadas pero NO afectan el resultado neto del balance (income - expense).
+ * La exclusión se basa en estos valores, no en el booleano isSpecial (ver getBalanceSpreadsheet).
+ */
+export const OTROS_MOVIMIENTOS_SPECIAL_TYPES = new Set<string>([
+  "opening_balance", // Inicio de mes
+  "owner_withdrawal", // Retiros socios
+  "loan", // Préstamos / capital
+  "other_income", // Otros ingresos (no venta)
+  "cash_relief", // Alivios de caja
+  "internal_transfer", // Transferencias entre cuentas
+]);
+
 export interface IStorage {
   upsertUser(user: UpsertUser): Promise<User>;
   getUser(id: string): Promise<User | undefined>;
@@ -2453,31 +2467,53 @@ export class DatabaseStorage implements IStorage {
       ? allTransactions.filter(t => t.localId === localId)
       : allTransactions;
     
+    // Categorías "Otros Movimientos": quedan asentadas y se muestran, pero NO afectan
+    // el resultado neto (income - expense).
+    // IMPORTANTE: la exclusión se basa en el `specialType` canónico de Otros Movimientos,
+    // NO en el booleano `isSpecial` (que históricamente se usó para una clasificación
+    // EE.RR. distinta y sin efecto). Así evitamos excluir por error gastos/ingresos reales
+    // que algún cliente pudiera haber marcado isSpecial=true con un specialType viejo.
+    const excludedSpecialTypes = OTROS_MOVIMIENTOS_SPECIAL_TYPES;
+    const isOtroMovimiento = (specialType: unknown): boolean =>
+      typeof specialType === "string" && excludedSpecialTypes.has(specialType);
+    const specialCategoryIds = new Set(
+      allCategories.filter((c) => isOtroMovimiento(c.specialType)).map((c) => c.id),
+    );
+
     const categoryMonthlyTotals: Record<number, Record<number, number>> = {};
     const summaryIncome: Record<number, number> = {};
     const summaryExpenses: Record<number, number> = {};
-    
+    const otrosMovimientos: Record<number, number> = {};
+
     for (let m = 1; m <= 12; m++) {
       summaryIncome[m] = 0;
       summaryExpenses[m] = 0;
+      otrosMovimientos[m] = 0;
     }
-    
+
     for (const tx of filteredTransactions) {
       if (!tx.categoryId) continue;
-      
+
       const txDate = new Date(tx.transactionDate);
       const month = txDate.getMonth() + 1;
       const amount = parseFloat(String(tx.amount) || "0");
-      
+
       if (!categoryMonthlyTotals[tx.categoryId]) {
         categoryMonthlyTotals[tx.categoryId] = {};
         for (let m = 1; m <= 12; m++) {
           categoryMonthlyTotals[tx.categoryId][m] = 0;
         }
       }
-      
+
+      // Se acumula SIEMPRE para el detalle por grupo/categoría (incluye especiales).
       categoryMonthlyTotals[tx.categoryId][month] += amount;
-      
+
+      if (specialCategoryIds.has(tx.categoryId)) {
+        // "Otros Movimientos": fuera del neto. Signo informativo (egreso resta).
+        otrosMovimientos[month] += tx.type === "expense" ? -amount : amount;
+        continue;
+      }
+
       if (tx.type === "income") {
         summaryIncome[month] += amount;
       } else if (tx.type === "expense") {
@@ -2510,41 +2546,54 @@ export class DatabaseStorage implements IStorage {
         return {
           id: cat.id,
           name: cat.name,
+          // isSpecial aquí = "es Otro Movimiento (excluido del neto)", derivado del specialType canónico.
+          isSpecial: isOtroMovimiento(cat.specialType),
+          specialType: cat.specialType ?? null,
           monthlyTotals,
           yearTotal,
         };
       });
-      
+
       const groupYearTotal = Object.values(groupMonthlyTotals).reduce((a, b) => a + b, 0);
-      
+      // El grupo es "especial" (Otros Movimientos) si todas sus categorías lo son.
+      const groupIsSpecial = categories.length > 0 && categories.every((c) => c.isSpecial);
+      const groupSpecialType =
+        groupCategories.find((c) => c.specialType)?.specialType ?? null;
+
       return {
         id: group.id,
         name: group.name,
         type: group.type,
+        isSpecial: groupIsSpecial,
+        specialType: groupSpecialType,
         categories,
         monthlyTotals: groupMonthlyTotals,
         yearTotal: groupYearTotal,
       };
     });
-    
+
     const summaryNet: Record<number, number> = {};
     for (let m = 1; m <= 12; m++) {
       summaryNet[m] = summaryIncome[m] - summaryExpenses[m];
     }
-    
+
     const totalIncome = Object.values(summaryIncome).reduce((a, b) => a + b, 0);
     const totalExpenses = Object.values(summaryExpenses).reduce((a, b) => a + b, 0);
     const totalNet = totalIncome - totalExpenses;
-    
+    const totalOtrosMovimientos = Object.values(otrosMovimientos).reduce((a, b) => a + b, 0);
+
     return {
       groups,
       summary: {
         income: summaryIncome,
         expenses: summaryExpenses,
         net: summaryNet,
+        // Otros Movimientos: asentados pero fuera del neto (signo informativo).
+        otrosMovimientos,
         totalIncome,
         totalExpenses,
         totalNet,
+        totalOtrosMovimientos,
       },
     };
   }

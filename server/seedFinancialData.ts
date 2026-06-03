@@ -26,6 +26,34 @@ const FINANCIAL_GROUPS = [
   { name: "Transferencias", type: "transfer", displayOrder: 21 },
 ];
 
+/**
+ * Grupos "Otros Movimientos": quedan asentados pero NO afectan el resultado neto del balance.
+ * Se marcan con isSpecial=true + specialType. Ver ROADMAP_BETA Fase 1.
+ */
+const SPECIAL_GROUP_TYPES: Record<string, string> = {
+  "Inicio de Mes": "opening_balance",
+  "Otros Ingresos": "other_income",
+  "Retiros Socios": "owner_withdrawal",
+  "Transferencias": "internal_transfer",
+};
+
+/** Categorías de "Otros Ingresos" que conviene tipificar como préstamo/capital (no cambia la exclusión). */
+const LOAN_CATEGORY_NAMES = new Set([
+  "Préstamos",
+  "Ingreso de Capital Préstamo",
+  "Ingreso de Capital Socios",
+  "Ingreso de Capital Préstamo (Mayorista)",
+  "Ingreso de Capital Socios (Mayorista)",
+]);
+
+/** Resuelve el specialType de una categoría dado el nombre de su grupo. null = no especial. */
+function resolveSpecial(groupName: string, categoryName: string): string | null {
+  const base = SPECIAL_GROUP_TYPES[groupName];
+  if (!base) return null;
+  if (base === "other_income" && LOAN_CATEGORY_NAMES.has(categoryName)) return "loan";
+  return base;
+}
+
 const CATEGORIES_BY_GROUP: Record<string, { name: string; type: "income" | "expense" | "transfer" }[]> = {
   "Ventas": [
     { name: "Ventas Efectivo", type: "income" },
@@ -358,12 +386,15 @@ export async function seedFinancialDataForClient(clientId: number): Promise<{ gr
     }
 
     for (const cat of categories) {
+      const specialType = resolveSpecial(groupName, cat.name);
       await db.insert(transactionCategories).values({
         clientId,
         name: cat.name,
         type: cat.type,
         financialGroupId: groupId,
         isSystem: true,
+        isSpecial: specialType != null,
+        specialType: specialType ?? undefined,
         active: true,
       });
       categoriesCreated++;
@@ -372,4 +403,56 @@ export async function seedFinancialDataForClient(clientId: number): Promise<{ gr
 
   console.log(`Seeded ${groupsCreated} groups and ${categoriesCreated} categories for client ${clientId}`);
   return { groups: groupsCreated, categories: categoriesCreated };
+}
+
+/**
+ * Backfill IDEMPOTENTE y SEGURO para clientes existentes (datos de producción):
+ * marca isSpecial/specialType en las categorías de los grupos "Otros Movimientos"
+ * (Inicio de Mes, Otros Ingresos, Retiros Socios, Transferencias).
+ *
+ * - No borra ni crea filas: solo hace UPDATE de los flags.
+ * - Salta las filas que ya están correctas (re-ejecutable sin efectos).
+ * - No toca transacciones ni montos. Reversible (poner isSpecial=false).
+ */
+export async function seedSpecialCategoryFlagsForClient(
+  clientId: number,
+): Promise<{ updated: number; alreadyOk: number }> {
+  let updated = 0;
+  let alreadyOk = 0;
+
+  const groups = await db
+    .select()
+    .from(financialGroups)
+    .where(eq(financialGroups.clientId, clientId));
+
+  for (const g of groups) {
+    const groupName = String(g.name ?? "");
+    if (!SPECIAL_GROUP_TYPES[groupName]) continue;
+
+    const cats = await db
+      .select()
+      .from(transactionCategories)
+      .where(
+        and(
+          eq(transactionCategories.clientId, clientId),
+          eq(transactionCategories.financialGroupId, g.id),
+        ),
+      );
+
+    for (const c of cats) {
+      const specialType = resolveSpecial(groupName, String(c.name ?? ""));
+      if (!specialType) continue;
+      if (c.isSpecial === true && c.specialType === specialType) {
+        alreadyOk++;
+        continue;
+      }
+      await db
+        .update(transactionCategories)
+        .set({ isSpecial: true, specialType })
+        .where(eq(transactionCategories.id, c.id));
+      updated++;
+    }
+  }
+
+  return { updated, alreadyOk };
 }

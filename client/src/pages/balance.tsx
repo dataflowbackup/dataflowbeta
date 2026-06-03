@@ -35,6 +35,8 @@ const shortMonths = [
 interface CategoryData {
   id: number;
   name: string;
+  isSpecial?: boolean;
+  specialType?: string | null;
   monthlyTotals: Record<number, number>;
   yearTotal: number;
 }
@@ -43,6 +45,8 @@ interface GroupData {
   id: number;
   name: string;
   type: string;
+  isSpecial?: boolean;
+  specialType?: string | null;
   categories: CategoryData[];
   monthlyTotals: Record<number, number>;
   yearTotal: number;
@@ -54,9 +58,12 @@ interface SpreadsheetData {
     income: Record<number, number>;
     expenses: Record<number, number>;
     net: Record<number, number>;
+    /** Otros Movimientos por mes (no afectan el neto). Signo informativo. */
+    otrosMovimientos?: Record<number, number>;
     totalIncome: number;
     totalExpenses: number;
     totalNet: number;
+    totalOtrosMovimientos?: number;
   };
 }
 
@@ -120,7 +127,15 @@ export default function BalancePage() {
 
   const expenseGroups = useMemo(() => {
     if (!spreadsheet) return [];
-    return spreadsheet.groups.filter(g => g.type === "expense");
+    // Excluir grupos especiales (Otros Movimientos): no son gastos operativos.
+    return spreadsheet.groups.filter(g => g.type === "expense" && !g.isSpecial);
+  }, [spreadsheet]);
+
+  // Otros Movimientos: Inicio de mes, Retiros, Préstamos, Otros Ingresos, Transferencias.
+  // Quedan asentados y se muestran abajo, pero NO afectan la utilidad.
+  const otrosMovGroups = useMemo(() => {
+    if (!spreadsheet) return [];
+    return spreadsheet.groups.filter(g => g.isSpecial);
   }, [spreadsheet]);
 
   const totalGastosPercent = monthlyVentas > 0 ? (monthlyGastos / monthlyVentas) * 100 : 0;
@@ -301,6 +316,38 @@ export default function BalancePage() {
                 {utilidadPercent.toFixed(2)}%
               </span>
             </div>
+
+            {otrosMovGroups.length > 0 && (
+              <div className="space-y-2 border-t-2 pt-4" data-testid="section-otros-movimientos">
+                <div className="grid grid-cols-1 gap-2 sm:grid-cols-[1fr_auto]">
+                  <span className="font-bold uppercase">Otros Movimientos</span>
+                  <span className="text-xs text-muted-foreground self-center sm:text-right">
+                    No afectan la utilidad
+                  </span>
+                </div>
+                {otrosMovGroups.map((group, idx) => {
+                  const raw = group.monthlyTotals[month] ?? 0;
+                  const signed = group.type === "expense" ? -raw : raw;
+                  return (
+                    <div
+                      key={`otros-${group.id}-${idx}`}
+                      className="grid grid-cols-1 gap-2 sm:grid-cols-[1fr_auto] text-sm"
+                    >
+                      <span className="text-muted-foreground">{group.name}</span>
+                      <span className="font-mono text-right text-muted-foreground">
+                        {formatCurrency(signed)}
+                      </span>
+                    </div>
+                  );
+                })}
+                <div className="grid grid-cols-1 gap-2 sm:grid-cols-[1fr_auto] border-t pt-2 text-sm">
+                  <span className="font-semibold">Total Otros Movimientos</span>
+                  <span className="font-mono text-right font-semibold" data-testid="text-total-otros-movimientos">
+                    {formatCurrency(spreadsheet.summary.otrosMovimientos?.[month] ?? 0)}
+                  </span>
+                </div>
+              </div>
+            )}
           </div>
         </CardContent>
       </Card>

@@ -39,7 +39,25 @@ const categoryTypes = [
   { value: "expense", label: "Egreso" },
 ];
 
+// "Otros Movimientos" (ROADMAP_BETA Fase 1): quedan asentados pero NO afectan el balance neto.
+const OTROS_MOVIMIENTOS_TYPES = new Set([
+  "opening_balance",
+  "owner_withdrawal",
+  "loan",
+  "other_income",
+  "cash_relief",
+  "internal_transfer",
+]);
+
 const specialTypes = [
+  // Otros Movimientos (excluidos del resultado neto del balance)
+  { value: "opening_balance", label: "Inicio de mes (Otros Mov.)" },
+  { value: "owner_withdrawal", label: "Retiro de socios (Otros Mov.)" },
+  { value: "loan", label: "Préstamo / Capital (Otros Mov.)" },
+  { value: "other_income", label: "Otros ingresos (Otros Mov.)" },
+  { value: "cash_relief", label: "Alivio de caja (Otros Mov.)" },
+  { value: "internal_transfer", label: "Transferencia interna (Otros Mov.)" },
+  // Clasificación EE.RR. (heredada; no excluye del balance)
   { value: "costo_mercaderia", label: "Costo Mercadería" },
   { value: "gastos_fijos", label: "Gastos Fijos" },
   { value: "gastos_variables", label: "Gastos Variables" },
@@ -232,18 +250,23 @@ export default function TransactionCategoriesPage() {
     },
     {
       key: "isSpecial",
-      header: "EE.RR.",
-      cell: (row) =>
-        row.isSpecial ? (
+      header: "Especial",
+      cell: (row) => {
+        const isOtroMov = !!row.specialType && OTROS_MOVIMIENTOS_TYPES.has(row.specialType);
+        if (!row.isSpecial && !isOtroMov) {
+          return <span className="text-muted-foreground">-</span>;
+        }
+        return (
           <div className="flex items-center gap-1">
-            <Star className="h-4 w-4 text-amber-500 fill-amber-500" />
+            <Star
+              className={`h-4 w-4 ${isOtroMov ? "text-blue-500 fill-blue-500" : "text-amber-500 fill-amber-500"}`}
+            />
             <Badge variant="outline" className="text-xs">
-              {specialTypes.find(s => s.value === row.specialType)?.label || row.specialType}
+              {specialTypes.find((s) => s.value === row.specialType)?.label || row.specialType}
             </Badge>
           </div>
-        ) : (
-          <span className="text-muted-foreground">-</span>
-        ),
+        );
+      },
     },
     {
       key: "active",
@@ -396,9 +419,10 @@ export default function TransactionCategoriesPage() {
                   render={({ field }) => (
                     <FormItem className="flex flex-row items-center justify-between">
                       <div className="space-y-0.5">
-                        <FormLabel>Categoria EE.RR.</FormLabel>
+                        <FormLabel>Categoria especial</FormLabel>
                         <p className="text-xs text-muted-foreground">
-                          Marcar para incluir en el Estado de Resultados
+                          Marcá un tipo. Los tipos "(Otros Mov.)" quedan asentados pero NO
+                          afectan el resultado neto del balance.
                         </p>
                       </div>
                       <FormControl>
