@@ -3370,6 +3370,46 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
   });
 
+  // Permisos efectivos del usuario actual, para gating de la UI (sidebar/botones).
+  // socio => isSocio:true (allow-all en el front). El resto: mapa code -> flags.
+  app.get("/api/me/permissions", isAuthenticated, async (req, res) => {
+    try {
+      const actorId = await getAuthenticatedUserId(req);
+      if (!actorId) return res.status(401).json({ message: "No autenticado" });
+      const clientId = await getClientId(req);
+      const role = String((await storage.getUserRoleInClient(actorId, clientId)) ?? "")
+        .trim()
+        .toLowerCase();
+
+      if (role === "socio") {
+        return res.json({ role, isSocio: true, permissions: {} });
+      }
+
+      const [allPerms, rolePerms] = await Promise.all([
+        storage.getPermissions(),
+        storage.getRolePermissions(clientId, role),
+      ]);
+      const codeById = new Map(allPerms.map((p) => [p.id, p.code]));
+      const permissions: Record<
+        string,
+        { canView: boolean; canCreate: boolean; canEdit: boolean; canDelete: boolean }
+      > = {};
+      for (const rp of rolePerms) {
+        const code = codeById.get(rp.permissionId);
+        if (!code) continue;
+        permissions[code] = {
+          canView: !!rp.canView,
+          canCreate: !!rp.canCreate,
+          canEdit: !!rp.canEdit,
+          canDelete: !!rp.canDelete,
+        };
+      }
+      res.json({ role, isSocio: false, permissions });
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
   app.post("/api/permissions/seed", isAuthenticated, async (req, res) => {
     try {
       const defaultPermissions = [

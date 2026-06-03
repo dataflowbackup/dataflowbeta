@@ -33,6 +33,7 @@ import {
   Upload,
 } from "lucide-react";
 import { useAuth } from "@/hooks/useAuth";
+import { usePermissions } from "@/hooks/usePermissions";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import {
   Sidebar,
@@ -59,6 +60,12 @@ interface MenuItem {
   title: string;
   url: string;
   icon: React.ComponentType<{ className?: string }>;
+  /**
+   * Permiso requerido (opt-in). Si se omite, el ítem SIEMPRE se muestra
+   * (preserva el comportamiento actual). Si se declara, solo se muestra
+   * cuando el usuario tiene `view` sobre ese code (socio siempre pasa).
+   */
+  permission?: string;
 }
 
 interface MenuSection {
@@ -193,6 +200,7 @@ type AuthOrganization = { id: number; name: string };
 export function AppSidebar() {
   const [location] = useLocation();
   const { user } = useAuth();
+  const { can, isLoading: permsLoading } = usePermissions();
 
   const { data: organization, isLoading: isOrgLoading } = useQuery<AuthOrganization | null>({
     queryKey: ["/api/auth/organization"],
@@ -208,7 +216,7 @@ export function AppSidebar() {
 
   const sidebarSections = useMemo(() => {
     if (bulkImportAccess?.allowed !== true) return menuSections;
-    const bulkItem = {
+    const bulkItem: MenuItem = {
       title: "Importar Excel (facturas)",
       url: "/facturas/importacion-excel",
       icon: Upload,
@@ -289,6 +297,15 @@ export function AppSidebar() {
             (section) =>
               SHOW_OPERACIONES_SIDEBAR || section.title !== "Operaciones",
           )
+          // Gating opt-in: ítems sin `permission` siempre visibles; los que declaran
+          // permiso se ocultan solo si el usuario no lo tiene (mientras carga, se muestran).
+          .map((section) => ({
+            ...section,
+            items: section.items.filter(
+              (item) => !item.permission || permsLoading || can(item.permission, "view"),
+            ),
+          }))
+          .filter((section) => section.items.length > 0)
           .map((section) => (
             <CollapsibleMenuSection
               key={section.title}

@@ -43,6 +43,12 @@ const ROLES: Record<string, RoleConfig> = {
     icon: UserCog,
     color: "bg-blue-500/10 text-blue-600 dark:text-blue-400",
   },
+  encargado: {
+    name: "Encargado",
+    description: "Operacion diaria del local",
+    icon: UserCog,
+    color: "bg-amber-500/10 text-amber-600 dark:text-amber-400",
+  },
   employee: {
     name: "Empleado",
     description: "Acceso limitado a operaciones diarias",
@@ -73,6 +79,13 @@ const MODULE_LABELS: Record<string, string> = {
   payroll: "Liquidaciones",
   settings: "Configuracion",
   users: "Usuarios",
+  // Sub-modulos financieros nuevos (ROADMAP_BETA)
+  financial_groups: "Grupos y Categorias Financieras",
+  cmc: "CMC (Costo Mercaderia Comprada)",
+  pap: "PAP (Pago a Proveedores)",
+  cmv: "CMV (Costo Mercaderia Vendida)",
+  stock_valuation: "Valorizacion de Stock",
+  breakeven: "Punto de Equilibrio",
 };
 
 type PermState = { canView: boolean; canCreate: boolean; canEdit: boolean; canDelete: boolean };
