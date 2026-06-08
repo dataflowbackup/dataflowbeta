@@ -3392,6 +3392,57 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
   });
 
+  // Ventas Datalive (fase 1) — tabla paralela de ventas brutas. El parseo del Excel se hace en
+  // el browser (shared/dataliveSalesParser); acá se persiste con idempotencia por (local, día).
+  app.get("/api/datalive-ventas", isAuthenticated, async (req, res) => {
+    try {
+      const clientId = await getClientId(req);
+      const localId = req.query.localId && req.query.localId !== "all" ? parseInt(req.query.localId as string, 10) : undefined;
+      res.json(await storage.listDataliveVentas(clientId, localId));
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
+  app.post("/api/datalive-ventas/import", isAuthenticated, async (req, res) => {
+    try {
+      const clientId = await getClientId(req);
+      const userId = await getAuthenticatedUserId(req);
+      const bodySchema = z.object({
+        localId: z.coerce.number().int().positive(),
+        sourceFile: z.string().max(255).optional().nullable(),
+        replaceFechas: z.array(z.string()).optional(),
+        days: z
+          .array(
+            z.object({
+              fecha: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Fecha inválida"),
+              ventaTotal: z.coerce.number(),
+              ventaEfectivo: z.coerce.number(),
+              ventaOnline: z.coerce.number(),
+            }),
+          )
+          .min(1, "No hay días para importar"),
+      });
+      const parsed = bodySchema.safeParse(req.body);
+      if (!parsed.success) return res.status(400).json({ message: "Datos inválidos", errors: parsed.error.flatten() });
+
+      // El local debe pertenecer a la empresa.
+      const locs = await storage.getLocals(clientId);
+      if (!locs.some((l) => l.id === parsed.data.localId)) {
+        return res.status(400).json({ message: "Local inválido para esta empresa." });
+      }
+
+      const result = await storage.importDataliveVentas(clientId, parsed.data.localId, parsed.data.days, {
+        sourceFile: parsed.data.sourceFile ?? null,
+        createdBy: userId ?? null,
+        replaceFechas: parsed.data.replaceFechas ?? [],
+      });
+      res.json(result);
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
   app.get("/api/balance-report/export", isAuthenticated, async (req, res) => {
     try {
       const clientId = await getClientId(req);

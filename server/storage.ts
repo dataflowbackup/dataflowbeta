@@ -49,6 +49,7 @@ import {
   breakevenAnalyses,
   breakevenFixedCosts,
   cmvCalculations,
+  dataliveVentas,
   auditLog,
   operationalAudits,
   auditTemplates,
@@ -148,6 +149,7 @@ import {
   type BreakevenAnalysis,
   type BreakevenFixedCost,
   type CmvCalculation,
+  type DataliveVenta,
   type OperationalAudit,
   type InsertOperationalAudit,
   type AuditTemplate,
@@ -477,6 +479,15 @@ export interface IStorage {
   /** Guarda un cálculo de CMV como registro (recalcula server-side para integridad). */
   saveCmvCalculation(clientId: number, opts: { localId?: number; stockInicialId: number; stockFinalId: number; dateFrom?: string; dateTo?: string; createdBy?: string | null }): Promise<CmvCalculation>;
   listCmvCalculations(clientId: number): Promise<CmvCalculation[]>;
+
+  // Ventas Datalive (tabla paralela, fase 1)
+  listDataliveVentas(clientId: number, localId?: number): Promise<DataliveVenta[]>;
+  importDataliveVentas(
+    clientId: number,
+    localId: number,
+    days: Array<{ fecha: string; ventaTotal: number; ventaEfectivo: number; ventaOnline: number }>,
+    opts: { sourceFile?: string | null; createdBy?: string | null; replaceFechas?: string[] },
+  ): Promise<{ insertados: number; omitidos: number; reemplazados: number }>;
 
   getPermissions(): Promise<Permission[]>;
   createPermission(permission: InsertPermission): Promise<Permission>;
@@ -3177,6 +3188,71 @@ export class DatabaseStorage implements IStorage {
 
   async listCmvCalculations(clientId: number): Promise<CmvCalculation[]> {
     return db.select().from(cmvCalculations).where(eq(cmvCalculations.clientId, clientId)).orderBy(desc(cmvCalculations.id));
+  }
+
+  async listDataliveVentas(clientId: number, localId?: number): Promise<DataliveVenta[]> {
+    const conds = [eq(dataliveVentas.clientId, clientId)];
+    if (localId != null) conds.push(eq(dataliveVentas.localId, localId));
+    return db.select().from(dataliveVentas).where(and(...conds)).orderBy(desc(dataliveVentas.fecha));
+  }
+
+  async importDataliveVentas(
+    clientId: number,
+    localId: number,
+    days: Array<{ fecha: string; ventaTotal: number; ventaEfectivo: number; ventaOnline: number }>,
+    opts: { sourceFile?: string | null; createdBy?: string | null; replaceFechas?: string[] },
+  ): Promise<{ insertados: number; omitidos: number; reemplazados: number }> {
+    const replace = new Set(opts.replaceFechas ?? []);
+    // Fechas ya existentes para (clientId, localId) → idempotencia por día.
+    const existing = await db
+      .select({ fecha: dataliveVentas.fecha })
+      .from(dataliveVentas)
+      .where(and(eq(dataliveVentas.clientId, clientId), eq(dataliveVentas.localId, localId)));
+    const existingSet = new Set(existing.map((r) => String(r.fecha)));
+
+    let insertados = 0;
+    let omitidos = 0;
+    let reemplazados = 0;
+
+    for (const d of days) {
+      const values = {
+        clientId,
+        localId,
+        fecha: d.fecha,
+        ventaTotal: String(d.ventaTotal),
+        ventaEfectivo: String(d.ventaEfectivo),
+        ventaOnline: String(d.ventaOnline),
+        sourceFile: opts.sourceFile ?? null,
+        createdBy: opts.createdBy ?? null,
+      };
+      if (existingSet.has(d.fecha)) {
+        if (replace.has(d.fecha)) {
+          await db
+            .update(dataliveVentas)
+            .set({
+              ventaTotal: values.ventaTotal,
+              ventaEfectivo: values.ventaEfectivo,
+              ventaOnline: values.ventaOnline,
+              sourceFile: values.sourceFile,
+              updatedAt: new Date(),
+            })
+            .where(
+              and(
+                eq(dataliveVentas.clientId, clientId),
+                eq(dataliveVentas.localId, localId),
+                eq(dataliveVentas.fecha, d.fecha),
+              ),
+            );
+          reemplazados++;
+        } else {
+          omitidos++;
+        }
+      } else {
+        await db.insert(dataliveVentas).values(values as any);
+        insertados++;
+      }
+    }
+    return { insertados, omitidos, reemplazados };
   }
 
   async getPermissions(): Promise<Permission[]> {
