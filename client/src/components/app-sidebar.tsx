@@ -128,6 +128,7 @@ const menuSections: MenuSection[] = [
       { title: "Valorizar Stock", url: "/valorizar-stock", icon: Package, permission: "stock_valuation.view" },
       { title: "CMV", url: "/cmv", icon: Calculator, permission: "cmv.view" },
       { title: "Punto de Equilibrio", url: "/punto-equilibrio", icon: Target, permission: "breakeven.view" },
+      { title: "Ventas Datalive", url: "/ventas-datalive", icon: Upload },
       { title: "Dashboard", url: "/dashboard", icon: BarChart3 },
     ],
   },

@@ -41,6 +41,7 @@ import PapPage from "@/pages/pap";
 import StockValuationPage from "@/pages/stock-valuation";
 import CmvPage from "@/pages/cmv";
 import BreakevenPage from "@/pages/breakeven";
+import DataliveVentasPage from "@/pages/datalive-ventas";
 import DashboardPage from "@/pages/dashboard";
 import StockPage from "@/pages/stock";
 import EmployeesPage from "@/pages/employees";
@@ -88,6 +89,7 @@ function AppRouter() {
       <Route path="/valorizar-stock" component={StockValuationPage} />
       <Route path="/cmv" component={CmvPage} />
       <Route path="/punto-equilibrio" component={BreakevenPage} />
+      <Route path="/ventas-datalive" component={DataliveVentasPage} />
       <Route path="/dashboard" component={DashboardPage} />
       <Route path="/stock" component={StockPage} />
       <Route path="/empleados" component={EmployeesPage} />
