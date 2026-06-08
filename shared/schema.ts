@@ -1150,6 +1150,33 @@ export type InsertCmvCalculation = z.infer<typeof insertCmvCalculationSchema>;
 export type CmvCalculation = typeof cmvCalculations.$inferSelect;
 
 // ==========================================
+// DATALIVE VENTAS (Ventas BRUTAS importadas de Datalive — tabla paralela y dedicada)
+// NO se mezcla con el circuito financiero (extractos/transacciones, que llegan netos).
+// Una fila por (empresa, local, día). Idempotente por ese trío.
+// ==========================================
+export const dataliveVentas = pgTable(
+  "datalive_ventas",
+  {
+    id: serial("id").primaryKey(),
+    clientId: integer("client_id").notNull().references(() => clients.id, { onDelete: "cascade" }),
+    localId: integer("local_id").notNull().references(() => locals.id),
+    fecha: date("fecha").notNull(),
+    ventaTotal: decimal("venta_total", { precision: 14, scale: 2 }).default("0"),
+    ventaEfectivo: decimal("venta_efectivo", { precision: 14, scale: 2 }).default("0"),
+    ventaOnline: decimal("venta_online", { precision: 14, scale: 2 }).default("0"),
+    sourceFile: varchar("source_file", { length: 255 }),
+    createdBy: varchar("created_by").references(() => users.id),
+    createdAt: timestamp("created_at").defaultNow(),
+    updatedAt: timestamp("updated_at").defaultNow(),
+  },
+  (table) => [uniqueIndex("datalive_ventas_client_local_fecha_uq").on(table.clientId, table.localId, table.fecha)],
+);
+
+export const insertDataliveVentaSchema = createInsertSchema(dataliveVentas).omit({ id: true, createdAt: true, updatedAt: true });
+export type InsertDataliveVenta = z.infer<typeof insertDataliveVentaSchema>;
+export type DataliveVenta = typeof dataliveVentas.$inferSelect;
+
+// ==========================================
 // OPERATIONAL AUDITS (Auditorías Operativas)
 // ==========================================
 export const operationalAudits = pgTable("operational_audits", {
