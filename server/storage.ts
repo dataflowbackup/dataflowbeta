@@ -407,8 +407,10 @@ export interface IStorage {
   }>;
   
   getSales(clientId: number): Promise<Sale[]>;
-  /** Suma de ventas (bruto, con IVA) por período/local. Reusable por CMC/CMV/PAP. */
+  /** Suma de ventas (bruto, con IVA) por período/local desde el grupo "Ventas" (extractos). */
   getSalesTotalByPeriod(clientId: number, opts: { dateFrom?: string; dateTo?: string; localIds?: number[] }): Promise<number>;
+  /** Suma de ventas brutas (con IVA) por período/local desde la tabla datalive_ventas. */
+  getDataliveSalesTotalByPeriod(clientId: number, opts: { dateFrom?: string; dateTo?: string; localIds?: number[] }): Promise<number>;
   /** CMC: costo de insumos comprados SIN IVA, desglosado por rubro padre → sub-rubro, con % vs venta sin IVA. */
   getCmcReport(clientId: number, opts: { dateFrom?: string; dateTo?: string; localIds?: number[] }): Promise<{
     total: number;
@@ -2808,9 +2810,32 @@ export class DatabaseStorage implements IStorage {
     }, 0);
   }
 
-  async getCmcReport(
+  async getDataliveSalesTotalByPeriod(
     clientId: number,
     opts: { dateFrom?: string; dateTo?: string; localIds?: number[] },
+  ): Promise<number> {
+    const conds = [eq(dataliveVentas.clientId, clientId)];
+    if (opts.dateFrom) conds.push(sql`${dataliveVentas.fecha} >= ${opts.dateFrom}`);
+    if (opts.dateTo) conds.push(sql`${dataliveVentas.fecha} <= ${opts.dateTo}`);
+    if (opts.localIds && opts.localIds.length > 0) conds.push(inArray(dataliveVentas.localId, opts.localIds));
+    const rows = await db.select({ total: dataliveVentas.ventaTotal }).from(dataliveVentas).where(and(...conds));
+    return rows.reduce((acc, r) => acc + (parseFloat(String(r.total)) || 0), 0);
+  }
+
+  /** Venta bruta (con IVA) por período/local desde la fuente elegida: "extractos" (grupo Ventas) o "datalive". */
+  private async getSalesBySource(
+    clientId: number,
+    opts: { dateFrom?: string; dateTo?: string; localIds?: number[] },
+    source: "extractos" | "datalive",
+  ): Promise<number> {
+    return source === "datalive"
+      ? this.getDataliveSalesTotalByPeriod(clientId, opts)
+      : this.getSalesTotalByPeriod(clientId, opts);
+  }
+
+  async getCmcReport(
+    clientId: number,
+    opts: { dateFrom?: string; dateTo?: string; localIds?: number[]; salesSource?: "extractos" | "datalive" },
   ) {
     // 1) Facturas en alcance (activas, por fecha/local).
     const invConds = [eq(invoices.clientId, clientId), eq(invoices.status, "active")];
@@ -2820,7 +2845,7 @@ export class DatabaseStorage implements IStorage {
     const invs = await db.select({ id: invoices.id }).from(invoices).where(and(...invConds));
     const invIds = invs.map((i) => i.id);
 
-    const salesGross = await this.getSalesTotalByPeriod(clientId, opts);
+    const salesGross = await this.getSalesBySource(clientId, opts, opts.salesSource ?? "extractos");
     const salesNet = salesGross / 1.21; // criterio CMC: venta sin IVA
     const pctOf = (amount: number) => (salesNet > 0 ? (amount / salesNet) * 100 : null);
 
@@ -2902,7 +2927,7 @@ export class DatabaseStorage implements IStorage {
 
   async getPapReport(
     clientId: number,
-    opts: { dateFrom?: string; dateTo?: string; localIds?: number[]; supplierIds?: number[] },
+    opts: { dateFrom?: string; dateTo?: string; localIds?: number[]; supplierIds?: number[]; salesSource?: "extractos" | "datalive" },
   ) {
     const hasLocals = opts.localIds && opts.localIds.length > 0;
     const hasSuppliers = opts.supplierIds && opts.supplierIds.length > 0;
@@ -2953,7 +2978,7 @@ export class DatabaseStorage implements IStorage {
 
     const totalEntregado = invRows.reduce((a, r) => a + (parseFloat(String(r.total)) || 0), 0);
     const totalPagado = payRows.reduce((a, r) => a + (parseFloat(String(r.amount)) || 0), 0);
-    const salesWithIva = await this.getSalesTotalByPeriod(clientId, opts);
+    const salesWithIva = await this.getSalesBySource(clientId, opts, opts.salesSource ?? "extractos");
     const pctOf = (amount: number) => (salesWithIva > 0 ? (amount / salesWithIva) * 100 : null);
 
     const bySupplier = Array.from(map.values())

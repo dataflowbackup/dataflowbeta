@@ -3199,7 +3199,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         typeof localIdsRaw === "string" && localIdsRaw && localIdsRaw !== "all"
           ? localIdsRaw.split(",").map((s) => parseInt(s, 10)).filter((n) => Number.isFinite(n))
           : undefined;
-      const data = await storage.getCmcReport(clientId, { dateFrom, dateTo, localIds });
+      const salesSource = req.query.salesSource === "datalive" ? "datalive" : "extractos";
+      const data = await storage.getCmcReport(clientId, { dateFrom, dateTo, localIds, salesSource });
       res.json(data);
     } catch (e: any) {
       res.status(500).json({ message: e.message });
@@ -3218,7 +3219,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
           : undefined;
       const localIds = parseIds(req.query.localIds ?? req.query.localId);
       const supplierIds = parseIds(req.query.supplierIds ?? req.query.supplierId);
-      const data = await storage.getPapReport(clientId, { dateFrom, dateTo, localIds, supplierIds });
+      const salesSource = req.query.salesSource === "datalive" ? "datalive" : "extractos";
+      const data = await storage.getPapReport(clientId, { dateFrom, dateTo, localIds, supplierIds, salesSource });
       res.json(data);
     } catch (e: any) {
       res.status(500).json({ message: e.message });
