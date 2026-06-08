@@ -42,6 +42,7 @@ export default function PapPage() {
   const [localId, setLocalId] = useState("all");
   const [supplierId, setSupplierId] = useState("all");
   const [mode, setMode] = useState<"amount" | "percent">("amount");
+  const [salesSource, setSalesSource] = useState("extractos");
 
   const { data: locals = [] } = useQuery<Local[]>({ queryKey: ["/api/locals"] });
   const { data: suppliers = [] } = useQuery<Supplier[]>({ queryKey: ["/api/suppliers"] });
@@ -54,15 +55,20 @@ export default function PapPage() {
     () => [{ value: "all", label: "Todos los proveedores" }, ...suppliers.map((s) => ({ value: String(s.id), label: s.tradeName }))],
     [suppliers],
   );
+  const sourceOptions = [
+    { value: "extractos", label: "Extractos" },
+    { value: "datalive", label: "Datalive" },
+  ];
 
   const { data, isLoading } = useQuery<PapReport>({
-    queryKey: ["/api/finance/pap", dateFrom, dateTo, localId, supplierId],
+    queryKey: ["/api/finance/pap", dateFrom, dateTo, localId, supplierId, salesSource],
     queryFn: async () => {
       const p = new URLSearchParams();
       if (dateFrom) p.set("dateFrom", dateFrom);
       if (dateTo) p.set("dateTo", dateTo);
       if (localId !== "all") p.set("localIds", localId);
       if (supplierId !== "all") p.set("supplierIds", supplierId);
+      p.set("salesSource", salesSource);
       const res = await fetch(`/api/finance/pap?${p.toString()}`, { credentials: "include" });
       if (!res.ok) throw new Error("Error al cargar PAP");
       return res.json();
@@ -96,6 +102,10 @@ export default function PapPage() {
         <div className="space-y-1">
           <Label className="text-xs">Proveedor</Label>
           <DataEntryCombobox options={supplierOptions} value={supplierId} onValueChange={setSupplierId} placeholder="Proveedor" searchPlaceholder="Buscar proveedor…" triggerClassName="w-56" data-testid="select-supplier" />
+        </div>
+        <div className="space-y-1">
+          <Label className="text-xs">Venta (para %)</Label>
+          <DataEntryCombobox options={sourceOptions} value={salesSource} onValueChange={setSalesSource} placeholder="Fuente" searchPlaceholder="Fuente…" triggerClassName="w-40" data-testid="select-sales-source" />
         </div>
         <div className="flex gap-1 rounded-md border p-1">
           <Button size="sm" variant={mode === "amount" ? "default" : "ghost"} onClick={() => setMode("amount")} data-testid="toggle-amount">

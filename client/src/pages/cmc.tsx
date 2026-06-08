@@ -42,6 +42,7 @@ export default function CmcPage() {
   const [dateTo, setDateTo] = useState(today());
   const [localId, setLocalId] = useState("all");
   const [mode, setMode] = useState<"amount" | "percent">("amount");
+  const [salesSource, setSalesSource] = useState("extractos");
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
 
   const { data: locals = [] } = useQuery<Local[]>({ queryKey: ["/api/locals"] });
@@ -50,17 +51,22 @@ export default function CmcPage() {
     () => [{ value: "all", label: "Todos los locales" }, ...locals.map((l) => ({ value: String(l.id), label: l.name }))],
     [locals],
   );
+  const sourceOptions = [
+    { value: "extractos", label: "Extractos" },
+    { value: "datalive", label: "Datalive" },
+  ];
 
   const url = useMemo(() => {
     const p = new URLSearchParams();
     if (dateFrom) p.set("dateFrom", dateFrom);
     if (dateTo) p.set("dateTo", dateTo);
     if (localId !== "all") p.set("localIds", localId);
+    p.set("salesSource", salesSource);
     return `/api/finance/cmc?${p.toString()}`;
-  }, [dateFrom, dateTo, localId]);
+  }, [dateFrom, dateTo, localId, salesSource]);
 
   const { data, isLoading } = useQuery<CmcReport>({
-    queryKey: ["/api/finance/cmc", dateFrom, dateTo, localId],
+    queryKey: ["/api/finance/cmc", dateFrom, dateTo, localId, salesSource],
     queryFn: async () => {
       const res = await fetch(url, { credentials: "include" });
       if (!res.ok) throw new Error("Error al cargar CMC");
@@ -105,6 +111,18 @@ export default function CmcPage() {
             searchPlaceholder="Buscar local…"
             triggerClassName="w-48"
             data-testid="select-local"
+          />
+        </div>
+        <div className="space-y-1">
+          <Label className="text-xs">Venta (para %)</Label>
+          <DataEntryCombobox
+            options={sourceOptions}
+            value={salesSource}
+            onValueChange={setSalesSource}
+            placeholder="Fuente"
+            searchPlaceholder="Fuente…"
+            triggerClassName="w-40"
+            data-testid="select-sales-source"
           />
         </div>
         <div className="flex gap-1 rounded-md border p-1">
