@@ -34,6 +34,7 @@ import type { FinancialGroup, TransactionCategory } from "@shared/schema";
 const groupTypes = [
   { value: "income", label: "Ingresos" },
   { value: "expense", label: "Gastos" },
+  { value: "movimientos_financieros", label: "Movimientos Financieros" },
   { value: "transfer", label: "Transferencias" },
 ];
 
@@ -41,7 +42,7 @@ const groupTypeComboOptions = groupTypes.map((t) => ({ value: t.value, label: t.
 
 const formSchema = z.object({
   name: z.string().min(1, "El nombre es requerido"),
-  type: z.enum(["income", "expense", "transfer"], { required_error: "El tipo es requerido" }),
+  type: z.enum(["income", "expense", "transfer", "movimientos_financieros"], { required_error: "El tipo es requerido" }),
   displayOrder: z.coerce.number().min(1, "El orden debe ser mayor a 0"),
 });
 
@@ -141,7 +142,7 @@ export default function FinancialGroupsPage() {
     setEditingGroup(group);
     form.reset({
       name: group.name,
-      type: group.type as "income" | "expense" | "transfer",
+      type: group.type as "income" | "expense" | "transfer" | "movimientos_financieros",
       displayOrder: group.displayOrder || 1,
     });
     setIsDialogOpen(true);
@@ -188,6 +189,8 @@ export default function FinancialGroupsPage() {
         return <Badge variant="default" className="bg-green-600" data-testid={`badge-type-income`}>Ingresos</Badge>;
       case "expense":
         return <Badge variant="default" className="bg-red-600" data-testid={`badge-type-expense`}>Gastos</Badge>;
+      case "movimientos_financieros":
+        return <Badge variant="default" className="bg-indigo-600" data-testid={`badge-type-movfin`}>Movimientos Financieros</Badge>;
       case "transfer":
         return <Badge variant="default" className="bg-blue-600" data-testid={`badge-type-transfer`}>Transferencias</Badge>;
       default:

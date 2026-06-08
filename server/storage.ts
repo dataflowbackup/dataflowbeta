@@ -2704,21 +2704,28 @@ export class DatabaseStorage implements IStorage {
         return mappedFinancialId === group.id;
       });
       const groupMonthlyTotals: Record<number, number> = {};
-      
+      // Total con signo (income +, expense −) según el type de cada categoría. Sirve para mostrar
+      // los Movimientos Financieros con su dirección real (ej. Retiros restan) aunque el grupo
+      // ya no sea income/expense.
+      const groupSignedMonthly: Record<number, number> = {};
+
       for (let m = 1; m <= 12; m++) {
         groupMonthlyTotals[m] = 0;
+        groupSignedMonthly[m] = 0;
       }
-      
+
       const categories = groupCategories.map(cat => {
         const monthlyTotals = categoryMonthlyTotals[cat.id] || {};
+        const sign = String(cat.type) === "expense" ? -1 : 1;
         let yearTotal = 0;
-        
+
         for (let m = 1; m <= 12; m++) {
           const val = monthlyTotals[m] || 0;
           yearTotal += val;
           groupMonthlyTotals[m] += val;
+          groupSignedMonthly[m] += val * sign;
         }
-        
+
         return {
           id: cat.id,
           name: cat.name,
@@ -2746,6 +2753,7 @@ export class DatabaseStorage implements IStorage {
         specialType: groupSpecialType,
         categories,
         monthlyTotals: groupMonthlyTotals,
+        signedMonthlyTotals: groupSignedMonthly,
         yearTotal: groupYearTotal,
       };
     });

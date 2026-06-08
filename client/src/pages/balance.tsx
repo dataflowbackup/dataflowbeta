@@ -49,6 +49,7 @@ interface GroupData {
   specialType?: string | null;
   categories: CategoryData[];
   monthlyTotals: Record<number, number>;
+  signedMonthlyTotals?: Record<number, number>;
   yearTotal: number;
 }
 
@@ -318,19 +319,18 @@ export default function BalancePage() {
             </div>
 
             {otrosMovGroups.length > 0 && (
-              <div className="space-y-2 border-t-2 pt-4" data-testid="section-otros-movimientos">
+              <div className="space-y-2 border-t-2 pt-4" data-testid="section-movimientos-financieros">
                 <div className="grid grid-cols-1 gap-2 sm:grid-cols-[1fr_auto]">
-                  <span className="font-bold uppercase">Otros Movimientos</span>
+                  <span className="font-bold uppercase">Movimientos Financieros</span>
                   <span className="text-xs text-muted-foreground self-center sm:text-right">
-                    No afectan la utilidad
+                    No afectan la rentabilidad
                   </span>
                 </div>
                 {otrosMovGroups.map((group, idx) => {
-                  const raw = group.monthlyTotals[month] ?? 0;
-                  const signed = group.type === "expense" ? -raw : raw;
+                  const signed = group.signedMonthlyTotals?.[month] ?? group.monthlyTotals[month] ?? 0;
                   return (
                     <div
-                      key={`otros-${group.id}-${idx}`}
+                      key={`movfin-${group.id}-${idx}`}
                       className="grid grid-cols-1 gap-2 sm:grid-cols-[1fr_auto] text-sm"
                     >
                       <span className="text-muted-foreground">{group.name}</span>
@@ -341,8 +341,8 @@ export default function BalancePage() {
                   );
                 })}
                 <div className="grid grid-cols-1 gap-2 sm:grid-cols-[1fr_auto] border-t pt-2 text-sm">
-                  <span className="font-semibold">Total Otros Movimientos</span>
-                  <span className="font-mono text-right font-semibold" data-testid="text-total-otros-movimientos">
+                  <span className="font-semibold">Total Movimientos Financieros</span>
+                  <span className="font-mono text-right font-semibold" data-testid="text-total-movimientos-financieros">
                     {formatCurrency(spreadsheet.summary.otrosMovimientos?.[month] ?? 0)}
                   </span>
                 </div>
@@ -357,9 +357,9 @@ export default function BalancePage() {
                   </span>
                 </div>
                 <p className="text-xs text-muted-foreground">
-                  Utilidad (rentabilidad) + Otros Movimientos. Este total es el que impacta los
-                  saldos de caja/cuentas — por eso los Otros Movimientos quedan asentados aunque no
-                  afecten la rentabilidad.
+                  Utilidad (rentabilidad) + Movimientos Financieros. Este total es el que impacta los
+                  saldos de caja/cuentas — por eso los Movimientos Financieros quedan asentados aunque
+                  no afecten la rentabilidad.
                 </p>
               </div>
             )}
