@@ -36,17 +36,21 @@ export default function DataliveVentasPage() {
 
   const { data: locals = [] } = useQuery<Local[]>({ queryKey: ["/api/locals"] });
   const { data: existing = [] } = useQuery<DataliveVentaRow[]>({
-    queryKey: ["/api/datalive-ventas", localId],
-    enabled: !!localId,
+    queryKey: ["/api/datalive-ventas"],
     queryFn: async () => {
-      const res = await fetch(`/api/datalive-ventas?localId=${localId}`, { credentials: "include" });
+      const res = await fetch(`/api/datalive-ventas`, { credentials: "include" });
       if (!res.ok) throw new Error("Error al cargar ventas");
       return res.json();
     },
   });
 
   const localOptions = useMemo(() => locals.map((l) => ({ value: String(l.id), label: l.name })), [locals]);
-  const existingFechas = useMemo(() => new Set(existing.map((e) => String(e.fecha))), [existing]);
+  const localNameById = useMemo(() => new Map(locals.map((l) => [l.id, l.name])), [locals]);
+  // Para el preview de idempotencia: fechas ya cargadas del local elegido.
+  const existingFechas = useMemo(
+    () => new Set(existing.filter((e) => String(e.localId) === localId).map((e) => String(e.fecha))),
+    [existing, localId],
+  );
 
   const handleFile = async (file: File) => {
     try {
@@ -92,7 +96,7 @@ export default function DataliveVentasPage() {
       return res.json();
     },
     onSuccess: (r: any) => {
-      queryClient.invalidateQueries({ queryKey: ["/api/datalive-ventas", localId] });
+      queryClient.invalidateQueries({ queryKey: ["/api/datalive-ventas"] });
       toast({
         title: "Importación lista",
         description: `${r.insertados} nuevo(s), ${r.reemplazados} reemplazado(s), ${r.omitidos} omitido(s).`,
@@ -228,14 +232,15 @@ export default function DataliveVentasPage() {
         </CardContent>
       </Card>
 
-      {localId && existing.length > 0 && (
+      {existing.length > 0 && (
         <Card>
-          <CardHeader className="pb-3"><CardTitle className="text-base">Ventas Datalive cargadas (este local)</CardTitle></CardHeader>
+          <CardHeader className="pb-3"><CardTitle className="text-base">Ventas Datalive cargadas</CardTitle></CardHeader>
           <CardContent className="p-0 md:p-6">
             <div className="overflow-x-auto">
               <table className="w-full text-sm">
                 <thead>
                   <tr className="bg-muted/50">
+                    <th className="text-left px-3 py-2 font-medium border-b">Local</th>
                     <th className="text-left px-3 py-2 font-medium border-b">Día</th>
                     <th className="text-right px-3 py-2 font-medium border-b">Total</th>
                     <th className="text-right px-3 py-2 font-medium border-b">Efectivo</th>
@@ -245,6 +250,7 @@ export default function DataliveVentasPage() {
                 <tbody>
                   {existing.map((e) => (
                     <tr key={e.id} className="border-b">
+                      <td className="px-3 py-2">{localNameById.get(e.localId) ?? `Local ${e.localId}`}</td>
                       <td className="px-3 py-2 font-mono">{e.fecha}</td>
                       <td className="px-3 py-2 text-right font-mono">{formatCurrency(parseFloat(String(e.ventaTotal)) || 0)}</td>
                       <td className="px-3 py-2 text-right font-mono">{formatCurrency(parseFloat(String(e.ventaEfectivo)) || 0)}</td>
