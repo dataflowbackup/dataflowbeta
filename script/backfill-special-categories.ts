@@ -22,21 +22,31 @@ async function main() {
   let totalGroups = 0;
   let totalMoved = 0;
   let totalFlagged = 0;
+  let totalRetipados = 0;
+  let totalTransfBorr = 0;
   for (const c of allClients) {
     if (dryRun) {
       console.log(`  - cliente ${c.id} (${c.name}): pendiente de aplicar`);
       continue;
     }
-    // Crea grupos padre Préstamos/Alivios, mueve categorías de préstamo y marca flags. Idempotente.
-    const { groupsCreated, categoriesMoved, flagged } = await restructureSpecialParentGroupsForClient(c.id);
+    // Crea Préstamos/Alivios/Aporte, mueve categorías, re-tipea a Movimientos Financieros,
+    // borra Transferencias (si no tiene transacciones) y marca flags. Idempotente.
+    const { groupsCreated, categoriesMoved, flagged, retipados, transferenciasBorradas } =
+      await restructureSpecialParentGroupsForClient(c.id);
     totalGroups += groupsCreated;
     totalMoved += categoriesMoved;
     totalFlagged += flagged;
-    console.log(`  - cliente ${c.id} (${c.name}): ${groupsCreated} grupos nuevos, ${categoriesMoved} cat. movidas, ${flagged} flags marcados`);
+    totalRetipados += retipados;
+    totalTransfBorr += transferenciasBorradas;
+    console.log(
+      `  - cliente ${c.id} (${c.name}): ${groupsCreated} grupos nuevos, ${categoriesMoved} cat. movidas, ${retipados} re-tipados, ${transferenciasBorradas} transferencias borradas, ${flagged} flags`,
+    );
   }
 
   if (!dryRun) {
-    console.log(`[backfill] LISTO. ${totalGroups} grupos creados, ${totalMoved} categorías movidas, ${totalFlagged} flags marcados.`);
+    console.log(
+      `[backfill] LISTO. ${totalGroups} grupos creados, ${totalMoved} cat. movidas, ${totalRetipados} re-tipados, ${totalTransfBorr} transferencias borradas, ${totalFlagged} flags.`,
+    );
   }
   process.exit(0);
 }

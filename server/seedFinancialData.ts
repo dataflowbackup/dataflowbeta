@@ -1,11 +1,11 @@
 import { db } from "./db";
-import { financialGroups, transactionCategories } from "@shared/schema";
-import { eq, and } from "drizzle-orm";
+import { financialGroups, transactionCategories, transactions } from "@shared/schema";
+import { eq, and, inArray } from "drizzle-orm";
 
 const FINANCIAL_GROUPS = [
   { name: "Ventas", type: "income", displayOrder: 1 },
-  { name: "Inicio de Mes", type: "income", displayOrder: 2 },
-  { name: "Otros Ingresos", type: "income", displayOrder: 3 },
+  { name: "Inicio de Mes", type: "movimientos_financieros", displayOrder: 2 },
+  { name: "Otros Ingresos", type: "movimientos_financieros", displayOrder: 3 },
   { name: "Banco, Tarjetas y Comisiones", type: "expense", displayOrder: 4 },
   { name: "Servicios", type: "expense", displayOrder: 5 },
   { name: "Alquiler", type: "expense", displayOrder: 6 },
@@ -22,24 +22,25 @@ const FINANCIAL_GROUPS = [
   { name: "Materia Prima Vinos", type: "expense", displayOrder: 17 },
   { name: "Musica", type: "expense", displayOrder: 18 },
   { name: "RRHH", type: "expense", displayOrder: 19 },
-  { name: "Retiros Socios", type: "expense", displayOrder: 20 },
-  { name: "Transferencias", type: "transfer", displayOrder: 21 },
-  // Otros Movimientos como grupos padre propios (no afectan rentabilidad; sí los saldos).
-  { name: "Préstamos", type: "income", displayOrder: 90 },
-  { name: "Alivios", type: "expense", displayOrder: 91 },
-  { name: "Aporte de Capital", type: "income", displayOrder: 92 },
+  { name: "Retiros", type: "movimientos_financieros", displayOrder: 20 },
+  // Grupos "Movimientos Financieros" (no afectan Ventas ni rentabilidad; sí los saldos).
+  { name: "Préstamos", type: "movimientos_financieros", displayOrder: 90 },
+  { name: "Alivios", type: "movimientos_financieros", displayOrder: 91 },
+  { name: "Aporte de Capital", type: "movimientos_financieros", displayOrder: 92 },
 ];
 
 /**
  * Grupos "Otros Movimientos": quedan asentados pero NO afectan el resultado neto del balance.
  * Se marcan con isSpecial=true + specialType. Ver ROADMAP_BETA Fase 1.
  */
+/** Tercer tipo de grupo: "Movimientos Financieros" (no afecta rentabilidad; sí los saldos). */
+const MOV_FIN_TYPE = "movimientos_financieros";
+
 const SPECIAL_GROUP_TYPES: Record<string, string> = {
+  // Los 6 grupos padre "Movimientos Financieros" (no afectan Ventas ni rentabilidad; sí los saldos).
   "Inicio de Mes": "opening_balance",
   "Otros Ingresos": "other_income",
   "Retiros Socios": "owner_withdrawal",
-  "Transferencias": "internal_transfer",
-  // Los 6 grupos padre "Otros Movimientos" (no afectan Ventas ni rentabilidad; sí los saldos).
   "Retiros": "owner_withdrawal",
   "Préstamos": "loan",
   "Prestamos": "loan",
@@ -359,17 +360,11 @@ const CATEGORIES_BY_GROUP: Record<string, { name: string; type: "income" | "expe
     { name: "Vacaciones", type: "expense" },
     { name: "Viandas/Comida del personal", type: "expense" },
   ],
-  "Retiros Socios": [
+  "Retiros": [
     { name: "Retiro de dinero Socios", type: "expense" },
     { name: "Retiro de dinero (Mayorista)", type: "expense" },
     { name: "Pagos AMEX empresarial", type: "expense" },
     { name: "Pagos AMEX empresarial (Mayorista)", type: "expense" },
-  ],
-  "Transferencias": [
-    { name: "Ingreso por transferencia entre cuentas", type: "transfer" },
-    { name: "Egreso por transferencia entre cuentas", type: "transfer" },
-    { name: "Ingreso por transferencia entre cuentas (Mayorista)", type: "transfer" },
-    { name: "Egreso por transferencia entre cuentas (Mayorista)", type: "transfer" },
   ],
 };
 
@@ -390,7 +385,7 @@ export async function seedFinancialDataForClient(clientId: number): Promise<{ gr
     const [inserted] = await db.insert(financialGroups).values({
       clientId,
       name: group.name,
-      type: group.type as "income" | "expense" | "transfer",
+      type: group.type as any,
       displayOrder: group.displayOrder,
       isSystem: true,
     }).returning();
@@ -489,28 +484,29 @@ export async function seedSpecialCategoryFlagsForClient(
  */
 export async function restructureSpecialParentGroupsForClient(
   clientId: number,
-): Promise<{ groupsCreated: number; categoriesMoved: number; flagged: number }> {
+): Promise<{ groupsCreated: number; categoriesMoved: number; flagged: number; retipados: number; transferenciasBorradas: number }> {
   let groupsCreated = 0;
   let categoriesMoved = 0;
 
   const groups = await db.select().from(financialGroups).where(eq(financialGroups.clientId, clientId));
   const byName = new Map(groups.map((g) => [String(g.name ?? "").trim().toLowerCase(), g]));
 
-  async function ensureGroup(name: string, type: "income" | "expense" | "transfer", displayOrder: number): Promise<number> {
+  async function ensureGroup(name: string, type: string, displayOrder: number): Promise<number> {
     const existing = byName.get(name.trim().toLowerCase());
     if (existing) return existing.id;
     const [created] = await db
       .insert(financialGroups)
-      .values({ clientId, name, type, displayOrder, isSystem: true, active: true })
+      .values({ clientId, name, type, displayOrder, isSystem: true, active: true } as any)
       .returning();
     groupsCreated++;
     byName.set(name.trim().toLowerCase(), created as any);
     return (created as any).id;
   }
 
-  const prestamosGroupId = await ensureGroup("Préstamos", "income", 90);
-  await ensureGroup("Alivios", "expense", 91);
-  const aporteGroupId = await ensureGroup("Aporte de Capital", "income", 92);
+  // Los 3 grupos nuevos se crean directamente como "Movimientos Financieros".
+  const prestamosGroupId = await ensureGroup("Préstamos", MOV_FIN_TYPE, 90);
+  await ensureGroup("Alivios", MOV_FIN_TYPE, 91);
+  const aporteGroupId = await ensureGroup("Aporte de Capital", MOV_FIN_TYPE, 92);
 
   // Mover categorías a sus nuevos grupos padre (las que aún no estén ahí):
   // - "Préstamos": SOLO el capital del préstamo (ingreso). NO el "interés sobre cuota de préstamo"
@@ -536,7 +532,50 @@ export async function restructureSpecialParentGroupsForClient(
     }
   }
 
-  // Re-marcar flags (cubre los nuevos grupos especiales).
+  // Re-tipear a "Movimientos Financieros" los grupos existentes (Inicio de Mes, Otros Ingresos, Retiros…)
+  // y unificar "Retiros Socios" → "Retiros".
+  const movFinNames = new Set(Object.keys(SPECIAL_GROUP_TYPES).map((n) => n.trim().toLowerCase()));
+  let retipados = 0;
+  const groupsNow = await db.select().from(financialGroups).where(eq(financialGroups.clientId, clientId));
+  for (const g of groupsNow) {
+    const nm = String((g as any).name ?? "").trim().toLowerCase();
+    const patch: Record<string, unknown> = {};
+    if (movFinNames.has(nm) && String((g as any).type) !== MOV_FIN_TYPE) patch.type = MOV_FIN_TYPE;
+    if (nm === "retiros socios") patch.name = "Retiros";
+    if (Object.keys(patch).length > 0) {
+      await db.update(financialGroups).set(patch as any).where(eq(financialGroups.id, (g as any).id));
+      if (patch.type) retipados++;
+    }
+  }
+
+  // Eliminar "Transferencias" (no debe existir). SEGURO: solo si ninguna transacción usa sus categorías.
+  let transferenciasBorradas = 0;
+  const transf = groupsNow.find((g) => String((g as any).name ?? "").trim().toLowerCase() === "transferencias");
+  if (transf) {
+    const transfCats = await db
+      .select()
+      .from(transactionCategories)
+      .where(and(eq(transactionCategories.clientId, clientId), eq(transactionCategories.financialGroupId, (transf as any).id)));
+    const catIds = transfCats.map((c) => (c as any).id);
+    let txCount = 0;
+    if (catIds.length) {
+      const txs = await db
+        .select({ id: transactions.id })
+        .from(transactions)
+        .where(and(eq(transactions.clientId, clientId), inArray(transactions.categoryId, catIds)));
+      txCount = txs.length;
+    }
+    if (txCount === 0) {
+      if (catIds.length) {
+        await db.delete(transactionCategories).where(and(eq(transactionCategories.clientId, clientId), eq(transactionCategories.financialGroupId, (transf as any).id)));
+      }
+      await db.delete(financialGroups).where(eq(financialGroups.id, (transf as any).id));
+      transferenciasBorradas = 1;
+    }
+    // Si tuviera transacciones, NO se borra (se preserva la integridad) y queda para revisar a mano.
+  }
+
+  // Re-marcar flags (specialType en categorías, señal secundaria).
   const { updated } = await seedSpecialCategoryFlagsForClient(clientId);
-  return { groupsCreated, categoriesMoved, flagged: updated };
+  return { groupsCreated, categoriesMoved, flagged: updated, retipados, transferenciasBorradas };
 }

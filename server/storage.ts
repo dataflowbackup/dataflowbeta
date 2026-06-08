@@ -188,6 +188,13 @@ export const OTROS_MOVIMIENTOS_SPECIAL_TYPES = new Set<string>([
   "internal_transfer", // Transferencias entre cuentas
 ]);
 
+/**
+ * Tercer tipo de grupo financiero (además de income/expense): los grupos "Movimientos
+ * Financieros" (Inicio de mes, Otros Ingresos, Préstamos, Alivios, Aporte de Capital, Retiros)
+ * NO miden rentabilidad → se excluyen del balance, pero SÍ cuentan para los saldos de caja.
+ */
+export const MOVIMIENTOS_FINANCIEROS_GROUP_TYPE = "movimientos_financieros";
+
 export interface IStorage {
   upsertUser(user: UpsertUser): Promise<User>;
   getUser(id: string): Promise<User | undefined>;
@@ -2639,8 +2646,14 @@ export class DatabaseStorage implements IStorage {
     const excludedSpecialTypes = OTROS_MOVIMIENTOS_SPECIAL_TYPES;
     const isOtroMovimiento = (specialType: unknown): boolean =>
       typeof specialType === "string" && excludedSpecialTypes.has(specialType);
+    // Grupos de tipo "Movimientos Financieros": sus categorías quedan fuera de la rentabilidad.
+    const movFinGroupIds = new Set(
+      allFinancialGroups.filter((g) => String(g.type) === MOVIMIENTOS_FINANCIEROS_GROUP_TYPE).map((g) => g.id),
+    );
+    const isMovFinCategory = (c: { financialGroupId: number | null }): boolean =>
+      c.financialGroupId != null && movFinGroupIds.has(c.financialGroupId);
     const specialCategoryIds = new Set(
-      allCategories.filter((c) => isOtroMovimiento(c.specialType)).map((c) => c.id),
+      allCategories.filter((c) => isOtroMovimiento(c.specialType) || isMovFinCategory(c)).map((c) => c.id),
     );
 
     const categoryMonthlyTotals: Record<number, Record<number, number>> = {};
@@ -2709,8 +2722,8 @@ export class DatabaseStorage implements IStorage {
         return {
           id: cat.id,
           name: cat.name,
-          // isSpecial aquí = "es Otro Movimiento (excluido del neto)", derivado del specialType canónico.
-          isSpecial: isOtroMovimiento(cat.specialType),
+          // isSpecial = "es Movimiento Financiero (excluido del neto)": por specialType o por tipo de grupo.
+          isSpecial: isOtroMovimiento(cat.specialType) || isMovFinCategory(cat),
           specialType: cat.specialType ?? null,
           monthlyTotals,
           yearTotal,
@@ -2718,8 +2731,10 @@ export class DatabaseStorage implements IStorage {
       });
 
       const groupYearTotal = Object.values(groupMonthlyTotals).reduce((a, b) => a + b, 0);
-      // El grupo es "especial" (Otros Movimientos) si todas sus categorías lo son.
-      const groupIsSpecial = categories.length > 0 && categories.every((c) => c.isSpecial);
+      // El grupo es "Movimiento Financiero" si su tipo lo es, o si todas sus categorías lo son.
+      const groupIsSpecial =
+        String(group.type) === MOVIMIENTOS_FINANCIEROS_GROUP_TYPE ||
+        (categories.length > 0 && categories.every((c) => c.isSpecial));
       const groupSpecialType =
         groupCategories.find((c) => c.specialType)?.specialType ?? null;
 
