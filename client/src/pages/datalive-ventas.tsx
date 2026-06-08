@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import * as XLSX from "xlsx";
 import { PageHeader } from "@/components/page-header";
@@ -27,6 +27,7 @@ interface DataliveVentaRow {
 
 export default function DataliveVentasPage() {
   const { toast } = useToast();
+  const fileRef = useRef<HTMLInputElement>(null);
   const [localId, setLocalId] = useState("");
   const [fileName, setFileName] = useState("");
   const [parsedDays, setParsedDays] = useState<ParsedDataliveDay[]>([]);
@@ -128,19 +129,28 @@ export default function DataliveVentasPage() {
             </div>
             <div className="space-y-1">
               <Label className="text-xs">Reporte Datalive (.xls)</Label>
-              <label>
+              <div>
                 <input
+                  ref={fileRef}
                   type="file"
                   accept=".xls,.xlsx"
                   className="hidden"
-                  disabled={!localId}
-                  onChange={(e) => e.target.files?.[0] && handleFile(e.target.files[0])}
+                  onChange={(e) => {
+                    if (e.target.files?.[0]) handleFile(e.target.files[0]);
+                    e.target.value = ""; // permite re-elegir el mismo archivo
+                  }}
                   data-testid="input-file"
                 />
-                <Button variant="outline" asChild disabled={!localId}>
-                  <span><Upload className="h-4 w-4 mr-2" /> {fileName || "Subir archivo"}</span>
+                <Button
+                  type="button"
+                  variant="outline"
+                  disabled={!localId}
+                  onClick={() => fileRef.current?.click()}
+                  data-testid="button-upload"
+                >
+                  <Upload className="h-4 w-4 mr-2" /> {fileName || "Subir archivo"}
                 </Button>
-              </label>
+              </div>
             </div>
           </div>
           {!localId && <p className="text-xs text-muted-foreground">Primero elegí el local; el local NO se detecta del archivo.</p>}

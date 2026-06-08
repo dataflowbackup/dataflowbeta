@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import * as XLSX from "xlsx";
 import { PageHeader } from "@/components/page-header";
@@ -30,6 +30,7 @@ function today(): string {
 
 export default function StockValuationPage() {
   const { toast } = useToast();
+  const fileRef = useRef<HTMLInputElement>(null);
   const [valuationDate, setValuationDate] = useState(today());
   const [localId, setLocalId] = useState("all");
   const [search, setSearch] = useState("");
@@ -170,18 +171,20 @@ export default function StockValuationPage() {
               <Button variant="outline" onClick={exportTemplate} data-testid="button-export-template">
                 <Download className="h-4 w-4 mr-2" /> Exportar planilla
               </Button>
-              <label>
-                <input
-                  type="file"
-                  accept=".xlsx,.xls"
-                  className="hidden"
-                  onChange={(e) => e.target.files?.[0] && importFile(e.target.files[0])}
-                  data-testid="input-import"
-                />
-                <Button variant="outline" asChild>
-                  <span><Upload className="h-4 w-4 mr-2" /> Importar Excel</span>
-                </Button>
-              </label>
+              <input
+                ref={fileRef}
+                type="file"
+                accept=".xlsx,.xls"
+                className="hidden"
+                onChange={(e) => {
+                  if (e.target.files?.[0]) importFile(e.target.files[0]);
+                  e.target.value = "";
+                }}
+                data-testid="input-import"
+              />
+              <Button type="button" variant="outline" onClick={() => fileRef.current?.click()} data-testid="button-import">
+                <Upload className="h-4 w-4 mr-2" /> Importar Excel
+              </Button>
             </div>
           </div>
 
