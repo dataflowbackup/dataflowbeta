@@ -71,6 +71,7 @@ import type {
   TransactionCategory,
   Local,
   LocalAlias,
+  FinancialGroup,
 } from "@shared/schema";
 import type { BusinessName } from "@shared/schema";
 
@@ -385,6 +386,7 @@ export default function BankStatementsPage() {
   const [deleteConfirmCode, setDeleteConfirmCode] = useState("");
   const [listFilterLocalId, setListFilterLocalId] = useState<string>("all");
   const [listFilterCategoryId, setListFilterCategoryId] = useState<string>("all");
+  const [listFilterGroupId, setListFilterGroupId] = useState<string>("all");
   const [listFilterDateFrom, setListFilterDateFrom] = useState("");
   const [listFilterDateTo, setListFilterDateTo] = useState("");
   const [listFilterType, setListFilterType] = useState<"all" | "income" | "expense">("all");
@@ -491,6 +493,10 @@ export default function BankStatementsPage() {
 
   const { data: categories = [] } = useQuery<TransactionCategory[]>({
     queryKey: ["/api/transaction-categories"],
+  });
+
+  const { data: financialGroups = [] } = useQuery<FinancialGroup[]>({
+    queryKey: ["/api/financial-groups"],
   });
 
   const { data: availableBanks = [] } = useQuery<AvailableBank[]>({
@@ -1296,6 +1302,21 @@ export default function BankStatementsPage() {
     [locals],
   );
 
+  const groupFilterItems = useMemo(
+    () =>
+      [...financialGroups]
+        .filter((g) => g.active !== false)
+        .sort((a, b) => String(a.name).localeCompare(String(b.name), "es"))
+        .map((g) => ({ id: g.id, name: g.name })),
+    [financialGroups],
+  );
+
+  // categoryId -> financialGroupId, para filtrar por grupo a través de la categoría.
+  const categoryGroupMap = useMemo(
+    () => new Map(categories.map((c) => [c.id, (c as any).financialGroupId as number | null])),
+    [categories],
+  );
+
   const uploadBankAccountComboOptions = useMemo(
     () =>
       bankAccounts.map((a) => ({
@@ -1367,6 +1388,7 @@ export default function BankStatementsPage() {
   const listFiltersActive =
     listFilterLocalId !== "all" ||
     listFilterCategoryId !== "all" ||
+    listFilterGroupId !== "all" ||
     listFilterType !== "all" ||
     listFilterDateFrom !== "" ||
     listFilterDateTo !== "";
@@ -1374,6 +1396,7 @@ export default function BankStatementsPage() {
   const clearListFilters = () => {
     setListFilterLocalId("all");
     setListFilterCategoryId("all");
+    setListFilterGroupId("all");
     setListFilterType("all");
     setListFilterDateFrom("");
     setListFilterDateTo("");
@@ -1388,6 +1411,12 @@ export default function BankStatementsPage() {
     if (listFilterCategoryId !== "all") {
       const cid = parseInt(listFilterCategoryId, 10);
       if (Number.isFinite(cid)) rows = rows.filter((t) => t.categoryId === cid);
+    }
+    if (listFilterGroupId !== "all") {
+      const gid = parseInt(listFilterGroupId, 10);
+      if (Number.isFinite(gid)) {
+        rows = rows.filter((t) => t.categoryId != null && categoryGroupMap.get(t.categoryId) === gid);
+      }
     }
     if (listFilterType !== "all") {
       rows = rows.filter((t) => t.type === listFilterType);
@@ -1407,6 +1436,8 @@ export default function BankStatementsPage() {
     tabFilteredTransactions,
     listFilterLocalId,
     listFilterCategoryId,
+    listFilterGroupId,
+    categoryGroupMap,
     listFilterType,
     listFilterDateFrom,
     listFilterDateTo,
@@ -1874,6 +1905,16 @@ export default function BankStatementsPage() {
                     allLabel="Todas las categorías"
                     items={categoryFilterItems}
                     searchPlaceholder="Buscar categoría…"
+                  />
+                </div>
+                <div className="space-y-1 sm:col-span-2">
+                  <Label className="text-xs">Grupo Financiero</Label>
+                  <FilterSearchableSelect
+                    value={listFilterGroupId}
+                    onChange={setListFilterGroupId}
+                    allLabel="Todos los grupos"
+                    items={groupFilterItems}
+                    searchPlaceholder="Buscar grupo…"
                   />
                 </div>
                 <div className="space-y-1">
