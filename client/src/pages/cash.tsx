@@ -26,6 +26,7 @@ import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { DataEntryCombobox } from "@/components/data-entry-combobox";
+import { DateRangePicker } from "@/components/date-range-picker";
 import {
   Command,
   CommandEmpty,
@@ -868,12 +869,8 @@ export default function CashPage() {
               />
             </div>
             <div className="space-y-1">
-              <Label className="text-xs">Desde</Label>
-              <Input type="date" value={filterDateFrom} onChange={(e) => setFilterDateFrom(e.target.value)} />
-            </div>
-            <div className="space-y-1">
-              <Label className="text-xs">Hasta</Label>
-              <Input type="date" value={filterDateTo} onChange={(e) => setFilterDateTo(e.target.value)} />
+              <Label className="text-xs">Período</Label>
+              <DateRangePicker from={filterDateFrom} to={filterDateTo} onChange={(f, t) => { setFilterDateFrom(f); setFilterDateTo(t); }} />
             </div>
           </div>
           {isLoading ? (

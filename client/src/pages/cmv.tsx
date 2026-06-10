@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { DataEntryCombobox } from "@/components/data-entry-combobox";
+import { DateRangePicker } from "@/components/date-range-picker";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
@@ -143,12 +144,8 @@ export default function CmvPage() {
               <DataEntryCombobox options={valuationOptions} value={stockFinalId} onValueChange={setStockFinalId} placeholder="Elegí una valorización" searchPlaceholder="Buscar fecha…" data-testid="select-stock-final" />
             </div>
             <div className="space-y-1">
-              <Label className="text-xs">Compras desde</Label>
-              <Input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} data-testid="input-date-from" />
-            </div>
-            <div className="space-y-1">
-              <Label className="text-xs">Compras hasta</Label>
-              <Input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} data-testid="input-date-to" />
+              <Label className="text-xs">Compras (período)</Label>
+              <DateRangePicker from={dateFrom} to={dateTo} onChange={(f, t) => { setDateFrom(f); setDateTo(t); }} />
             </div>
           </div>
           {valuationOptions.length === 0 && (

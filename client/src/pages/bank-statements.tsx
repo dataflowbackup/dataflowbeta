@@ -25,6 +25,7 @@ import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { DateRangePicker } from "@/components/date-range-picker";
 import { Progress } from "@/components/ui/progress";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -1927,20 +1928,17 @@ export default function BankStatementsPage() {
                     searchPlaceholder="Buscar…"
                   />
                 </div>
-                <div className="space-y-1">
-                  <Label className="text-xs">Desde</Label>
-                  <Input
-                    type="date"
-                    value={listFilterDateFrom}
-                    onChange={(e) => setListFilterDateFrom(e.target.value)}
-                  />
-                </div>
-                <div className="space-y-1">
-                  <Label className="text-xs">Hasta</Label>
-                  <Input
-                    type="date"
-                    value={listFilterDateTo}
-                    onChange={(e) => setListFilterDateTo(e.target.value)}
+                <div className="space-y-1 sm:col-span-2">
+                  <Label className="text-xs">Período</Label>
+                  <DateRangePicker
+                    from={listFilterDateFrom}
+                    to={listFilterDateTo}
+                    onChange={(f, t) => {
+                      setListFilterDateFrom(f);
+                      setListFilterDateTo(t);
+                    }}
+                    placeholder="Todas las fechas"
+                    className="w-full"
                   />
                 </div>
               </div>

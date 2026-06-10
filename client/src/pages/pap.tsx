@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { DataEntryCombobox } from "@/components/data-entry-combobox";
+import { DateRangePicker } from "@/components/date-range-picker";
 import { Skeleton } from "@/components/ui/skeleton";
 import { formatCurrency } from "@/lib/formatters";
 import { Truck, HandCoins, DollarSign, Percent } from "lucide-react";
@@ -88,12 +89,8 @@ export default function PapPage() {
 
       <div className="flex flex-col gap-4 sm:flex-row sm:flex-wrap sm:items-end">
         <div className="space-y-1">
-          <Label className="text-xs">Desde</Label>
-          <Input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} className="w-40" data-testid="input-date-from" />
-        </div>
-        <div className="space-y-1">
-          <Label className="text-xs">Hasta</Label>
-          <Input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} className="w-40" data-testid="input-date-to" />
+          <Label className="text-xs">Período</Label>
+          <DateRangePicker from={dateFrom} to={dateTo} onChange={(f, t) => { setDateFrom(f); setDateTo(t); }} />
         </div>
         <div className="space-y-1">
           <Label className="text-xs">Local</Label>

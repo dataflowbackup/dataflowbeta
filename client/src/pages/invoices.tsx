@@ -9,6 +9,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { DateRangePicker } from "@/components/date-range-picker";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { formatCurrency, formatDate, formatCuit } from "@/lib/formatters";
@@ -442,60 +443,28 @@ export default function InvoicesPage() {
         </div>
         <div>
           <label className="block text-xs text-muted-foreground mb-1">Fecha de Emisión</label>
-          <div className="flex items-center gap-1">
-            <input
-              type="date"
-              className="h-9 rounded-md border bg-background px-2 text-sm"
-              value={emisionDesde}
-              onChange={(e) => setEmisionDesde(e.target.value)}
-              aria-label="Fecha de emisión desde"
-            />
-            <span className="text-xs text-muted-foreground">a</span>
-            <input
-              type="date"
-              className="h-9 rounded-md border bg-background px-2 text-sm"
-              value={emisionHasta}
-              onChange={(e) => setEmisionHasta(e.target.value)}
-              aria-label="Fecha de emisión hasta"
-            />
-          </div>
+          <DateRangePicker
+            from={emisionDesde}
+            to={emisionHasta}
+            onChange={(f, t) => {
+              setEmisionDesde(f);
+              setEmisionHasta(t);
+            }}
+            placeholder="Todas"
+          />
         </div>
         <div>
           <label className="block text-xs text-muted-foreground mb-1">Fecha de Vencimiento</label>
-          <div className="flex items-center gap-1">
-            <input
-              type="date"
-              className="h-9 rounded-md border bg-background px-2 text-sm"
-              value={vencimientoDesde}
-              onChange={(e) => setVencimientoDesde(e.target.value)}
-              aria-label="Fecha de vencimiento desde"
-            />
-            <span className="text-xs text-muted-foreground">a</span>
-            <input
-              type="date"
-              className="h-9 rounded-md border bg-background px-2 text-sm"
-              value={vencimientoHasta}
-              onChange={(e) => setVencimientoHasta(e.target.value)}
-              aria-label="Fecha de vencimiento hasta"
-            />
-          </div>
+          <DateRangePicker
+            from={vencimientoDesde}
+            to={vencimientoHasta}
+            onChange={(f, t) => {
+              setVencimientoDesde(f);
+              setVencimientoHasta(t);
+            }}
+            placeholder="Todas"
+          />
         </div>
-        {(emisionDesde || emisionHasta || vencimientoDesde || vencimientoHasta) && (
-          <div className="self-end">
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => {
-                setEmisionDesde("");
-                setEmisionHasta("");
-                setVencimientoDesde("");
-                setVencimientoHasta("");
-              }}
-            >
-              Limpiar fechas
-            </Button>
-          </div>
-        )}
       </div>
 
       <div className="grid gap-4 md:grid-cols-4">
