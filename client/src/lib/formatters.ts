@@ -66,6 +66,13 @@ export function formatPercentage(value: number | string | null | undefined): str
 
 export function formatDate(date: string | Date | null | undefined): string {
   if (!date) return "-";
+  // Fechas "solo día" (YYYY-MM-DD) se formatean directo, SIN pasar por new Date():
+  // new Date("2026-06-10") las interpreta como medianoche UTC y, al formatear en
+  // horario argentino (UTC-3), retroceden un día. Acá las tratamos como locales.
+  if (typeof date === "string") {
+    const m = date.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (m) return `${m[3]}/${m[2]}/${m[1]}`;
+  }
   const d = typeof date === "string" ? new Date(date) : date;
   return new Intl.DateTimeFormat("es-AR", {
     day: "2-digit",
