@@ -6,11 +6,17 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { DataEntryCombobox } from "@/components/data-entry-combobox";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { formatCurrency } from "@/lib/formatters";
-import { Plus, Trash2, Save, Target } from "lucide-react";
-import type { Local, Recipe, TransactionCategory, BreakevenAnalysis } from "@shared/schema";
+import { Plus, Trash2, Save, Target, Eye } from "lucide-react";
+import type { Local, Recipe, TransactionCategory, BreakevenAnalysis, BreakevenFixedCost } from "@shared/schema";
 
 interface FixedCostRow {
   transactionCategoryId: string;
@@ -29,10 +35,21 @@ export default function BreakevenPage() {
   const [marginPctInput, setMarginPctInput] = useState("");
   const [fixed, setFixed] = useState<FixedCostRow[]>([{ transactionCategoryId: "", label: "", amount: "" }]);
 
+  const [detailId, setDetailId] = useState<number | null>(null);
+
   const { data: locals = [] } = useQuery<Local[]>({ queryKey: ["/api/locals"] });
   const { data: recipes = [] } = useQuery<Recipe[]>({ queryKey: ["/api/recipes"] });
   const { data: categories = [] } = useQuery<TransactionCategory[]>({ queryKey: ["/api/transaction-categories"] });
   const { data: analyses = [] } = useQuery<BreakevenAnalysis[]>({ queryKey: ["/api/finance/breakeven"] });
+  const { data: detail, isLoading: detailLoading } = useQuery<{ analysis: BreakevenAnalysis; fixedCosts: BreakevenFixedCost[] }>({
+    queryKey: ["/api/finance/breakeven", detailId],
+    enabled: detailId != null,
+  });
+
+  const localName = (id: number | null | undefined) =>
+    id == null ? "General" : locals.find((l) => l.id === id)?.name ?? `Local ${id}`;
+  const categoryName = (id: number | null | undefined) =>
+    id == null ? null : categories.find((c) => c.id === id)?.name ?? null;
 
   const localOptions = useMemo(
     () => [{ value: "all", label: "Sin local / general" }, ...locals.map((l) => ({ value: String(l.id), label: l.name }))],
@@ -242,20 +259,30 @@ export default function BreakevenPage() {
                 <thead>
                   <tr className="bg-muted/50">
                     <th className="text-left px-3 py-2 font-medium border-b">Nombre</th>
+                    <th className="text-left px-3 py-2 font-medium border-b">Local</th>
                     <th className="text-right px-3 py-2 font-medium border-b">Precio</th>
                     <th className="text-right px-3 py-2 font-medium border-b">Costo var.</th>
                     <th className="text-right px-3 py-2 font-medium border-b">Costos fijos</th>
                     <th className="text-right px-3 py-2 font-medium border-b">PE unidades</th>
+                    <th className="text-right px-3 py-2 font-medium border-b">Importe económico</th>
+                    <th className="px-3 py-2 font-medium border-b"></th>
                   </tr>
                 </thead>
                 <tbody>
                   {analyses.map((a) => (
                     <tr key={a.id} className="border-b">
                       <td className="px-3 py-2">{a.name}</td>
+                      <td className="px-3 py-2 text-muted-foreground">{localName(a.localId)}</td>
                       <td className="px-3 py-2 text-right font-mono">{formatCurrency(parseFloat(String(a.salePriceNoIva)) || 0)}</td>
                       <td className="px-3 py-2 text-right font-mono">{formatCurrency(parseFloat(String(a.variableCostNoIva)) || 0)}</td>
                       <td className="px-3 py-2 text-right font-mono">{formatCurrency(parseFloat(String(a.totalFixedCosts)) || 0)}</td>
                       <td className="px-3 py-2 text-right font-mono font-semibold">{(parseFloat(String(a.breakevenUnits)) || 0).toFixed(2)}</td>
+                      <td className="px-3 py-2 text-right font-mono font-semibold">{formatCurrency(parseFloat(String(a.breakevenRevenue)) || 0)}</td>
+                      <td className="px-3 py-2 text-right">
+                        <Button variant="ghost" size="sm" onClick={() => setDetailId(a.id)} data-testid={`button-detail-${a.id}`}>
+                          <Eye className="h-4 w-4 mr-1" /> Ver detalle
+                        </Button>
+                      </td>
                     </tr>
                   ))}
                 </tbody>
@@ -264,6 +291,68 @@ export default function BreakevenPage() {
           )}
         </CardContent>
       </Card>
+
+      <Dialog open={detailId != null} onOpenChange={(open) => !open && setDetailId(null)}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle>{detail?.analysis.name ?? "Detalle del análisis"}</DialogTitle>
+          </DialogHeader>
+          {detailLoading || !detail ? (
+            <p className="py-6 text-center text-muted-foreground">Cargando…</p>
+          ) : (
+            <div className="space-y-4 text-sm">
+              <div className="grid grid-cols-2 gap-x-4 gap-y-2">
+                <div className="flex justify-between col-span-2 border-b pb-1">
+                  <span className="text-muted-foreground">Local</span>
+                  <span>{localName(detail.analysis.localId)}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-muted-foreground">Precio venta (sin IVA)</span>
+                  <span className="font-mono">{formatCurrency(parseFloat(String(detail.analysis.salePriceNoIva)) || 0)}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-muted-foreground">Costo variable (sin IVA)</span>
+                  <span className="font-mono">{formatCurrency(parseFloat(String(detail.analysis.variableCostNoIva)) || 0)}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-muted-foreground">Margen de contribución</span>
+                  <span className="font-mono">{formatCurrency(parseFloat(String(detail.analysis.contributionMargin)) || 0)}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-muted-foreground">PE (unidades)</span>
+                  <span className="font-mono">{(parseFloat(String(detail.analysis.breakevenUnits)) || 0).toFixed(2)}</span>
+                </div>
+                <div className="flex justify-between col-span-2 border-t pt-1 font-semibold">
+                  <span>Importe económico (PE facturación)</span>
+                  <span className="font-mono">{formatCurrency(parseFloat(String(detail.analysis.breakevenRevenue)) || 0)}</span>
+                </div>
+              </div>
+
+              <div>
+                <div className="flex items-center justify-between border-b pb-1 mb-2">
+                  <span className="font-medium">Gastos fijos</span>
+                  <span className="font-mono">{formatCurrency(parseFloat(String(detail.analysis.totalFixedCosts)) || 0)}</span>
+                </div>
+                {detail.fixedCosts.length === 0 ? (
+                  <p className="text-muted-foreground text-xs">Sin gastos fijos cargados.</p>
+                ) : (
+                  <ul className="space-y-1">
+                    {detail.fixedCosts.map((f) => (
+                      <li key={f.id} className="flex justify-between">
+                        <span className="text-muted-foreground">
+                          {categoryName(f.transactionCategoryId) ?? f.label ?? "Sin categoría"}
+                          {categoryName(f.transactionCategoryId) && f.label ? ` — ${f.label}` : ""}
+                        </span>
+                        <span className="font-mono">{formatCurrency(parseFloat(String(f.amount)) || 0)}</span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
