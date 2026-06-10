@@ -1,4 +1,5 @@
 import { useMemo, useState, useCallback, useRef } from "react";
+import * as XLSX from "xlsx";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { PageHeader } from "@/components/page-header";
 import { DataTable, Column } from "@/components/data-table";
@@ -38,7 +39,8 @@ import {
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
-import { formatCurrency, formatDate, formatEsArAmountInput, formatNumber, parseEsArAmount } from "@/lib/formatters";
+import { formatCurrency, formatDate, formatEsArAmountInput, formatNumber, parseEsArAmount, normalizeName } from "@/lib/formatters";
+import { toISODate } from "@/lib/dateHelpers";
 import { cn } from "@/lib/utils";
 import {
   Banknote,
@@ -54,6 +56,9 @@ import {
   Filter,
   Scale,
   CalendarDays,
+  Download,
+  Upload,
+  FileSpreadsheet,
 } from "lucide-react";
 import type { Transaction, BankAccount, TransactionCategory, Local } from "@shared/schema";
 
@@ -105,6 +110,63 @@ type DraftRow = {
   localId: string;
   type: "income" | "expense";
   amount: string;
+};
+
+// ---- Importación por Excel ----
+const CASH_IMPORT_HEADERS = ["Fecha", "Descripción", "Tipo", "Importe", "Categoría"] as const;
+
+const pad2 = (s: string | number) => String(s).padStart(2, "0");
+
+/** Celda de fecha → "YYYY-MM-DD" local. Acepta Date (cellDates), yyyy-mm-dd y dd/mm/aaaa. */
+function parseCellDate(v: unknown): string | null {
+  if (v == null || v === "") return null;
+  if (v instanceof Date && !isNaN(v.getTime())) return toISODate(v);
+  const s = String(v).trim();
+  let m = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
+  if (m) return `${m[1]}-${pad2(m[2])}-${pad2(m[3])}`;
+  m = s.match(/^(\d{1,2})[/\-](\d{1,2})[/\-](\d{2,4})/);
+  if (m) {
+    const y = m[3].length === 2 ? `20${m[3]}` : m[3];
+    return `${y}-${pad2(m[2])}-${pad2(m[1])}`;
+  }
+  return null;
+}
+
+/** Celda de tipo → income | expense (acepta Ingreso/Egreso, income/expense, I/E). */
+function parseCellType(v: unknown): "income" | "expense" | null {
+  const s = normalizeName(String(v ?? ""));
+  if (!s) return null;
+  if (["ingreso", "ingresos", "income", "i", "credito", "credit"].includes(s)) return "income";
+  if (["egreso", "egresos", "expense", "e", "gasto", "debito", "debit"].includes(s)) return "expense";
+  return null;
+}
+
+/** Celda de importe → número. Number directo; string en formato es-AR. */
+function parseCellAmount(v: unknown): number {
+  if (typeof v === "number") return v;
+  const s = String(v ?? "").trim();
+  if (!s) return NaN;
+  return parseEsArAmount(s);
+}
+
+/** Lectura tolerante de columnas por nombre de encabezado (ignora acentos/mayúsculas). */
+function cellByHeader(row: Record<string, unknown>, ...names: string[]): unknown {
+  const wanted = names.map((n) => normalizeName(n));
+  for (const k of Object.keys(row)) {
+    if (wanted.includes(normalizeName(k))) return row[k];
+  }
+  return "";
+}
+
+type ImportRow = {
+  idx: number;
+  transactionDate: string | null;
+  description: string;
+  type: "income" | "expense" | null;
+  amount: number;
+  categoryName: string;
+  categoryId: number | null;
+  error: string | null;
 };
 
 function makeDraftKey(seqRef: { current: number }): string {
@@ -531,6 +593,122 @@ export default function CashPage() {
     saveBatchMutation.mutate(prepared);
   };
 
+  // ---- Exportar / Importar Excel ----
+  const importFileRef = useRef<HTMLInputElement>(null);
+  const [importOpen, setImportOpen] = useState(false);
+  const [importLocalId, setImportLocalId] = useState<string>("");
+  const [importFileName, setImportFileName] = useState("");
+  const [importRows, setImportRows] = useState<ImportRow[]>([]);
+
+  const importLocalOptions = useMemo(
+    () => localsSorted.map((l) => ({ value: String(l.id), label: l.name })),
+    [localsSorted],
+  );
+
+  const exportToExcel = () => {
+    const rows = filteredTransactions.map((t) => ({
+      Fecha: String(t.transactionDate ?? "").slice(0, 10),
+      Descripción: t.description ?? "",
+      Tipo: t.type === "income" ? "Ingreso" : "Egreso",
+      Importe: parseFloat(String(t.amount)) || 0,
+      Categoría: t.category?.name ?? "",
+      Local: t.local?.name ?? "",
+    }));
+    const ws = XLSX.utils.json_to_sheet(rows, { header: [...CASH_IMPORT_HEADERS, "Local"] as string[] });
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Efectivo");
+    XLSX.writeFile(wb, `efectivo_${toISODate(new Date())}.xlsx`);
+  };
+
+  const downloadTemplate = () => {
+    const ws = XLSX.utils.json_to_sheet(
+      [{ Fecha: "2026-06-10", Descripción: "Ej: venta mostrador", Tipo: "Ingreso", Importe: 1500.5, Categoría: "Ventas" }],
+      { header: [...CASH_IMPORT_HEADERS] as string[] },
+    );
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Plantilla");
+    XLSX.writeFile(wb, "plantilla_efectivo.xlsx");
+  };
+
+  const openImport = () => {
+    setImportLocalId("");
+    setImportFileName("");
+    setImportRows([]);
+    if (importFileRef.current) importFileRef.current.value = "";
+    setImportOpen(true);
+  };
+
+  const handleImportFile = async (file: File) => {
+    try {
+      const buf = await file.arrayBuffer();
+      const wb = XLSX.read(buf, { type: "array", cellDates: true });
+      const sheet = wb.Sheets[wb.SheetNames[0]];
+      const raw = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet, { defval: "" });
+      const parsed: ImportRow[] = raw.map((r, i) => {
+        const transactionDate = parseCellDate(cellByHeader(r, "Fecha"));
+        const description = String(cellByHeader(r, "Descripción", "Descripcion") ?? "").trim();
+        const type = parseCellType(cellByHeader(r, "Tipo"));
+        const amount = parseCellAmount(cellByHeader(r, "Importe", "Monto"));
+        const categoryName = String(cellByHeader(r, "Categoría", "Categoria") ?? "").trim();
+
+        let categoryId: number | null = null;
+        if (type && categoryName) {
+          const match = categories.find(
+            (c) =>
+              c.active !== false &&
+              (c.type === type || c.type === "both") &&
+              normalizeName(c.name) === normalizeName(categoryName),
+          );
+          categoryId = match?.id ?? null;
+        }
+
+        let error: string | null = null;
+        if (!transactionDate) error = "Fecha inválida";
+        else if (!description) error = "Falta descripción";
+        else if (!type) error = "Tipo debe ser Ingreso o Egreso";
+        else if (!Number.isFinite(amount) || amount <= 0) error = "Importe inválido";
+        else if (!categoryName) error = "Falta categoría";
+        else if (categoryId == null) error = `Categoría "${categoryName}" no existe para ${type === "income" ? "ingresos" : "egresos"}`;
+
+        return { idx: i + 2, transactionDate, description, type, amount, categoryName, categoryId, error };
+      });
+      setImportRows(parsed);
+      setImportFileName(file.name);
+    } catch (e: any) {
+      toast({ title: "No se pudo leer el Excel", description: e?.message, variant: "destructive" });
+    }
+  };
+
+  const importValidRows = useMemo(() => importRows.filter((r) => r.error == null), [importRows]);
+  const importErrorRows = useMemo(() => importRows.filter((r) => r.error != null), [importRows]);
+
+  const importMutation = useMutation({
+    mutationFn: async () => {
+      const localId = parseInt(importLocalId, 10);
+      const payload = {
+        items: importValidRows.map((r) => ({
+          transactionDate: r.transactionDate as string,
+          description: r.description,
+          categoryId: r.categoryId as number,
+          localId,
+          type: r.type as "income" | "expense",
+          amount: r.amount,
+        })),
+      };
+      const res = await apiRequest("POST", "/api/transactions/cash-batch", payload);
+      return res.json() as Promise<{ inserted: number }>;
+    },
+    onSuccess: async (data) => {
+      toast({ title: "Importación completa", description: `Se importaron ${data.inserted} movimiento(s).` });
+      setImportOpen(false);
+      await queryClient.invalidateQueries({ queryKey: ["/api/transactions"] });
+      await refetch();
+    },
+    onError: (e: Error) => {
+      toast({ title: "No se pudo importar", description: e.message, variant: "destructive" });
+    },
+  });
+
   const patchMutation = useMutation({
     mutationFn: async () => {
       if (!editRow) return;
@@ -717,10 +895,20 @@ export default function CashPage() {
         title="Efectivo"
         description="Movimientos de caja cargados manualmente; mismas categorías que en extractos."
         actions={
-          <Button onClick={openBatch} data-testid="button-new-cash-batch">
-            <Plus className="h-4 w-4 mr-2" />
-            Nuevo movimiento en efectivo
-          </Button>
+          <div className="flex flex-wrap items-center gap-2">
+            <Button variant="outline" onClick={exportToExcel} disabled={filteredTransactions.length === 0} data-testid="button-export-cash">
+              <Download className="h-4 w-4 mr-2" />
+              Exportar
+            </Button>
+            <Button variant="outline" onClick={openImport} data-testid="button-import-cash">
+              <Upload className="h-4 w-4 mr-2" />
+              Importar Excel
+            </Button>
+            <Button onClick={openBatch} data-testid="button-new-cash-batch">
+              <Plus className="h-4 w-4 mr-2" />
+              Nuevo movimiento en efectivo
+            </Button>
+          </div>
         }
       />
 
@@ -1096,6 +1284,112 @@ export default function CashPage() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      <Dialog open={importOpen} onOpenChange={setImportOpen}>
+        <DialogContent className="max-w-3xl max-h-[90vh] flex flex-col">
+          <DialogHeader>
+            <DialogTitle>Importar efectivo desde Excel</DialogTitle>
+            <DialogDescription>
+              Elegí el local, descargá la plantilla si querés, y subí el archivo. Columnas:
+              Fecha, Descripción, Tipo (Ingreso/Egreso), Importe, Categoría. La categoría se
+              busca por nombre. Todos los movimientos se cargan en el local elegido.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-4 overflow-y-auto pr-1">
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div className="space-y-1">
+                <Label className="text-xs">Local (obligatorio)</Label>
+                <DataEntryCombobox
+                  options={importLocalOptions}
+                  value={importLocalId}
+                  onValueChange={setImportLocalId}
+                  placeholder="Elegí el local"
+                  searchPlaceholder="Buscar local…"
+                  data-testid="select-import-local"
+                />
+              </div>
+              <div className="space-y-1">
+                <Label className="text-xs">Plantilla</Label>
+                <Button variant="outline" className="w-full justify-start" onClick={downloadTemplate}>
+                  <FileSpreadsheet className="h-4 w-4 mr-2" />
+                  Descargar plantilla
+                </Button>
+              </div>
+            </div>
+
+            <div className="space-y-1">
+              <Label className="text-xs">Archivo (.xlsx)</Label>
+              <Input
+                ref={importFileRef}
+                type="file"
+                accept=".xlsx,.xls"
+                disabled={!importLocalId}
+                onChange={(e) => e.target.files?.[0] && handleImportFile(e.target.files[0])}
+                data-testid="input-import-file"
+              />
+              {!importLocalId && <p className="text-xs text-muted-foreground">Elegí primero el local para habilitar la carga.</p>}
+              {importFileName && <p className="text-xs text-muted-foreground">Archivo: {importFileName}</p>}
+            </div>
+
+            {importRows.length > 0 && (
+              <>
+                <div className="text-sm">
+                  <Badge variant="default" className="mr-2">{importValidRows.length} válido(s)</Badge>
+                  {importErrorRows.length > 0 && <Badge variant="destructive">{importErrorRows.length} con error</Badge>}
+                </div>
+                <div className="rounded-md border overflow-x-auto max-h-72 overflow-y-auto">
+                  <table className="w-full text-xs">
+                    <thead className="sticky top-0 bg-muted/80">
+                      <tr>
+                        <th className="px-2 py-1 text-left font-medium border-b">Fila</th>
+                        <th className="px-2 py-1 text-left font-medium border-b">Fecha</th>
+                        <th className="px-2 py-1 text-left font-medium border-b">Descripción</th>
+                        <th className="px-2 py-1 text-left font-medium border-b">Tipo</th>
+                        <th className="px-2 py-1 text-right font-medium border-b">Importe</th>
+                        <th className="px-2 py-1 text-left font-medium border-b">Categoría</th>
+                        <th className="px-2 py-1 text-left font-medium border-b">Estado</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {importRows.map((r) => (
+                        <tr key={r.idx} className={cn("border-b", r.error && "bg-destructive/5")}>
+                          <td className="px-2 py-1 text-muted-foreground">{r.idx}</td>
+                          <td className="px-2 py-1 whitespace-nowrap">{r.transactionDate ?? "—"}</td>
+                          <td className="px-2 py-1 max-w-[180px] truncate">{r.description || "—"}</td>
+                          <td className="px-2 py-1">{r.type === "income" ? "Ingreso" : r.type === "expense" ? "Egreso" : "—"}</td>
+                          <td className="px-2 py-1 text-right font-mono">{Number.isFinite(r.amount) ? formatCurrency(r.amount) : "—"}</td>
+                          <td className="px-2 py-1 max-w-[140px] truncate">{r.categoryName || "—"}</td>
+                          <td className="px-2 py-1">
+                            {r.error ? (
+                              <span className="text-destructive">{r.error}</span>
+                            ) : (
+                              <span className="text-green-600 inline-flex items-center gap-1"><Check className="h-3 w-3" /> OK</span>
+                            )}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </>
+            )}
+          </div>
+
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setImportOpen(false)}>
+              Cancelar
+            </Button>
+            <Button
+              onClick={() => importMutation.mutate()}
+              disabled={importMutation.isPending || !importLocalId || importValidRows.length === 0}
+              data-testid="button-confirm-import"
+            >
+              {importMutation.isPending ? "Importando…" : `Importar ${importValidRows.length} movimiento(s)`}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
