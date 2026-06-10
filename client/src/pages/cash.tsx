@@ -1,4 +1,4 @@
-import { useMemo, useState, useCallback, useRef } from "react";
+import { useMemo, useState, useCallback, useRef, useEffect } from "react";
 import * as XLSX from "xlsx";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { PageHeader } from "@/components/page-header";
@@ -69,6 +69,11 @@ interface TransactionWithRelations extends Transaction {
 }
 
 const CASH_BANK_SOURCE = "cash";
+
+// Cuadre de caja: la fila de ajuste por diferencia usa esta clave fija (autogenerada).
+const CASH_ADJUST_KEY = "cash-adjust-diff";
+const CASH_ADJUST_FALTANTE = "Ajustes y diferencia de caja (faltante efec.)";
+const CASH_ADJUST_SOBRANTE = "Ajustes y diferencia de caja (sobrante efec.)";
 
 const CASH_FILTER_TYPE_OPTIONS = [
   { value: "all", label: "Todos" },
@@ -335,6 +340,7 @@ export default function CashPage() {
   const draftRowSeqRef = useRef(0);
   const [batchOpen, setBatchOpen] = useState(false);
   const [draftRows, setDraftRows] = useState<DraftRow[]>(() => [makeDraftRow(draftRowSeqRef)]);
+  const [netoRecibido, setNetoRecibido] = useState("");
   const [editRow, setEditRow] = useState<TransactionWithRelations | null>(null);
   const [editTransactionDate, setEditTransactionDate] = useState("");
   const [editDescription, setEditDescription] = useState("");
@@ -536,6 +542,7 @@ export default function CashPage() {
   const openBatch = () => {
     draftRowSeqRef.current = 0;
     setDraftRows([makeDraftRow(draftRowSeqRef)]);
+    setNetoRecibido("");
     setBatchOpen(true);
   };
 
@@ -592,6 +599,77 @@ export default function CashPage() {
     }
     saveBatchMutation.mutate(prepared);
   };
+
+  // ---- Cuadre de caja (Neto recibido → fila de ajuste por diferencia) ----
+  const faltanteCat = useMemo(
+    () =>
+      categories.find(
+        (c) => c.active !== false && (c.type === "expense" || c.type === "both") && normalizeName(c.name) === normalizeName(CASH_ADJUST_FALTANTE),
+      ),
+    [categories],
+  );
+  const sobranteCat = useMemo(
+    () =>
+      categories.find(
+        (c) => c.active !== false && (c.type === "income" || c.type === "both") && normalizeName(c.name) === normalizeName(CASH_ADJUST_SOBRANTE),
+      ),
+    [categories],
+  );
+
+  // Esperado = Σ ingresos − Σ egresos de las filas normales (excluye la fila de ajuste).
+  const cuadreEsperado = useMemo(
+    () =>
+      draftRows
+        .filter((r) => r.key !== CASH_ADJUST_KEY)
+        .reduce((s, r) => {
+          const a = parseEsArAmount(r.amount);
+          if (!Number.isFinite(a)) return s;
+          return s + (r.type === "income" ? a : -a);
+        }, 0),
+    [draftRows],
+  );
+  const cuadreNeto = parseEsArAmount(netoRecibido);
+  const cuadreDiff = Number.isFinite(cuadreNeto) ? Math.round((cuadreNeto - cuadreEsperado) * 100) / 100 : null;
+  const cuadreCatMissing =
+    cuadreDiff != null && Math.abs(cuadreDiff) >= 0.005 && ((cuadreDiff < 0 && !faltanteCat) || (cuadreDiff > 0 && !sobranteCat));
+
+  // Trigger del recálculo: cambios en netoRecibido o en las filas normales (no en la de ajuste).
+  const cuadreInputsSig = useMemo(() => {
+    const normal = draftRows.filter((r) => r.key !== CASH_ADJUST_KEY);
+    const first = normal[0];
+    return `${normal.map((r) => `${r.type}:${r.amount}`).join("|")}::${first?.transactionDate ?? ""}::${first?.localId ?? "none"}`;
+  }, [draftRows]);
+
+  useEffect(() => {
+    const neto = parseEsArAmount(netoRecibido);
+    setDraftRows((prev) => {
+      const normal = prev.filter((r) => r.key !== CASH_ADJUST_KEY);
+      const esperado = normal.reduce((s, r) => {
+        const a = parseEsArAmount(r.amount);
+        if (!Number.isFinite(a)) return s;
+        return s + (r.type === "income" ? a : -a);
+      }, 0);
+      const diff = Number.isFinite(neto) ? Math.round((neto - esperado) * 100) / 100 : NaN;
+      const hadAdjust = prev.some((r) => r.key === CASH_ADJUST_KEY);
+      if (!netoRecibido.trim() || !Number.isFinite(diff) || Math.abs(diff) < 0.005) {
+        return hadAdjust ? normal : prev;
+      }
+      const isFaltante = diff < 0;
+      const cat = isFaltante ? faltanteCat : sobranteCat;
+      const first = normal[0];
+      const adjustRow: DraftRow = {
+        key: CASH_ADJUST_KEY,
+        transactionDate: first?.transactionDate || new Date().toISOString().slice(0, 10),
+        description: isFaltante ? "Ajuste de caja (faltante efec.)" : "Ajuste de caja (sobrante efec.)",
+        categoryId: cat ? String(cat.id) : "",
+        localId: first?.localId ?? "none",
+        type: isFaltante ? "expense" : "income",
+        amount: formatEsArAmountInput(String(Math.abs(diff)).replace(".", ",")),
+      };
+      return [...normal, adjustRow];
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [netoRecibido, cuadreInputsSig, faltanteCat, sobranteCat]);
 
   // ---- Exportar / Importar Excel ----
   const importFileRef = useRef<HTMLInputElement>(null);
@@ -1088,8 +1166,16 @@ export default function CashPage() {
               {draftRows.map((r) => (
                 <div
                   key={r.key}
-                  className="grid gap-3 md:grid-cols-12 border rounded-md p-3 bg-muted/30 relative"
+                  className={cn(
+                    "grid gap-3 md:grid-cols-12 border rounded-md p-3 relative",
+                    r.key === CASH_ADJUST_KEY ? "bg-amber-50 border-amber-300" : "bg-muted/30",
+                  )}
                 >
+                  {r.key === CASH_ADJUST_KEY && (
+                    <div className="md:col-span-12">
+                      <Badge variant="secondary">Ajuste automático por diferencia de caja</Badge>
+                    </div>
+                  )}
                   <Button
                     type="button"
                     variant="ghost"
@@ -1172,6 +1258,50 @@ export default function CashPage() {
               <Plus className="h-4 w-4 mr-2" />
               Agregar otra fila
             </Button>
+          </div>
+
+          <div className="border-t pt-3 space-y-2">
+            <Label className="text-sm">Cuadre de caja (opcional)</Label>
+            <div className="flex flex-wrap items-end gap-4">
+              <div className="space-y-1">
+                <Label className="text-xs">Neto recibido</Label>
+                <Input
+                  inputMode="decimal"
+                  placeholder="0,00"
+                  className="font-mono w-40"
+                  value={netoRecibido}
+                  onChange={(e) => setNetoRecibido(formatEsArAmountInput(e.target.value))}
+                  data-testid="input-neto-recibido"
+                />
+              </div>
+              <div className="text-sm space-y-0.5">
+                <div className="text-muted-foreground">
+                  Esperado (ingresos − egresos):{" "}
+                  <span className="font-mono text-foreground">{formatCurrency(cuadreEsperado)}</span>
+                </div>
+                {cuadreDiff != null && (
+                  <div className="flex items-center gap-2">
+                    <span>Diferencia:</span>
+                    <span className={cn("font-mono", cuadreDiff < 0 ? "text-destructive" : cuadreDiff > 0 ? "text-green-600" : "")}>
+                      {formatCurrency(cuadreDiff)}
+                    </span>
+                    {Math.abs(cuadreDiff) < 0.005 ? (
+                      <Badge variant="secondary">Cuadra</Badge>
+                    ) : cuadreDiff < 0 ? (
+                      <Badge variant="destructive">Faltante</Badge>
+                    ) : (
+                      <Badge variant="default">Sobrante</Badge>
+                    )}
+                  </div>
+                )}
+              </div>
+            </div>
+            {cuadreCatMissing && cuadreDiff != null && (
+              <p className="text-xs text-destructive">
+                No encontré la categoría «{cuadreDiff < 0 ? CASH_ADJUST_FALTANTE : CASH_ADJUST_SOBRANTE}» en este cliente.
+                Creala para poder imputar la diferencia.
+              </p>
+            )}
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setBatchOpen(false)}>
