@@ -1610,7 +1610,7 @@ export default function BankStatementsPage() {
             </Button>
             <Button variant="outline" onClick={() => setIsGenericMappingOpen(true)} data-testid="button-generic-mapping">
               <ListChecks className="h-4 w-4 mr-2" />
-              Mapear banco
+              Extracto genérico
             </Button>
             <Button onClick={() => setIsUploadOpen(true)} data-testid="button-import">
               <Upload className="h-4 w-4 mr-2" />

@@ -25,6 +25,11 @@ export type BankStatementImportInput = {
   closingBalanceRaw: string | undefined;
   skipContinuityCheck: boolean;
   mpGrossOverrides: Record<string, number>;
+  /**
+   * Mapeo de columnas ad-hoc para extracto genérico (import del momento). Si viene, se usa
+   * para parsear ESTE archivo y NO se toca ningún banco configurado (clientBanks).
+   */
+  columnMapping?: GenericColumnMapping | null;
 };
 
 export type BankStatementImportResult =
@@ -151,9 +156,16 @@ export async function runBankStatementImport(input: BankStatementImportInput): P
         grossOverridesByExcelRow: mpGrossOverrides,
       });
     } else {
-      // Banco genérico: si el cliente configuró un mapeo de columnas, se usa en vez del auto-detect.
-      const clientBank = await storage.getClientBankByBankId(clientId, bankId);
-      const columnMapping = (clientBank?.columnMapping as GenericColumnMapping | null) ?? null;
+      // Banco genérico:
+      //  1) si viene un mapeo ad-hoc en el request (import del momento), se usa ESE y no se toca
+      //     ningún banco configurado;
+      //  2) si no, se usa el mapeo guardado del cliente (si lo configuró);
+      //  3) si tampoco hay, auto-detect.
+      let columnMapping: GenericColumnMapping | null = input.columnMapping ?? null;
+      if (!columnMapping) {
+        const clientBank = await storage.getClientBankByBankId(clientId, bankId);
+        columnMapping = (clientBank?.columnMapping as GenericColumnMapping | null) ?? null;
+      }
       parseResult = parser.parse(rawData, columnMapping ? { columnMapping } : undefined);
     }
     openingBalanceDetected = parseResult.openingBalance ?? null;

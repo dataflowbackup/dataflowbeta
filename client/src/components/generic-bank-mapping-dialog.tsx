@@ -1,5 +1,5 @@
-import { useMemo, useRef, useState, useEffect } from "react";
-import { useQuery, useMutation } from "@tanstack/react-query";
+import { useMemo, useRef, useState } from "react";
+import { useMutation } from "@tanstack/react-query";
 import * as XLSX from "xlsx";
 import {
   Dialog,
@@ -22,7 +22,6 @@ import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
-import type { ClientBank } from "@shared/schema";
 
 interface Props {
   open: boolean;
@@ -68,39 +67,10 @@ export function GenericBankMappingDialog({ open, onOpenChange }: Props) {
   const { toast } = useToast();
   const fileRef = useRef<HTMLInputElement>(null);
 
-  const [selectedBankId, setSelectedBankId] = useState<string>("");
+  const [file, setFile] = useState<File | null>(null);
   const [rows, setRows] = useState<any[][]>([]);
   const [fileName, setFileName] = useState<string>("");
   const [m, setM] = useState<MappingState>(emptyMapping);
-
-  const { data: clientBanks = [] } = useQuery<ClientBank[]>({
-    queryKey: ["/api/client-banks"],
-    enabled: open,
-  });
-
-  const selectedBank = useMemo(
-    () => clientBanks.find((b) => String(b.id) === selectedBankId),
-    [clientBanks, selectedBankId],
-  );
-
-  // Pre-cargar el mapeo existente del banco seleccionado.
-  useEffect(() => {
-    const cm = (selectedBank?.columnMapping as any) ?? null;
-    if (cm && typeof cm === "object") {
-      setM({
-        headerRows: Number.isFinite(cm.headerRows) ? Number(cm.headerRows) : 1,
-        dateCol: cm.dateCol ?? null,
-        desc1Col: cm.desc1Col ?? null,
-        desc2Col: cm.desc2Col ?? null,
-        useDebitCredit: cm.amountCol == null,
-        debitCol: cm.debitCol ?? null,
-        creditCol: cm.creditCol ?? null,
-        amountCol: cm.amountCol ?? null,
-      });
-    } else {
-      setM(emptyMapping);
-    }
-  }, [selectedBankId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const maxCols = useMemo(
     () => rows.reduce((max, r) => Math.max(max, Array.isArray(r) ? r.length : 0), 0),
@@ -111,22 +81,31 @@ export function GenericBankMappingDialog({ open, onOpenChange }: Props) {
     [maxCols],
   );
 
-  const handleFile = async (file: File) => {
+  const reset = () => {
+    setFile(null);
+    setRows([]);
+    setFileName("");
+    setM(emptyMapping);
+    if (fileRef.current) fileRef.current.value = "";
+  };
+
+  const handleFile = async (f: File) => {
     try {
-      const buf = await file.arrayBuffer();
+      const buf = await f.arrayBuffer();
       const wb = XLSX.read(buf, { type: "array" });
       const sheet = wb.Sheets[wb.SheetNames[0]];
       const data = XLSX.utils.sheet_to_json(sheet, { header: 1, blankrows: false }) as any[][];
       setRows(data.slice(0, 8));
-      setFileName(file.name);
+      setFile(f);
+      setFileName(f.name);
     } catch (e: any) {
       toast({ title: "No se pudo leer el Excel", description: e?.message, variant: "destructive" });
     }
   };
 
-  const saveMutation = useMutation({
+  const importMutation = useMutation({
     mutationFn: async () => {
-      if (!selectedBank) throw new Error("Elegí un banco");
+      if (!file) throw new Error("Subí el archivo del extracto");
       if (m.dateCol == null) throw new Error("Mapeá la columna de Fecha");
       if (m.useDebitCredit && m.debitCol == null && m.creditCol == null)
         throw new Error("Mapeá Débito y/o Crédito");
@@ -146,20 +125,44 @@ export function GenericBankMappingDialog({ open, onOpenChange }: Props) {
         columnMapping.amountCol = m.amountCol;
       }
 
-      const res = await apiRequest(
-        "PUT",
-        `/api/client-banks/${selectedBank.id}/column-mapping`,
-        { columnMapping },
-      );
+      // Cuenta "Genérica" fija (idempotente). No toca bancos configurados.
+      const accRes = await apiRequest("POST", "/api/bank-accounts/ensure-generic");
+      const account = await accRes.json();
+
+      const fd = new FormData();
+      fd.append("file", file);
+      fd.append("bankAccountId", String(account.id));
+      fd.append("bankId", "generic");
+      fd.append("columnMapping", JSON.stringify(columnMapping));
+      fd.append("skipContinuityCheck", "1");
+
+      const res = await fetch("/api/transactions/import", {
+        method: "POST",
+        body: fd,
+        credentials: "include",
+      });
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error(`${res.status}: ${text || res.statusText}`);
+      }
       return res.json();
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/client-banks"] });
-      toast({ title: "Mapeo guardado", description: "El extracto de este banco se importará con estas columnas." });
+    onSuccess: (data: any) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/transactions"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/bank-accounts"] });
+      const imported = data?.imported ?? data?.inserted ?? data?.count;
+      toast({
+        title: "Extracto genérico importado",
+        description:
+          imported != null
+            ? `Se importaron ${imported} movimiento(s) en la solapa "Genérica".`
+            : `Los movimientos quedaron en la solapa "Genérica".`,
+      });
+      reset();
       onOpenChange(false);
     },
     onError: (e: Error) =>
-      toast({ title: "No se pudo guardar el mapeo", description: e.message, variant: "destructive" }),
+      toast({ title: "No se pudo importar", description: e.message, variant: "destructive" }),
   });
 
   const ColSelect = ({
@@ -195,37 +198,20 @@ export function GenericBankMappingDialog({ open, onOpenChange }: Props) {
   );
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog open={open} onOpenChange={(o) => { if (!o) reset(); onOpenChange(o); }}>
       <DialogContent className="max-w-3xl max-h-[90vh] flex flex-col gap-3">
         <DialogHeader>
-          <DialogTitle>Mapear columnas de banco genérico</DialogTitle>
+          <DialogTitle>Importar extracto genérico</DialogTitle>
           <DialogDescription>
-            Subí un extracto de muestra y asigná qué columna es cada dato. El mapeo se guarda por
-            banco y se reutiliza en cada importación. El saldo inicial se ingresa al importar y se
-            valida contra el cierre del último extracto.
+            Para extractos de un banco que no está predeterminado. Subí el archivo, asigná qué
+            columna es cada dato y se importa al momento — los movimientos quedan en la solapa
+            "Genérica". No se guarda ningún mapeo ni se modifica ningún banco configurado.
           </DialogDescription>
         </DialogHeader>
 
         <div className="space-y-4 overflow-y-auto pr-1">
           <div className="space-y-1">
-            <Label className="text-xs">Banco</Label>
-            <Select value={selectedBankId} onValueChange={setSelectedBankId}>
-              <SelectTrigger data-testid="select-generic-bank">
-                <SelectValue placeholder="Elegí un banco configurado" />
-              </SelectTrigger>
-              <SelectContent>
-                {clientBanks.map((b) => (
-                  <SelectItem key={b.id} value={String(b.id)}>
-                    {b.displayName || b.bankId}
-                    {b.columnMapping ? " ✓" : ""}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-
-          <div className="space-y-1">
-            <Label className="text-xs">Extracto de muestra (.xlsx)</Label>
+            <Label className="text-xs">Extracto (.xlsx)</Label>
             <Input
               ref={fileRef}
               type="file"
@@ -311,11 +297,11 @@ export function GenericBankMappingDialog({ open, onOpenChange }: Props) {
             Cancelar
           </Button>
           <Button
-            onClick={() => saveMutation.mutate()}
-            disabled={saveMutation.isPending || !selectedBank}
-            data-testid="button-save-mapping"
+            onClick={() => importMutation.mutate()}
+            disabled={importMutation.isPending || !file}
+            data-testid="button-import-generic"
           >
-            {saveMutation.isPending ? "Guardando..." : "Guardar mapeo"}
+            {importMutation.isPending ? "Importando..." : "Importar a Genérica"}
           </Button>
         </DialogFooter>
       </DialogContent>

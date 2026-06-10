@@ -2264,6 +2264,27 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
   });
 
+  // Cuenta "Genérica" fija: destino de los extractos genéricos importados al momento.
+  // Idempotente (devuelve la existente si ya está, o la crea). No toca bancos configurados.
+  app.post("/api/bank-accounts/ensure-generic", isAuthenticated, async (req, res) => {
+    try {
+      const clientId = await getClientId(req);
+      const accounts = await storage.getBankAccounts(clientId);
+      const existing = accounts.find((a) => String((a as any).bankId ?? "") === "generic");
+      if (existing) return res.json(existing);
+      const created = await storage.createBankAccount({
+        clientId,
+        name: "Genérica",
+        bankId: "generic",
+        type: "bank",
+        active: true,
+      } as unknown as InsertBankAccount);
+      res.status(201).json(created);
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
   app.patch("/api/bank-accounts/:id", isAuthenticated, async (req, res) => {
     try {
       const clientId = await getClientId(req);
@@ -2709,6 +2730,21 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         skipContinuityRaw?.toLowerCase() === "true" ||
         skipContinuityRaw?.toLowerCase() === "on";
 
+      // Mapeo de columnas ad-hoc (extracto genérico del momento): se usa solo para ESTE archivo,
+      // sin guardar nada ni tocar bancos configurados. Se ignora si es inválido.
+      const columnMappingRaw = pickMultipartOrQueryString(req, "columnMapping");
+      let adHocColumnMapping: any = null;
+      if (columnMappingRaw && String(columnMappingRaw).trim()) {
+        try {
+          const obj = JSON.parse(String(columnMappingRaw));
+          if (obj && typeof obj === "object" && Number.isFinite(obj.dateCol)) {
+            adHocColumnMapping = obj;
+          }
+        } catch {
+          /* mapeo inválido: se ignora y se cae al comportamiento normal */
+        }
+      }
+
       /** Mercado Pago: el volumen de líneas supera el timeout síncrono de Netlify (~26s) → cola + background function. */
       if (bankId === "mercadopago") {
         const jobToken = randomUUID();
@@ -2747,6 +2783,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         closingBalanceRaw: pickMultipartOrQueryString(req, "closingBalance"),
         skipContinuityCheck: skipContinuity,
         mpGrossOverrides: parseMpGrossOverridesFromRequest(req),
+        columnMapping: adHocColumnMapping,
       });
 
       if (out.kind === "error") {
