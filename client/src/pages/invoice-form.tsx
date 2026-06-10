@@ -393,7 +393,7 @@ export default function InvoiceFormPage() {
   );
 
   const supplierComboOptions = useMemo(
-    () => suppliers.filter((s) => s.active !== false).map((s) => ({ value: String(s.id), label: s.businessName })),
+    () => suppliers.filter((s) => s.active !== false).map((s) => ({ value: String(s.id), label: s.tradeName })),
     [suppliers],
   );
 
@@ -731,7 +731,7 @@ export default function InvoiceFormPage() {
               <div>
                 <p className="text-xs text-muted-foreground">Proveedor</p>
                 <p className="font-medium" data-testid="text-supplier-name">
-                  {existingInvoice.supplier?.businessName || suppliers.find(s => s.id === existingInvoice.supplierId)?.businessName || "-"}
+                  {existingInvoice.supplier?.tradeName || suppliers.find(s => s.id === existingInvoice.supplierId)?.tradeName || "-"}
                 </p>
               </div>
               <div>

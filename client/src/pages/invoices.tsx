@@ -1,4 +1,5 @@
 import { useState, useMemo } from "react";
+import * as XLSX from "xlsx";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { useLocation, Link } from "wouter";
 import { PageHeader } from "@/components/page-header";
@@ -12,14 +13,15 @@ import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { formatCurrency, formatDate, formatCuit } from "@/lib/formatters";
 import { 
-  FileText, 
-  Plus, 
+  FileText,
+  Plus,
   Eye,
   Trash2,
   AlertCircle,
   CheckCircle,
   Clock,
   DollarSign,
+  Download,
 } from "lucide-react";
 import type { Invoice, Supplier, Local } from "@shared/schema";
 import { formatInvoiceVoucherDisplay } from "@shared/invoiceDisplay";
@@ -72,6 +74,12 @@ export default function InvoicesPage() {
   const [selectedSupplierId, setSelectedSupplierId] = useState<string>("all");
   const [selectedExpenseType, setSelectedExpenseType] = useState<string>("all");
   const [selectedActiveState, setSelectedActiveState] = useState<string>("active");
+  // Filtros por fecha (rango desde/hasta). Las fechas se guardan como "YYYY-MM-DD",
+  // así que la comparación lexicográfica de strings ISO es correcta.
+  const [emisionDesde, setEmisionDesde] = useState<string>("");
+  const [emisionHasta, setEmisionHasta] = useState<string>("");
+  const [vencimientoDesde, setVencimientoDesde] = useState<string>("");
+  const [vencimientoHasta, setVencimientoHasta] = useState<string>("");
 
   const { data: invoices = [], isLoading } = useQuery<InvoiceWithRelations[]>({
     queryKey: ["/api/invoices"],
@@ -125,9 +133,38 @@ export default function InvoicesPage() {
           ? inv.status === "active"
           : inv.status !== "active";
 
-      return statusMatch && localMatch && supplierMatch && expenseMatch && activeMatch;
+      const emision = inv.invoiceDate ?? "";
+      const emisionMatch =
+        (!emisionDesde || emision >= emisionDesde) &&
+        (!emisionHasta || emision <= emisionHasta);
+
+      const vencimiento = inv.dueDate ?? "";
+      const vencimientoMatch =
+        (!vencimientoDesde || (!!vencimiento && vencimiento >= vencimientoDesde)) &&
+        (!vencimientoHasta || (!!vencimiento && vencimiento <= vencimientoHasta));
+
+      return (
+        statusMatch &&
+        localMatch &&
+        supplierMatch &&
+        expenseMatch &&
+        activeMatch &&
+        emisionMatch &&
+        vencimientoMatch
+      );
     });
-  }, [invoices, filterStatus, selectedLocalId, selectedSupplierId, selectedExpenseType, selectedActiveState]);
+  }, [
+    invoices,
+    filterStatus,
+    selectedLocalId,
+    selectedSupplierId,
+    selectedExpenseType,
+    selectedActiveState,
+    emisionDesde,
+    emisionHasta,
+    vencimientoDesde,
+    vencimientoHasta,
+  ]);
 
   const invoiceRows: InvoiceTableRow[] = useMemo(
     () =>
@@ -136,7 +173,7 @@ export default function InvoicesPage() {
         voucherDisplay: formatInvoiceVoucherDisplay(inv),
         invoiceSalePointSearch: inv.invoiceSalePoint ?? "",
         invoiceNumberSearch: String(inv.invoiceNumber ?? ""),
-        supplierSearch: inv.supplier?.businessName ?? "",
+        supplierSearch: `${inv.supplier?.tradeName ?? ""} ${inv.supplier?.businessName ?? ""}`,
       })),
     [filteredInvoices],
   );
@@ -155,6 +192,34 @@ export default function InvoicesPage() {
       toast({ title: "Error al eliminar factura", description: error.message, variant: "destructive" });
     },
   });
+
+  const statusLabel: Record<FilterStatus, string> = {
+    all: "",
+    paid: "Pagada",
+    overdue: "Vencida",
+    pending: "Pendiente",
+  };
+
+  const exportToExcel = () => {
+    const rows = filteredInvoices.map((inv) => ({
+      Comprobante: formatInvoiceVoucherDisplay(inv),
+      Tipo: invoiceTypes[inv.invoiceType] || inv.invoiceType,
+      Proveedor: inv.supplier?.tradeName ?? "",
+      CUIT: inv.supplier?.cuit ?? "",
+      Local: inv.local?.name ?? "",
+      "Fecha Emisión": inv.invoiceDate ? formatDate(inv.invoiceDate) : "",
+      "Fecha Vencimiento": inv.dueDate ? formatDate(inv.dueDate) : "",
+      Total: parseFloat(String(inv.total) || "0"),
+      Saldo: parseFloat(String(inv.balance) || "0"),
+      "Tipo Gasto": inv.expenseType === "cmv" ? "CMV" : "Admin",
+      Estado: statusLabel[getInvoiceStatus(inv)],
+    }));
+    const ws = XLSX.utils.json_to_sheet(rows);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Facturas");
+    const stamp = formatDate(new Date()).replace(/\//g, "-");
+    XLSX.writeFile(wb, `facturas_${stamp}.xlsx`);
+  };
 
   const getStatusBadge = (invoice: InvoiceWithRelations) => {
     if (invoice.paid) {
@@ -220,7 +285,7 @@ export default function InvoicesPage() {
       header: "Proveedor",
       cell: (row) => (
         <div>
-          <div className="font-medium">{row.supplier?.businessName || "-"}</div>
+          <div className="font-medium">{row.supplier?.tradeName || "-"}</div>
           <div className="text-xs text-muted-foreground font-mono">
             {row.supplier?.cuit ? formatCuit(row.supplier.cuit) : "-"}
           </div>
@@ -235,16 +300,13 @@ export default function InvoicesPage() {
     {
       key: "invoiceDate",
       header: "Fecha",
-      cell: (row) => (
-        <div>
-          <div>{formatDate(row.invoiceDate)}</div>
-          {row.dueDate && (
-            <div className="text-xs text-muted-foreground">
-              Vence: {formatDate(row.dueDate)}
-            </div>
-          )}
-        </div>
-      ),
+      cell: (row) => formatDate(row.invoiceDate),
+    },
+    {
+      key: "dueDate",
+      header: "Fecha Vencimiento",
+      cell: (row) =>
+        row.dueDate ? formatDate(row.dueDate) : <span className="text-muted-foreground">-</span>,
     },
     {
       key: "total",
@@ -305,10 +367,21 @@ export default function InvoicesPage() {
         title="Facturas"
         description="Gestiona las facturas de proveedores"
         actions={
-          <Button onClick={() => navigate("/facturas/nueva")} data-testid="button-new-invoice">
-            <Plus className="h-4 w-4 mr-2" />
-            Nueva Factura
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button
+              variant="outline"
+              onClick={exportToExcel}
+              disabled={filteredInvoices.length === 0}
+              data-testid="button-export-invoices"
+            >
+              <Download className="h-4 w-4 mr-2" />
+              Exportar
+            </Button>
+            <Button onClick={() => navigate("/facturas/nueva")} data-testid="button-new-invoice">
+              <Plus className="h-4 w-4 mr-2" />
+              Nueva Factura
+            </Button>
+          </div>
         }
       />
 
@@ -338,7 +411,7 @@ export default function InvoicesPage() {
             <option value="all">Todos</option>
             {suppliers.map((s) => (
               <option key={s.id} value={s.id.toString()}>
-                {s.businessName}
+                {s.tradeName}
               </option>
             ))}
           </select>
@@ -367,6 +440,62 @@ export default function InvoicesPage() {
             <option value="admin">Adm</option>
           </select>
         </div>
+        <div>
+          <label className="block text-xs text-muted-foreground mb-1">Fecha de Emisión</label>
+          <div className="flex items-center gap-1">
+            <input
+              type="date"
+              className="h-9 rounded-md border bg-background px-2 text-sm"
+              value={emisionDesde}
+              onChange={(e) => setEmisionDesde(e.target.value)}
+              aria-label="Fecha de emisión desde"
+            />
+            <span className="text-xs text-muted-foreground">a</span>
+            <input
+              type="date"
+              className="h-9 rounded-md border bg-background px-2 text-sm"
+              value={emisionHasta}
+              onChange={(e) => setEmisionHasta(e.target.value)}
+              aria-label="Fecha de emisión hasta"
+            />
+          </div>
+        </div>
+        <div>
+          <label className="block text-xs text-muted-foreground mb-1">Fecha de Vencimiento</label>
+          <div className="flex items-center gap-1">
+            <input
+              type="date"
+              className="h-9 rounded-md border bg-background px-2 text-sm"
+              value={vencimientoDesde}
+              onChange={(e) => setVencimientoDesde(e.target.value)}
+              aria-label="Fecha de vencimiento desde"
+            />
+            <span className="text-xs text-muted-foreground">a</span>
+            <input
+              type="date"
+              className="h-9 rounded-md border bg-background px-2 text-sm"
+              value={vencimientoHasta}
+              onChange={(e) => setVencimientoHasta(e.target.value)}
+              aria-label="Fecha de vencimiento hasta"
+            />
+          </div>
+        </div>
+        {(emisionDesde || emisionHasta || vencimientoDesde || vencimientoHasta) && (
+          <div className="self-end">
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => {
+                setEmisionDesde("");
+                setEmisionHasta("");
+                setVencimientoDesde("");
+                setVencimientoHasta("");
+              }}
+            >
+              Limpiar fechas
+            </Button>
+          </div>
+        )}
       </div>
 
       <div className="grid gap-4 md:grid-cols-4">

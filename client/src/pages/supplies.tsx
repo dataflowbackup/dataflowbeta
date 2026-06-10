@@ -754,7 +754,7 @@ export default function SuppliesPage() {
                   onCheckedChange={() => toggleSupplier(supplier.id)}
                 />
                 <div className="flex-1 min-w-0">
-                  <div className="font-medium text-sm truncate">{supplier.businessName}</div>
+                  <div className="font-medium text-sm truncate">{supplier.tradeName}</div>
                   {supplier.cuit && (
                     <div className="text-xs text-muted-foreground font-mono">{supplier.cuit}</div>
                   )}

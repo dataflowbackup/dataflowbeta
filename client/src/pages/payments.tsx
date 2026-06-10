@@ -108,7 +108,7 @@ export default function PaymentsPage() {
 
   const paymentSupplierOptions = useMemo(
     () =>
-      suppliers.filter((s) => s.active).map((s) => ({ value: String(s.id), label: s.businessName })),
+      suppliers.filter((s) => s.active).map((s) => ({ value: String(s.id), label: s.tradeName })),
     [suppliers],
   );
 
@@ -302,7 +302,7 @@ export default function PaymentsPage() {
     {
       key: "supplier",
       header: "Proveedor",
-      cell: (row) => row.supplier?.businessName || "-",
+      cell: (row) => row.supplier?.tradeName || "-",
     },
     {
       key: "local",
