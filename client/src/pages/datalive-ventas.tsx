@@ -9,12 +9,23 @@ import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Checkbox } from "@/components/ui/checkbox";
 import { DataEntryCombobox } from "@/components/data-entry-combobox";
+import { DateRangePicker } from "@/components/date-range-picker";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+  DialogFooter,
+} from "@/components/ui/dialog";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { formatCurrency } from "@/lib/formatters";
-import { Upload, Save } from "lucide-react";
+import { Upload, Save, Trash2 } from "lucide-react";
 import { parseDataliveReport, type ParsedDataliveDay } from "@shared/dataliveSalesParser";
 import type { Local } from "@shared/schema";
+
+const DELETE_KEYWORD = "BORRAR";
 
 interface DataliveVentaRow {
   id: number;
@@ -33,6 +44,15 @@ export default function DataliveVentasPage() {
   const [parsedDays, setParsedDays] = useState<ParsedDataliveDay[]>([]);
   const [warnings, setWarnings] = useState<string[]>([]);
   const [replaceSet, setReplaceSet] = useState<Set<string>>(new Set());
+
+  // Filtros de la tabla "Ventas Datalive cargadas".
+  const [filterLocalId, setFilterLocalId] = useState("all");
+  const [filterFrom, setFilterFrom] = useState("");
+  const [filterTo, setFilterTo] = useState("");
+
+  // Borrado con palabra clave.
+  const [deleteRow, setDeleteRow] = useState<DataliveVentaRow | null>(null);
+  const [deleteKeyword, setDeleteKeyword] = useState("");
 
   const { data: locals = [] } = useQuery<Local[]>({ queryKey: ["/api/locals"] });
   const { data: existing = [] } = useQuery<DataliveVentaRow[]>({
@@ -107,6 +127,48 @@ export default function DataliveVentasPage() {
     },
     onError: (e: Error) => toast({ title: "No se pudo importar", description: e.message, variant: "destructive" }),
   });
+
+  // Ventas cargadas, filtradas por local y rango de fecha (en memoria).
+  const filteredExisting = useMemo(() => {
+    return existing.filter((e) => {
+      if (filterLocalId !== "all" && String(e.localId) !== filterLocalId) return false;
+      const f = String(e.fecha);
+      if (filterFrom && f < filterFrom) return false;
+      if (filterTo && f > filterTo) return false;
+      return true;
+    });
+  }, [existing, filterLocalId, filterFrom, filterTo]);
+
+  // Dashboard: totales generales de lo filtrado.
+  const totals = useMemo(() => {
+    let total = 0;
+    let efectivo = 0;
+    let online = 0;
+    for (const e of filteredExisting) {
+      total += parseFloat(String(e.ventaTotal)) || 0;
+      efectivo += parseFloat(String(e.ventaEfectivo)) || 0;
+      online += parseFloat(String(e.ventaOnline)) || 0;
+    }
+    return { total, efectivo, online, dias: filteredExisting.length };
+  }, [filteredExisting]);
+
+  const deleteMutation = useMutation({
+    mutationFn: async (id: number) => {
+      await apiRequest("DELETE", `/api/datalive-ventas/${id}`);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/datalive-ventas"] });
+      toast({ title: "Venta eliminada" });
+      setDeleteRow(null);
+      setDeleteKeyword("");
+    },
+    onError: (e: Error) => toast({ title: "No se pudo eliminar", description: e.message, variant: "destructive" }),
+  });
+
+  const closeDeleteDialog = () => {
+    setDeleteRow(null);
+    setDeleteKeyword("");
+  };
 
   return (
     <div className="space-y-6">
@@ -235,7 +297,66 @@ export default function DataliveVentasPage() {
       {existing.length > 0 && (
         <Card>
           <CardHeader className="pb-3"><CardTitle className="text-base">Ventas Datalive cargadas</CardTitle></CardHeader>
-          <CardContent className="p-0 md:p-6">
+          <CardContent className="space-y-4">
+            {/* Filtros */}
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
+              <div className="space-y-1">
+                <Label className="text-xs">Local</Label>
+                <DataEntryCombobox
+                  options={[{ value: "all", label: "Todos los locales" }, ...localOptions]}
+                  value={filterLocalId}
+                  onValueChange={setFilterLocalId}
+                  placeholder="Todos los locales"
+                  searchPlaceholder="Buscar local…"
+                  triggerClassName="w-64"
+                  data-testid="filter-local"
+                />
+              </div>
+              <div className="space-y-1">
+                <Label className="text-xs">Fecha</Label>
+                <div>
+                  <DateRangePicker
+                    from={filterFrom}
+                    to={filterTo}
+                    onChange={(f, t) => { setFilterFrom(f); setFilterTo(t); }}
+                    placeholder="Todas las fechas"
+                  />
+                </div>
+              </div>
+              {(filterLocalId !== "all" || filterFrom || filterTo) && (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => { setFilterLocalId("all"); setFilterFrom(""); setFilterTo(""); }}
+                  data-testid="filter-clear"
+                >
+                  Limpiar filtros
+                </Button>
+              )}
+            </div>
+
+            {/* Dashboard de resultados (según lo filtrado) */}
+            <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+              <div className="rounded-lg border bg-card p-3">
+                <p className="text-xs text-muted-foreground">Venta Total</p>
+                <p className="text-lg font-semibold font-mono" data-testid="total-venta">{formatCurrency(totals.total)}</p>
+              </div>
+              <div className="rounded-lg border bg-card p-3">
+                <p className="text-xs text-muted-foreground">Efectivo</p>
+                <p className="text-lg font-semibold font-mono" data-testid="total-efectivo">{formatCurrency(totals.efectivo)}</p>
+              </div>
+              <div className="rounded-lg border bg-card p-3">
+                <p className="text-xs text-muted-foreground">Online</p>
+                <p className="text-lg font-semibold font-mono" data-testid="total-online">{formatCurrency(totals.online)}</p>
+              </div>
+              <div className="rounded-lg border bg-card p-3">
+                <p className="text-xs text-muted-foreground">Días</p>
+                <p className="text-lg font-semibold font-mono" data-testid="total-dias">{totals.dias}</p>
+              </div>
+            </div>
+
+            {/* Tabla */}
             <div className="overflow-x-auto">
               <table className="w-full text-sm">
                 <thead>
@@ -245,24 +366,88 @@ export default function DataliveVentasPage() {
                     <th className="text-right px-3 py-2 font-medium border-b">Total</th>
                     <th className="text-right px-3 py-2 font-medium border-b">Efectivo</th>
                     <th className="text-right px-3 py-2 font-medium border-b">Online</th>
+                    <th className="px-3 py-2 font-medium border-b w-12"></th>
                   </tr>
                 </thead>
                 <tbody>
-                  {existing.map((e) => (
-                    <tr key={e.id} className="border-b">
-                      <td className="px-3 py-2">{localNameById.get(e.localId) ?? `Local ${e.localId}`}</td>
-                      <td className="px-3 py-2 font-mono">{e.fecha}</td>
-                      <td className="px-3 py-2 text-right font-mono">{formatCurrency(parseFloat(String(e.ventaTotal)) || 0)}</td>
-                      <td className="px-3 py-2 text-right font-mono">{formatCurrency(parseFloat(String(e.ventaEfectivo)) || 0)}</td>
-                      <td className="px-3 py-2 text-right font-mono">{formatCurrency(parseFloat(String(e.ventaOnline)) || 0)}</td>
+                  {filteredExisting.length === 0 ? (
+                    <tr>
+                      <td colSpan={6} className="px-3 py-6 text-center text-muted-foreground">
+                        No hay ventas para el filtro seleccionado.
+                      </td>
                     </tr>
-                  ))}
+                  ) : (
+                    filteredExisting.map((e) => (
+                      <tr key={e.id} className="border-b">
+                        <td className="px-3 py-2">{localNameById.get(e.localId) ?? `Local ${e.localId}`}</td>
+                        <td className="px-3 py-2 font-mono">{e.fecha}</td>
+                        <td className="px-3 py-2 text-right font-mono">{formatCurrency(parseFloat(String(e.ventaTotal)) || 0)}</td>
+                        <td className="px-3 py-2 text-right font-mono">{formatCurrency(parseFloat(String(e.ventaEfectivo)) || 0)}</td>
+                        <td className="px-3 py-2 text-right font-mono">{formatCurrency(parseFloat(String(e.ventaOnline)) || 0)}</td>
+                        <td className="px-3 py-2 text-center">
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-8 w-8"
+                            onClick={() => { setDeleteRow(e); setDeleteKeyword(""); }}
+                            data-testid={`button-delete-${e.id}`}
+                          >
+                            <Trash2 className="h-4 w-4 text-destructive" />
+                          </Button>
+                        </td>
+                      </tr>
+                    ))
+                  )}
                 </tbody>
               </table>
             </div>
           </CardContent>
         </Card>
       )}
+
+      {/* Diálogo de borrado con palabra clave */}
+      <Dialog open={!!deleteRow} onOpenChange={(o) => !o && closeDeleteDialog()}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Eliminar venta</DialogTitle>
+            <DialogDescription>
+              {deleteRow && (
+                <>
+                  Vas a eliminar la venta de{" "}
+                  <span className="font-medium">{localNameById.get(deleteRow.localId) ?? `Local ${deleteRow.localId}`}</span>{" "}
+                  del <span className="font-mono">{deleteRow.fecha}</span>. Esta acción no se puede deshacer.
+                </>
+              )}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-2">
+            <Label className="text-xs">
+              Para confirmar, escribí <span className="font-mono font-semibold">{DELETE_KEYWORD}</span>
+            </Label>
+            <Input
+              value={deleteKeyword}
+              onChange={(e) => setDeleteKeyword(e.target.value)}
+              placeholder={DELETE_KEYWORD}
+              autoComplete="off"
+              data-testid="input-delete-keyword"
+            />
+          </div>
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={closeDeleteDialog} data-testid="button-cancel-delete">
+              Cancelar
+            </Button>
+            <Button
+              type="button"
+              variant="destructive"
+              disabled={deleteKeyword.trim().toUpperCase() !== DELETE_KEYWORD || deleteMutation.isPending}
+              onClick={() => deleteRow && deleteMutation.mutate(deleteRow.id)}
+              data-testid="button-confirm-delete"
+            >
+              {deleteMutation.isPending ? "Eliminando..." : "Eliminar"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

@@ -47,6 +47,19 @@ const norm = (v: unknown) =>
 
 const round2 = (n: number) => Math.round(n * 100) / 100;
 
+/**
+ * Lee un importe del reporte Datalive respetando cómo lo exporta el archivo:
+ * - NÚMERO: Datalive lo exporta dividido por 1000 (ej. 851.4504 = $851.450,40). Se multiplica ×1000.
+ *   Esto aplica a TODAS las columnas de plata (Total, Efectivo y Online vienen así).
+ * - TEXTO con formato argentino ("$851.450,40"): ya viene completo; se parsea tal cual.
+ */
+export function parseDataliveMoney(value: unknown): number {
+  if (typeof value === "number") {
+    return Number.isFinite(value) ? round2(value * 1000) : 0;
+  }
+  return parseArgMoney(value);
+}
+
 /** Extrae la fecha (dd/mm/aaaa) de una celda y la devuelve como YYYY-MM-DD, o null. */
 function extractFecha(cellText: string): string | null {
   const m = /(\d{1,2})\/(\d{1,2})\/(\d{4})/.exec(cellText);
@@ -99,12 +112,13 @@ export function parseDataliveReport(rawRows: any[][]): ParseDataliveResult {
     const fecha = extractFecha(firstCell);
     if (!fecha) continue; // no es una fila-día
 
-    const ventaTotal = round2(parseArgMoney(row[colTotal]));
-    const ventaOnline = round2(parseArgMoney(row[colOnline]));
-    // Efectivo derivado (el valor crudo de Datalive viene mal). Si no diera, se usa el crudo.
+    const ventaTotal = parseDataliveMoney(row[colTotal]);
+    const ventaOnline = parseDataliveMoney(row[colOnline]);
+    // Efectivo derivado (Total − Online): el reporte solo tiene esos dos buckets de venta.
+    // Si diera negativo, se usa el Efectivo crudo del archivo.
     let ventaEfectivo = round2(ventaTotal - ventaOnline);
     if (ventaEfectivo < 0) {
-      ventaEfectivo = round2(parseArgMoney(row[colEfectivo]));
+      ventaEfectivo = parseDataliveMoney(row[colEfectivo]);
       warnings.push(`Día ${fecha}: Total − Online dio negativo; se usó el valor de Efectivo del archivo.`);
     }
 

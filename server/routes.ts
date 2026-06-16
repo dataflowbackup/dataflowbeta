@@ -3482,6 +3482,19 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
   });
 
+  app.delete("/api/datalive-ventas/:id", isAuthenticated, async (req, res) => {
+    try {
+      const clientId = await getClientId(req);
+      const id = parseInt(req.params.id, 10);
+      if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ message: "Id inválido" });
+      const ok = await storage.deleteDataliveVenta(clientId, id);
+      if (!ok) return res.status(404).json({ message: "Venta no encontrada" });
+      res.json({ ok: true });
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
   app.get("/api/balance-report/export", isAuthenticated, async (req, res) => {
     try {
       const clientId = await getClientId(req);
