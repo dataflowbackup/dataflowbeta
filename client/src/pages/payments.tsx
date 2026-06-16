@@ -149,18 +149,24 @@ export default function PaymentsPage() {
     ? parseInt(watchSupplierIdRaw || "0") || 0
     : watchSupplierIdRaw || 0;
 
+  const watchLocalIdRaw = form.watch("localId");
+  const watchLocalId = typeof watchLocalIdRaw === "string"
+    ? parseInt(watchLocalIdRaw || "0") || 0
+    : watchLocalIdRaw || 0;
+
   const pendingInvoices = useMemo(() => {
     if (!watchSupplierId) return [];
     return allInvoices.filter(inv => {
       if (inv.supplierId !== watchSupplierId) return false;
+      if (watchLocalId && inv.localId !== watchLocalId) return false;
       const balance = parseFloat(String(inv.balance) || "0");
       return balance > 0 && !inv.paid;
     });
-  }, [allInvoices, watchSupplierId]);
+  }, [allInvoices, watchSupplierId, watchLocalId]);
 
   useEffect(() => {
     setSelectedInvoices(new Map());
-  }, [watchSupplierId]);
+  }, [watchSupplierId, watchLocalId]);
 
   const totalSelected = useMemo(() => {
     let total = 0;
