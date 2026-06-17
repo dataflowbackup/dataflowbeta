@@ -273,6 +273,11 @@ export interface IStorage {
   
   getPayments(clientId: number): Promise<Payment[]>;
   createPayment(payment: InsertPayment): Promise<Payment>;
+  updatePayment(
+    clientId: number,
+    id: number,
+    data: { paymentNumber?: string | null; paymentDate?: string; bankAccountId?: number | null; paymentMethod?: string; notes?: string | null },
+  ): Promise<Payment | undefined>;
   deletePayment(clientId: number, id: number): Promise<boolean>;
   
   getRecipeCategories(clientId: number): Promise<RecipeCategory[]>;
@@ -1654,6 +1659,32 @@ export class DatabaseStorage implements IStorage {
     }
     
     return newPayment;
+  }
+
+  // Edición acotada de un pago: SOLO datos neutros (no toca monto, proveedor/local ni
+  // las facturas imputadas), por lo que no recalcula saldos de facturas.
+  async updatePayment(
+    clientId: number,
+    id: number,
+    data: { paymentNumber?: string | null; paymentDate?: string; bankAccountId?: number | null; paymentMethod?: string; notes?: string | null },
+  ): Promise<Payment | undefined> {
+    const set: Record<string, unknown> = {};
+    if (data.paymentNumber !== undefined) set.paymentNumber = data.paymentNumber;
+    if (data.paymentDate !== undefined) set.paymentDate = data.paymentDate;
+    if (data.bankAccountId !== undefined) set.bankAccountId = data.bankAccountId;
+    if (data.paymentMethod !== undefined) set.paymentMethod = data.paymentMethod;
+    if (data.notes !== undefined) set.notes = data.notes;
+    if (Object.keys(set).length === 0) {
+      const [current] = await db.select().from(payments)
+        .where(and(eq(payments.id, id), eq(payments.clientId, clientId)));
+      return current;
+    }
+    const [updated] = await db
+      .update(payments)
+      .set(set as any)
+      .where(and(eq(payments.id, id), eq(payments.clientId, clientId)))
+      .returning();
+    return updated;
   }
 
   async deletePayment(clientId: number, id: number): Promise<boolean> {

@@ -1548,6 +1548,39 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
   });
 
+  // Edición acotada: solo datos neutros del pago (no monto, proveedor/local ni facturas).
+  app.patch("/api/payments/:id", isAuthenticated, async (req, res) => {
+    try {
+      const clientId = await getClientId(req);
+      const id = parseInt(req.params.id, 10);
+      if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ message: "Id inválido" });
+
+      const bodySchema = z.object({
+        paymentNumber: z.string().max(50).nullable().optional(),
+        paymentDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Fecha inválida").optional(),
+        bankAccountId: z.coerce.number().int().positive().nullable().optional(),
+        paymentMethod: z.string().min(1).max(50).optional(),
+        notes: z.string().nullable().optional(),
+      });
+      const parsed = bodySchema.safeParse(req.body);
+      if (!parsed.success) return res.status(400).json({ message: "Datos inválidos", errors: parsed.error.flatten() });
+
+      // Si mandan banco, debe pertenecer a la empresa.
+      if (parsed.data.bankAccountId != null) {
+        const banks = await storage.getBankAccounts(clientId);
+        if (!banks.some((b) => b.id === parsed.data.bankAccountId)) {
+          return res.status(400).json({ message: "Cuenta bancaria inválida para esta empresa." });
+        }
+      }
+
+      const updated = await storage.updatePayment(clientId, id, parsed.data);
+      if (!updated) return res.status(404).json({ message: "Payment not found or access denied" });
+      res.json(updated);
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
   app.delete("/api/payments/:id", isAuthenticated, async (req, res) => {
     try {
       const clientId = await getClientId(req);

@@ -25,6 +25,7 @@ import {
   FormMessage,
 } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { DataEntryCombobox } from "@/components/data-entry-combobox";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
@@ -39,7 +40,7 @@ import {
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { formatCurrency, formatDate, formatDateInput } from "@/lib/formatters";
-import { CreditCard, Trash2, Plus, FileText } from "lucide-react";
+import { CreditCard, Trash2, Plus, FileText, Pencil } from "lucide-react";
 import type { Payment, Supplier, Local, BankAccount, Invoice } from "@shared/schema";
 import { formatInvoiceVoucherDisplay } from "@shared/invoiceDisplay";
 
@@ -80,11 +81,19 @@ interface InvoiceAllocation {
   amount: number;
 }
 
+const EDIT_KEYWORD = "EDITAR";
+
 export default function PaymentsPage() {
   const { toast } = useToast();
   const [isDialogOpen, setIsDialogOpen] = useState(false);
   const [deletePayment, setDeletePayment] = useState<PaymentWithRelations | null>(null);
   const [selectedInvoices, setSelectedInvoices] = useState<Map<number, number>>(new Map());
+
+  // Edición: pago en edición + compuerta de palabra clave para abrir el editor.
+  const [editingPayment, setEditingPayment] = useState<PaymentWithRelations | null>(null);
+  const [keywordPayment, setKeywordPayment] = useState<PaymentWithRelations | null>(null);
+  const [editKeyword, setEditKeyword] = useState("");
+  const isEditMode = !!editingPayment;
 
   const { data: payments = [], isLoading } = useQuery<PaymentWithRelations[]>({
     queryKey: ["/api/payments"],
@@ -219,6 +228,21 @@ export default function PaymentsPage() {
     },
   });
 
+  const updateMutation = useMutation({
+    mutationFn: async ({ id, data }: { id: number; data: Partial<FormData> }) => {
+      const res = await apiRequest("PATCH", `/api/payments/${id}`, data);
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/payments"] });
+      toast({ title: "Pago actualizado correctamente" });
+      closeDialog();
+    },
+    onError: (error: Error) => {
+      toast({ title: "Error al actualizar pago", description: error.message, variant: "destructive" });
+    },
+  });
+
   const deleteMutation = useMutation({
     mutationFn: async (id: number) => {
       await apiRequest("DELETE", `/api/payments/${id}`);
@@ -253,11 +277,57 @@ export default function PaymentsPage() {
 
   const closeDialog = () => {
     setIsDialogOpen(false);
+    setEditingPayment(null);
     setSelectedInvoices(new Map());
     form.reset();
   };
 
+  // Paso 1: pedir palabra clave antes de abrir el editor.
+  const openEditKeyword = (payment: PaymentWithRelations) => {
+    setKeywordPayment(payment);
+    setEditKeyword("");
+  };
+
+  const closeKeyword = () => {
+    setKeywordPayment(null);
+    setEditKeyword("");
+  };
+
+  // Paso 2: validada la palabra clave, abrir el editor precargado.
+  const confirmEditKeyword = () => {
+    const p = keywordPayment;
+    if (!p) return;
+    form.reset({
+      localId: p.localId,
+      supplierId: p.supplierId,
+      paymentNumber: p.paymentNumber ?? "",
+      paymentDate: formatDateInput(p.paymentDate),
+      bankAccountId: p.bankAccountId ?? 0,
+      paymentMethod: p.paymentMethod,
+      amount: parseFloat(String(p.amount)) || 0,
+      notes: p.notes ?? "",
+    });
+    setSelectedInvoices(new Map());
+    setEditingPayment(p);
+    closeKeyword();
+  };
+
   const onSubmit = (data: FormData) => {
+    // Modo edición: solo datos neutros (no monto, proveedor/local ni facturas).
+    if (isEditMode && editingPayment) {
+      updateMutation.mutate({
+        id: editingPayment.id,
+        data: {
+          paymentNumber: data.paymentNumber,
+          paymentDate: data.paymentDate,
+          bankAccountId: data.bankAccountId,
+          paymentMethod: data.paymentMethod,
+          notes: data.notes,
+        },
+      });
+      return;
+    }
+
     let allocations: InvoiceAllocation[] = [];
 
     selectedInvoices.forEach((amount, invoiceId) => {
@@ -350,16 +420,26 @@ export default function PaymentsPage() {
     {
       key: "actions",
       header: "",
-      className: "w-20",
+      className: "w-28",
       cell: (row) => (
-        <Button
-          variant="ghost"
-          size="icon"
-          onClick={() => setDeletePayment(row)}
-          data-testid={`button-delete-${row.id}`}
-        >
-          <Trash2 className="h-4 w-4 text-destructive" />
-        </Button>
+        <div className="flex items-center justify-end gap-1">
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={() => openEditKeyword(row)}
+            data-testid={`button-edit-${row.id}`}
+          >
+            <Pencil className="h-4 w-4" />
+          </Button>
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={() => setDeletePayment(row)}
+            data-testid={`button-delete-${row.id}`}
+          >
+            <Trash2 className="h-4 w-4 text-destructive" />
+          </Button>
+        </div>
       ),
     },
   ];
@@ -387,12 +467,14 @@ export default function PaymentsPage() {
         pageSize={15}
       />
 
-      <Dialog open={isDialogOpen} onOpenChange={setIsDialogOpen}>
+      <Dialog open={isDialogOpen || isEditMode} onOpenChange={(o) => { if (!o) closeDialog(); }}>
         <DialogContent className="w-[95vw] max-w-4xl h-[88vh] overflow-hidden">
           <DialogHeader>
-            <DialogTitle>Nuevo Pago</DialogTitle>
+            <DialogTitle>{isEditMode ? "Editar Pago" : "Nuevo Pago"}</DialogTitle>
             <DialogDescription>
-              Seleccione un proveedor para ver sus facturas pendientes
+              {isEditMode
+                ? "Podés editar fecha, método, entidad, N° de pago y notas. El monto y las facturas imputadas no se modifican."
+                : "Seleccione un proveedor para ver sus facturas pendientes"}
             </DialogDescription>
           </DialogHeader>
           <Form {...form}>
@@ -412,6 +494,7 @@ export default function PaymentsPage() {
                           onValueChange={(v) => field.onChange(parseInt(v, 10))}
                           placeholder="Seleccionar proveedor"
                           searchPlaceholder="Buscar proveedor…"
+                          disabled={isEditMode}
                           data-testid="select-supplier"
                         />
                       </FormControl>
@@ -432,6 +515,7 @@ export default function PaymentsPage() {
                           onValueChange={(v) => field.onChange(parseInt(v, 10))}
                           placeholder="Seleccionar local"
                           searchPlaceholder="Buscar local…"
+                          disabled={isEditMode}
                           data-testid="select-local"
                         />
                       </FormControl>
@@ -441,7 +525,7 @@ export default function PaymentsPage() {
                 />
                 </div>
 
-                {watchSupplierId > 0 && pendingInvoices.length > 0 && (
+                {!isEditMode && watchSupplierId > 0 && pendingInvoices.length > 0 && (
                   <Card>
                     <CardContent className="pt-4">
                       <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
@@ -528,7 +612,7 @@ export default function PaymentsPage() {
                   </Card>
                 )}
 
-                {watchSupplierId > 0 && pendingInvoices.length === 0 && (
+                {!isEditMode && watchSupplierId > 0 && pendingInvoices.length === 0 && (
                   <Card>
                     <CardContent className="py-6 text-center text-muted-foreground text-sm">
                       Este proveedor no tiene facturas pendientes de pago
@@ -619,7 +703,11 @@ export default function PaymentsPage() {
                     <FormItem>
                       <FormLabel>
                         Monto Total *
-                        {selectedInvoices.size > 0 && (
+                        {isEditMode ? (
+                          <span className="text-muted-foreground font-normal ml-2">
+                            (no editable)
+                          </span>
+                        ) : selectedInvoices.size > 0 && (
                           <span className="text-muted-foreground font-normal ml-2">
                             (calculado de facturas seleccionadas)
                           </span>
@@ -631,6 +719,7 @@ export default function PaymentsPage() {
                           step="0.01"
                           min="0"
                           {...field}
+                          disabled={isEditMode}
                           className="font-mono"
                           data-testid="input-amount"
                         />
@@ -659,10 +748,12 @@ export default function PaymentsPage() {
                 </Button>
                 <Button
                   type="submit"
-                  disabled={createMutation.isPending}
+                  disabled={createMutation.isPending || updateMutation.isPending}
                   data-testid="button-submit"
                 >
-                  {createMutation.isPending ? "Guardando..." : "Registrar Pago"}
+                  {isEditMode
+                    ? (updateMutation.isPending ? "Guardando..." : "Guardar cambios")
+                    : (createMutation.isPending ? "Guardando..." : "Registrar Pago")}
                 </Button>
               </div>
             </form>
@@ -680,6 +771,49 @@ export default function PaymentsPage() {
         variant="destructive"
         isLoading={deleteMutation.isPending}
       />
+
+      {/* Compuerta de palabra clave para habilitar la edición */}
+      <Dialog open={!!keywordPayment} onOpenChange={(o) => { if (!o) closeKeyword(); }}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle>Editar pago</DialogTitle>
+            <DialogDescription>
+              Para editar este pago, escribí la palabra clave.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-2">
+            <Label className="text-xs">
+              Escribí <span className="font-mono font-semibold">{EDIT_KEYWORD}</span> para continuar
+            </Label>
+            <Input
+              value={editKeyword}
+              onChange={(e) => setEditKeyword(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && editKeyword.trim().toUpperCase() === EDIT_KEYWORD) {
+                  e.preventDefault();
+                  confirmEditKeyword();
+                }
+              }}
+              placeholder={EDIT_KEYWORD}
+              autoComplete="off"
+              data-testid="input-edit-keyword"
+            />
+          </div>
+          <div className="flex justify-end gap-2">
+            <Button type="button" variant="outline" onClick={closeKeyword} data-testid="button-cancel-edit-keyword">
+              Cancelar
+            </Button>
+            <Button
+              type="button"
+              disabled={editKeyword.trim().toUpperCase() !== EDIT_KEYWORD}
+              onClick={confirmEditKeyword}
+              data-testid="button-confirm-edit-keyword"
+            >
+              Editar
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
