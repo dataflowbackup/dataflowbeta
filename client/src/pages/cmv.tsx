@@ -267,11 +267,14 @@ export default function CmvPage() {
     () =>
       valuations
         .filter((v) => v.status === "active")
-        .map((v) => ({
-          value: String(v.id),
-          label: `${v.valuationDate} — ${formatCurrency(parseFloat(String(v.totalValued)) || 0)}`,
-        })),
-    [valuations],
+        .map((v) => {
+          const localName = v.localId != null ? (locals.find((l) => l.id === v.localId)?.name ?? "Local desconocido") : "Todos los locales";
+          return {
+            value: String(v.id),
+            label: `${v.valuationDate} — ${localName} — ${formatCurrency(parseFloat(String(v.totalValued)) || 0)}`,
+          };
+        }),
+    [valuations, locals],
   );
   const sourceOptions = [
     { value: "extractos", label: "Extractos" },
