@@ -11,7 +11,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { formatCurrency } from "@/lib/formatters";
-import { Calculator, Save, TrendingUp, TrendingDown, BarChart2, DollarSign, Trash2 } from "lucide-react";
+import { Calculator, Save, TrendingUp, TrendingDown, BarChart2, DollarSign, Trash2, ChevronsUpDown, Check } from "lucide-react";
 import {
   Dialog,
   DialogContent,
@@ -20,6 +20,9 @@ import {
   DialogFooter,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   LineChart,
   Line,
@@ -86,19 +89,29 @@ function money(v: string | number | null): number {
 
 // ─── Dashboard ───────────────────────────────────────────────────────────────
 
-function Dashboard({ records }: { records: CmvSaved[] }) {
+function Dashboard({ records, locals }: { records: CmvSaved[]; locals: Local[] }) {
   const [filterFrom, setFilterFrom] = useState("");
   const [filterTo, setFilterTo] = useState("");
   const [filterSource, setFilterSource] = useState("all");
+  const [filterLocals, setFilterLocals] = useState<number[]>([]);
+  const [localPopoverOpen, setLocalPopoverOpen] = useState(false);
+
+  const toggleLocal = (id: number) =>
+    setFilterLocals((prev) => prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]);
 
   const filtered = useMemo(() => {
     return records.filter((r) => {
       if (filterSource !== "all" && r.salesSource !== filterSource) return false;
       if (filterFrom && r.periodFrom && r.periodFrom < filterFrom) return false;
       if (filterTo && r.periodTo && r.periodTo > filterTo) return false;
+      if (filterLocals.length > 0) {
+        // record con localId null = "Todos los locales"; lo incluimos solo si no hay filtro activo
+        if (r.localId == null) return false;
+        if (!filterLocals.includes(r.localId)) return false;
+      }
       return true;
     });
-  }, [records, filterFrom, filterTo, filterSource]);
+  }, [records, filterFrom, filterTo, filterSource, filterLocals]);
 
   const sorted = useMemo(() => [...filtered].sort((a, b) => (a.periodFrom ?? "").localeCompare(b.periodFrom ?? "")), [filtered]);
 
@@ -128,6 +141,14 @@ function Dashboard({ records }: { records: CmvSaved[] }) {
     { value: "datalive", label: "Datalive" },
   ];
 
+  const hasFilters = filterFrom || filterTo || filterSource !== "all" || filterLocals.length > 0;
+
+  const localButtonLabel = filterLocals.length === 0
+    ? "Todos los locales"
+    : filterLocals.length === 1
+      ? (locals.find((l) => l.id === filterLocals[0])?.name ?? "1 local")
+      : `${filterLocals.length} locales`;
+
   return (
     <Card>
       <CardHeader className="pb-3">
@@ -148,6 +169,37 @@ function Dashboard({ records }: { records: CmvSaved[] }) {
               searchPlaceholder="Buscar…"
             />
           </div>
+
+          {/* Multi-select locales */}
+          <div className="space-y-1">
+            <Label className="text-xs">Local</Label>
+            <Popover open={localPopoverOpen} onOpenChange={setLocalPopoverOpen}>
+              <PopoverTrigger asChild>
+                <Button variant="outline" size="sm" className="h-9 min-w-[180px] justify-between font-normal">
+                  <span className="truncate">{localButtonLabel}</span>
+                  <ChevronsUpDown className="ml-2 h-3.5 w-3.5 shrink-0 opacity-50" />
+                </Button>
+              </PopoverTrigger>
+              <PopoverContent className="w-56 p-0" align="start">
+                <Command>
+                  <CommandInput placeholder="Buscar local…" />
+                  <CommandList>
+                    <CommandEmpty>Sin resultados</CommandEmpty>
+                    <CommandGroup>
+                      {locals.map((l) => (
+                        <CommandItem key={l.id} onSelect={() => toggleLocal(l.id)} className="gap-2">
+                          <Checkbox checked={filterLocals.includes(l.id)} className="pointer-events-none" />
+                          <span>{l.name}</span>
+                          {filterLocals.includes(l.id) && <Check className="ml-auto h-3.5 w-3.5" />}
+                        </CommandItem>
+                      ))}
+                    </CommandGroup>
+                  </CommandList>
+                </Command>
+              </PopoverContent>
+            </Popover>
+          </div>
+
           <div className="space-y-1">
             <Label className="text-xs">Período desde</Label>
             <input
@@ -166,10 +218,22 @@ function Dashboard({ records }: { records: CmvSaved[] }) {
               onChange={(e) => setFilterTo(e.target.value)}
             />
           </div>
-          {(filterFrom || filterTo || filterSource !== "all") && (
-            <Button variant="ghost" size="sm" onClick={() => { setFilterFrom(""); setFilterTo(""); setFilterSource("all"); }}>
+          {hasFilters && (
+            <Button variant="ghost" size="sm" onClick={() => { setFilterFrom(""); setFilterTo(""); setFilterSource("all"); setFilterLocals([]); }}>
               Limpiar
             </Button>
+          )}
+          {filterLocals.length > 0 && (
+            <div className="flex flex-wrap gap-1 items-center">
+              {filterLocals.map((id) => {
+                const name = locals.find((l) => l.id === id)?.name ?? String(id);
+                return (
+                  <Badge key={id} variant="secondary" className="text-xs gap-1 cursor-pointer" onClick={() => toggleLocal(id)}>
+                    {name} ✕
+                  </Badge>
+                );
+              })}
+            </div>
           )}
         </div>
 
@@ -379,7 +443,7 @@ export default function CmvPage() {
       />
 
       {/* Dashboard (solo si hay guardados) */}
-      {saved.length > 0 && <Dashboard records={saved} />}
+      {saved.length > 0 && <Dashboard records={saved} locals={locals} />}
 
       {/* Parámetros */}
       <Card>
