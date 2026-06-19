@@ -478,8 +478,8 @@ export interface IStorage {
     fixedCosts: Array<{ transactionCategoryId?: number | null; label?: string | null; amount: number }>;
   }): Promise<BreakevenAnalysis>;
 
-  /** CMV = stock inicial + compras (CMC) − stock final; CMV% sobre venta sin IVA. */
-  computeCmv(clientId: number, opts: { localId?: number; stockInicialId: number; stockFinalId: number; dateFrom?: string; dateTo?: string }): Promise<{
+  /** CMV = stock inicial + compras (CMC) − stock final; CMV% sobre venta (con o sin IVA según ivaIncluded). */
+  computeCmv(clientId: number, opts: { localId?: number; stockInicialId: number; stockFinalId: number; dateFrom?: string; dateTo?: string; salesSource?: "extractos" | "datalive"; ivaIncluded?: boolean }): Promise<{
     stockInicial: number;
     stockInicialDate: string;
     stockFinal: number;
@@ -490,8 +490,10 @@ export interface IStorage {
     ventaNeta: number;
     cmvPct: number | null;
   }>;
+  /** Total de compras (CMC sin IVA) para un período — usado para preview en vivo. */
+  getCmcTotal(clientId: number, opts: { localId?: number; dateFrom?: string; dateTo?: string }): Promise<number>;
   /** Guarda un cálculo de CMV como registro (recalcula server-side para integridad). */
-  saveCmvCalculation(clientId: number, opts: { localId?: number; stockInicialId: number; stockFinalId: number; dateFrom?: string; dateTo?: string; createdBy?: string | null }): Promise<CmvCalculation>;
+  saveCmvCalculation(clientId: number, opts: { localId?: number; stockInicialId: number; stockFinalId: number; dateFrom?: string; dateTo?: string; salesSource?: "extractos" | "datalive"; ivaIncluded?: boolean; createdBy?: string | null }): Promise<CmvCalculation>;
   listCmvCalculations(clientId: number): Promise<CmvCalculation[]>;
 
   // Ventas Datalive (tabla paralela, fase 1)
@@ -3202,7 +3204,7 @@ export class DatabaseStorage implements IStorage {
 
   async computeCmv(
     clientId: number,
-    opts: { localId?: number; stockInicialId: number; stockFinalId: number; dateFrom?: string; dateTo?: string },
+    opts: { localId?: number; stockInicialId: number; stockFinalId: number; dateFrom?: string; dateTo?: string; salesSource?: "extractos" | "datalive"; ivaIncluded?: boolean },
   ) {
     const [ini] = await db.select().from(stockValuations)
       .where(and(eq(stockValuations.id, opts.stockInicialId), eq(stockValuations.clientId, clientId)));
@@ -3215,10 +3217,12 @@ export class DatabaseStorage implements IStorage {
     const stockFinal = parseFloat(String(fin.totalValued)) || 0;
 
     const localIds = opts.localId != null ? [opts.localId] : undefined;
+    const source = opts.salesSource ?? "extractos";
     const cmc = await this.getCmcReport(clientId, { dateFrom: opts.dateFrom, dateTo: opts.dateTo, localIds });
     const compras = cmc.total; // sin IVA
-    const salesGross = await this.getSalesTotalByPeriod(clientId, { dateFrom: opts.dateFrom, dateTo: opts.dateTo, localIds });
-    const ventaNeta = salesGross / 1.21; // venta bruta sin IVA
+    const salesGross = await this.getSalesBySource(clientId, { dateFrom: opts.dateFrom, dateTo: opts.dateTo, localIds }, source);
+    // ventaNeta = base para calcular CMV%; si ivaIncluded usa el bruto, si no divide por 1.21
+    const ventaNeta = opts.ivaIncluded ? salesGross : salesGross / 1.21;
 
     const cmv = stockInicial + compras - stockFinal;
     const cmvPct = ventaNeta > 0 ? (cmv / ventaNeta) * 100 : null;
@@ -3236,9 +3240,18 @@ export class DatabaseStorage implements IStorage {
     };
   }
 
+  async getCmcTotal(
+    clientId: number,
+    opts: { localId?: number; dateFrom?: string; dateTo?: string },
+  ): Promise<number> {
+    const localIds = opts.localId != null ? [opts.localId] : undefined;
+    const cmc = await this.getCmcReport(clientId, { dateFrom: opts.dateFrom, dateTo: opts.dateTo, localIds });
+    return cmc.total;
+  }
+
   async saveCmvCalculation(
     clientId: number,
-    opts: { localId?: number; stockInicialId: number; stockFinalId: number; dateFrom?: string; dateTo?: string; createdBy?: string | null },
+    opts: { localId?: number; stockInicialId: number; stockFinalId: number; dateFrom?: string; dateTo?: string; salesSource?: "extractos" | "datalive"; ivaIncluded?: boolean; createdBy?: string | null },
   ): Promise<CmvCalculation> {
     // Se recalcula server-side para que el registro sea íntegro (no se confía en el cliente).
     const r = await this.computeCmv(clientId, {
@@ -3247,6 +3260,8 @@ export class DatabaseStorage implements IStorage {
       stockFinalId: opts.stockFinalId,
       dateFrom: opts.dateFrom,
       dateTo: opts.dateTo,
+      salesSource: opts.salesSource,
+      ivaIncluded: opts.ivaIncluded,
     });
     const [created] = await db.insert(cmvCalculations).values({
       clientId,
@@ -3261,6 +3276,8 @@ export class DatabaseStorage implements IStorage {
       cmv: String(r.cmv),
       ventaNeta: String(r.ventaNeta),
       cmvPct: r.cmvPct != null ? String(r.cmvPct) : null,
+      salesSource: opts.salesSource ?? "extractos",
+      ivaIncluded: opts.ivaIncluded ?? false,
       createdBy: opts.createdBy ?? null,
     } as any).returning();
     return created;

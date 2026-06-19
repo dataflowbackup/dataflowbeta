@@ -3360,6 +3360,20 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
   });
 
+  // CMV — preview de compras del período en vivo (sin necesidad de elegir stocks).
+  app.get("/api/finance/cmv-compras", isAuthenticated, requirePermission("cmv.view", "view"), async (req, res) => {
+    try {
+      const { clientId } = (req as any).rbac;
+      const localId = req.query.localId && req.query.localId !== "all" ? parseInt(req.query.localId as string, 10) : undefined;
+      const dateFrom = typeof req.query.dateFrom === "string" && req.query.dateFrom ? req.query.dateFrom : undefined;
+      const dateTo = typeof req.query.dateTo === "string" && req.query.dateTo ? req.query.dateTo : undefined;
+      const compras = await storage.getCmcTotal(clientId, { localId, dateFrom, dateTo });
+      res.json({ compras });
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
   // CMV (Costo de Mercadería Vendida) — Fase 7. Reporte gateado por RBAC granular.
   app.get("/api/finance/cmv", isAuthenticated, requirePermission("cmv.view", "view"), async (req, res) => {
     try {
@@ -3372,7 +3386,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const localId = req.query.localId && req.query.localId !== "all" ? parseInt(req.query.localId as string, 10) : undefined;
       const dateFrom = typeof req.query.dateFrom === "string" && req.query.dateFrom ? req.query.dateFrom : undefined;
       const dateTo = typeof req.query.dateTo === "string" && req.query.dateTo ? req.query.dateTo : undefined;
-      const data = await storage.computeCmv(clientId, { localId, stockInicialId, stockFinalId, dateFrom, dateTo });
+      const salesSource = req.query.salesSource === "datalive" ? "datalive" : "extractos";
+      const ivaIncluded = req.query.ivaIncluded === "true";
+      const data = await storage.computeCmv(clientId, { localId, stockInicialId, stockFinalId, dateFrom, dateTo, salesSource, ivaIncluded });
       res.json(data);
     } catch (e: any) {
       res.status(500).json({ message: e.message });
@@ -3400,7 +3416,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const localId = req.body?.localId && req.body.localId !== "all" ? parseInt(String(req.body.localId), 10) : undefined;
       const dateFrom = typeof req.body?.dateFrom === "string" && req.body.dateFrom ? req.body.dateFrom : undefined;
       const dateTo = typeof req.body?.dateTo === "string" && req.body.dateTo ? req.body.dateTo : undefined;
-      const saved = await storage.saveCmvCalculation(clientId, { localId, stockInicialId, stockFinalId, dateFrom, dateTo, createdBy: actorId });
+      const salesSource = req.body?.salesSource === "datalive" ? "datalive" : "extractos";
+      const ivaIncluded = req.body?.ivaIncluded === true;
+      const saved = await storage.saveCmvCalculation(clientId, { localId, stockInicialId, stockFinalId, dateFrom, dateTo, salesSource, ivaIncluded, createdBy: actorId });
       res.json(saved);
     } catch (e: any) {
       res.status(500).json({ message: e.message });

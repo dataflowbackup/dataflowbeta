@@ -1141,6 +1141,8 @@ export const cmvCalculations = pgTable("cmv_calculations", {
   cmv: decimal("cmv", { precision: 14, scale: 2 }).default("0"),
   ventaNeta: decimal("venta_neta", { precision: 14, scale: 2 }).default("0"),
   cmvPct: decimal("cmv_pct", { precision: 8, scale: 2 }),
+  salesSource: varchar("sales_source").default("extractos"),
+  ivaIncluded: boolean("iva_included").default(false),
   createdBy: varchar("created_by").references(() => users.id),
   createdAt: timestamp("created_at").defaultNow(),
 });
