@@ -11,7 +11,15 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { formatCurrency } from "@/lib/formatters";
-import { Calculator, Save, TrendingUp, TrendingDown, BarChart2, DollarSign } from "lucide-react";
+import { Calculator, Save, TrendingUp, TrendingDown, BarChart2, DollarSign, Trash2 } from "lucide-react";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogFooter,
+} from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
 import {
   LineChart,
   Line,
@@ -28,6 +36,7 @@ import type { Local } from "@shared/schema";
 
 interface CmvSaved {
   id: number;
+  localId: number | null;
   periodFrom: string | null;
   periodTo: string | null;
   cmv: string | number;
@@ -307,6 +316,9 @@ export default function CmvPage() {
     },
   });
 
+  const [deleteTarget, setDeleteTarget] = useState<CmvSaved | null>(null);
+  const [deleteCode, setDeleteCode] = useState("");
+
   const { toast } = useToast();
   const saveMutation = useMutation({
     mutationFn: async () => {
@@ -327,6 +339,26 @@ export default function CmvPage() {
     },
     onError: (e: Error) => toast({ title: "No se pudo guardar", description: e.message, variant: "destructive" }),
   });
+
+  const deleteMutation = useMutation({
+    mutationFn: async (id: number) => {
+      const res = await apiRequest("DELETE", `/api/finance/cmv-calculations/${id}`);
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/finance/cmv-calculations"] });
+      toast({ title: "CMV eliminado", description: "El registro fue eliminado correctamente." });
+      setDeleteTarget(null);
+      setDeleteCode("");
+    },
+    onError: (e: Error) => toast({ title: "No se pudo eliminar", description: e.message, variant: "destructive" }),
+  });
+
+  const localMap = useMemo(() => {
+    const m = new Map<number, string>();
+    locals.forEach((l) => m.set(l.id, l.name));
+    return m;
+  }, [locals]);
 
   const ResultLine = ({ label, value, op, strong }: { label: string; value: number; op?: string; strong?: boolean }) => (
     <div className={`grid grid-cols-[auto_1fr_auto] items-center gap-2 ${strong ? "border-t pt-2 font-bold" : ""}`}>
@@ -473,7 +505,9 @@ export default function CmvPage() {
                     <th className="text-right px-3 py-2 font-medium border-b whitespace-nowrap">Facturación</th>
                     <th className="text-center px-3 py-2 font-medium border-b whitespace-nowrap">IVA</th>
                     <th className="text-right px-3 py-2 font-medium border-b whitespace-nowrap">Venta base</th>
+                    <th className="text-left px-3 py-2 font-medium border-b whitespace-nowrap">Local</th>
                     <th className="text-right px-3 py-2 font-medium border-b whitespace-nowrap">CMV %</th>
+                    <th className="px-3 py-2 border-b" />
                   </tr>
                 </thead>
                 <tbody>
@@ -493,8 +527,21 @@ export default function CmvPage() {
                         </Badge>
                       </td>
                       <td className="px-3 py-2 text-right font-mono text-muted-foreground">{formatCurrency(money(c.ventaNeta))}</td>
+                      <td className="px-3 py-2 whitespace-nowrap text-muted-foreground">
+                        {c.localId != null ? (localMap.get(c.localId) ?? "—") : "Todos"}
+                      </td>
                       <td className="px-3 py-2 text-right font-mono font-semibold">
                         {c.cmvPct == null ? "—" : `${pct(c.cmvPct).toFixed(2)}%`}
+                      </td>
+                      <td className="px-3 py-2">
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-7 w-7 text-muted-foreground hover:text-destructive"
+                          onClick={() => { setDeleteTarget(c); setDeleteCode(""); }}
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </Button>
                       </td>
                     </tr>
                   ))}
@@ -504,6 +551,49 @@ export default function CmvPage() {
           </CardContent>
         </Card>
       )}
+
+      {/* Dialog eliminar CMV */}
+      <Dialog open={!!deleteTarget} onOpenChange={(open) => { if (!open) { setDeleteTarget(null); setDeleteCode(""); } }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Eliminar CMV guardado</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4 py-2">
+            {deleteTarget && (
+              <p className="text-sm text-muted-foreground">
+                Vas a eliminar el CMV del período{" "}
+                <span className="font-semibold text-foreground">
+                  {deleteTarget.periodFrom ?? "—"} → {deleteTarget.periodTo ?? "—"}
+                </span>
+                . Esta acción no se puede deshacer.
+              </p>
+            )}
+            <div className="space-y-1">
+              <Label className="text-xs">
+                Escribí <span className="font-bold text-destructive">ELIMINAR</span> para confirmar
+              </Label>
+              <Input
+                value={deleteCode}
+                onChange={(e) => setDeleteCode(e.target.value)}
+                placeholder="ELIMINAR"
+                autoComplete="off"
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => { setDeleteTarget(null); setDeleteCode(""); }}>
+              Cancelar
+            </Button>
+            <Button
+              variant="destructive"
+              disabled={deleteCode !== "ELIMINAR" || deleteMutation.isPending}
+              onClick={() => deleteTarget && deleteMutation.mutate(deleteTarget.id)}
+            >
+              {deleteMutation.isPending ? "Eliminando..." : "Eliminar"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

@@ -495,6 +495,7 @@ export interface IStorage {
   /** Guarda un cálculo de CMV como registro (recalcula server-side para integridad). */
   saveCmvCalculation(clientId: number, opts: { localId?: number; stockInicialId: number; stockFinalId: number; dateFrom?: string; dateTo?: string; salesSource?: "extractos" | "datalive"; ivaIncluded?: boolean; createdBy?: string | null }): Promise<CmvCalculation>;
   listCmvCalculations(clientId: number): Promise<CmvCalculation[]>;
+  deleteCmvCalculation(clientId: number, id: number): Promise<void>;
 
   // Ventas Datalive (tabla paralela, fase 1)
   listDataliveVentas(clientId: number, localId?: number): Promise<DataliveVenta[]>;
@@ -3285,6 +3286,13 @@ export class DatabaseStorage implements IStorage {
 
   async listCmvCalculations(clientId: number): Promise<CmvCalculation[]> {
     return db.select().from(cmvCalculations).where(eq(cmvCalculations.clientId, clientId)).orderBy(desc(cmvCalculations.id));
+  }
+
+  async deleteCmvCalculation(clientId: number, id: number): Promise<void> {
+    const [existing] = await db.select({ id: cmvCalculations.id }).from(cmvCalculations)
+      .where(and(eq(cmvCalculations.id, id), eq(cmvCalculations.clientId, clientId)));
+    if (!existing) throw new Error("CMV no encontrado");
+    await db.delete(cmvCalculations).where(and(eq(cmvCalculations.id, id), eq(cmvCalculations.clientId, clientId)));
   }
 
   async listDataliveVentas(clientId: number, localId?: number): Promise<DataliveVenta[]> {

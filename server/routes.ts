@@ -3425,6 +3425,18 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
   });
 
+  app.delete("/api/finance/cmv-calculations/:id", isAuthenticated, requirePermission("cmv.view", "create"), async (req, res) => {
+    try {
+      const { clientId } = (req as any).rbac;
+      const id = parseInt(req.params.id, 10);
+      if (!Number.isFinite(id)) return res.status(400).json({ message: "ID inválido" });
+      await storage.deleteCmvCalculation(clientId, id);
+      res.json({ ok: true });
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
   // Punto de Equilibrio — Fase 8 (gateado por RBAC granular).
   app.get("/api/finance/breakeven", isAuthenticated, requirePermission("breakeven.view", "view"), async (req, res) => {
     try {
