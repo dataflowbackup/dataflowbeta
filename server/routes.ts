@@ -4809,6 +4809,57 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
   registerBulkInvoiceImportRoutes(app);
 
+  // ==========================================
+  // MERCHANDISE TRANSFERS (Traslados de Mercadería)
+  // ==========================================
+
+  app.get("/api/merchandise-transfers", isAuthenticated, async (req, res) => {
+    try {
+      const clientId = await getClientId(req);
+      const data = await storage.getMerchandiseTransfers(clientId);
+      res.json(data);
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
+  app.post("/api/merchandise-transfers", isAuthenticated, async (req, res) => {
+    try {
+      const clientId = await getClientId(req);
+      const userId = (await getAuthenticatedUserId(req)) ?? "";
+      const { items, ...transferBody } = req.body;
+
+      if (!transferBody.fromLocalId || !transferBody.toLocalId) {
+        return res.status(400).json({ message: "fromLocalId y toLocalId son requeridos" });
+      }
+      if (transferBody.fromLocalId === transferBody.toLocalId) {
+        return res.status(400).json({ message: "El local de origen y destino deben ser distintos" });
+      }
+      if (!items || !Array.isArray(items) || items.length === 0) {
+        return res.status(400).json({ message: "Debe incluir al menos un ítem" });
+      }
+
+      const transfer = await storage.createMerchandiseTransfer(
+        { ...transferBody, clientId, createdBy: userId },
+        items,
+      );
+      res.json(transfer);
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
+  app.post("/api/merchandise-transfers/:id/reverse", isAuthenticated, async (req, res) => {
+    try {
+      const clientId = await getClientId(req);
+      const ok = await storage.reverseMerchandiseTransfer(clientId, parseInt(req.params.id, 10));
+      if (!ok) return res.status(404).json({ message: "Traslado no encontrado" });
+      res.json({ success: true });
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
   app.use("/api", (req, res) => {
     if (req.method === "OPTIONS") {
       return res.status(204).end();

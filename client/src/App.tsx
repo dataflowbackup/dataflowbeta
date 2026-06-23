@@ -23,6 +23,8 @@ import SuppliesPage from "@/pages/supplies";
 import InvoicesPage from "@/pages/invoices";
 import BulkInvoiceImportPage from "@/pages/bulk-invoice-import";
 import InvoiceFormPage from "@/pages/invoice-form";
+import CreditNoteFormPage from "@/pages/credit-note-form";
+import MerchandiseTransfersPage from "@/pages/merchandise-transfers";
 import AccountsPage from "@/pages/accounts";
 import PaymentsPage from "@/pages/payments";
 import RecipeCategoriesPage from "@/pages/recipe-categories";
@@ -68,6 +70,8 @@ function AppRouter() {
       <Route path="/insumos" component={SuppliesPage} />
       <Route path="/facturas" component={InvoicesPage} />
       <Route path="/facturas/importacion-excel" component={BulkInvoiceImportPage} />
+      <Route path="/facturas/nota-credito/nueva" component={CreditNoteFormPage} />
+      <Route path="/facturas/traslados" component={MerchandiseTransfersPage} />
       <Route path="/facturas/nueva" component={InvoiceFormPage} />
       <Route path="/facturas/:id" component={InvoiceFormPage} />
       <Route path="/cuentas-corrientes" component={AccountsPage} />

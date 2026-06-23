@@ -388,6 +388,8 @@ export const invoices = pgTable("invoices", {
   reversedAt: timestamp("reversed_at"),
   reversedBy: varchar("reversed_by").references(() => users.id),
   reversalReason: text("reversal_reason"),
+  /** ID de la factura original a la que se vincula esta Nota de Crédito (opcional). */
+  linkedInvoiceId: integer("linked_invoice_id"),
   notes: text("notes"),
   createdBy: varchar("created_by").references(() => users.id),
   createdAt: timestamp("created_at").defaultNow(),
@@ -432,6 +434,40 @@ export const invoiceTaxes = pgTable("invoice_taxes", {
 export const insertInvoiceTaxSchema = createInsertSchema(invoiceTaxes).omit({ id: true });
 export type InsertInvoiceTax = z.infer<typeof insertInvoiceTaxSchema>;
 export type InvoiceTax = typeof invoiceTaxes.$inferSelect;
+
+// ==========================================
+// MERCHANDISE TRANSFERS (Traslados de Mercadería)
+// ==========================================
+export const merchandiseTransfers = pgTable("merchandise_transfers", {
+  id: serial("id").primaryKey(),
+  clientId: integer("client_id").notNull().references(() => clients.id, { onDelete: "cascade" }),
+  fromLocalId: integer("from_local_id").notNull().references(() => locals.id),
+  toLocalId: integer("to_local_id").notNull().references(() => locals.id),
+  transferDate: date("transfer_date").notNull(),
+  totalValue: decimal("total_value", { precision: 14, scale: 2 }).default("0"),
+  status: varchar("status", { length: 20 }).default("active"),
+  notes: text("notes"),
+  createdBy: varchar("created_by").references(() => users.id),
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
+export const insertMerchandiseTransferSchema = createInsertSchema(merchandiseTransfers).omit({ id: true, createdAt: true });
+export type InsertMerchandiseTransfer = z.infer<typeof insertMerchandiseTransferSchema>;
+export type MerchandiseTransfer = typeof merchandiseTransfers.$inferSelect;
+
+export const merchandiseTransferItems = pgTable("merchandise_transfer_items", {
+  id: serial("id").primaryKey(),
+  transferId: integer("transfer_id").notNull().references(() => merchandiseTransfers.id, { onDelete: "cascade" }),
+  supplyId: integer("supply_id").references(() => supplies.id),
+  description: text("description"),
+  quantity: decimal("quantity", { precision: 12, scale: 4 }).notNull(),
+  unitCost: decimal("unit_cost", { precision: 12, scale: 4 }).notNull(),
+  lineTotal: decimal("line_total", { precision: 12, scale: 2 }).notNull(),
+});
+
+export const insertMerchandiseTransferItemSchema = createInsertSchema(merchandiseTransferItems).omit({ id: true });
+export type InsertMerchandiseTransferItem = z.infer<typeof insertMerchandiseTransferItemSchema>;
+export type MerchandiseTransferItem = typeof merchandiseTransferItems.$inferSelect;
 
 // ==========================================
 // PAYMENTS (Pagos a Proveedores)

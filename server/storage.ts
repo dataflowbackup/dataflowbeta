@@ -171,6 +171,12 @@ import {
   type SupplySupplier,
   type InsertSupplySupplier,
   type SupplierRubro,
+  merchandiseTransfers,
+  merchandiseTransferItems,
+  type MerchandiseTransfer,
+  type InsertMerchandiseTransfer,
+  type MerchandiseTransferItem,
+  type InsertMerchandiseTransferItem,
 } from "@shared/schema";
 
 /**
@@ -1364,13 +1370,15 @@ export class DatabaseStorage implements IStorage {
 
   async createInvoice(invoice: InsertInvoice, items: InsertInvoiceItem[], taxItems: InsertInvoiceTax[]): Promise<Invoice> {
     const [newInvoice] = await db.insert(invoices).values(invoice).returning();
-    
+    // NC (Nota de Crédito) does not generate stock entries or update CPP.
+    const isNC = String(invoice.invoiceType ?? "").startsWith("NC-");
+
     const aggregatedItems = new Map<number, { totalQty: number; totalCost: number; lastUnitPrice: number; items: InsertInvoiceItem[] }>();
-    
+
     for (const item of items) {
       await db.insert(invoiceItems).values({ ...item, invoiceId: newInvoice.id });
-      
-      if (item.supplyId) {
+
+      if (item.supplyId && !isNC) {
         const qty = parseFloat(String(item.quantity)) || 0;
         const price = parseFloat(String(item.unitPrice)) || 0;
         
@@ -2900,8 +2908,10 @@ export class DatabaseStorage implements IStorage {
     if (opts.dateFrom) invConds.push(sql`${invoices.invoiceDate} >= ${opts.dateFrom}`);
     if (opts.dateTo) invConds.push(sql`${invoices.invoiceDate} <= ${opts.dateTo}`);
     if (opts.localIds && opts.localIds.length > 0) invConds.push(inArray(invoices.localId, opts.localIds));
-    const invs = await db.select({ id: invoices.id }).from(invoices).where(and(...invConds));
+    const invs = await db.select({ id: invoices.id, invoiceType: invoices.invoiceType }).from(invoices).where(and(...invConds));
     const invIds = invs.map((i) => i.id);
+    // NC (Nota de Crédito) reduces compras: build a set for fast lookup.
+    const ncInvoiceIds = new Set(invs.filter((i) => String(i.invoiceType ?? "").startsWith("NC-")).map((i) => i.id));
 
     const salesGross = await this.getSalesBySource(clientId, opts, opts.salesSource ?? "extractos");
     const salesNet = salesGross / 1.21; // criterio CMC: venta sin IVA
@@ -2911,9 +2921,9 @@ export class DatabaseStorage implements IStorage {
       return { total: 0, salesGross, salesNet, pct: pctOf(0), rubros: [] };
     }
 
-    // 2) Ítems de esas facturas (subtotal = base SIN IVA).
+    // 2) Ítems de esas facturas (subtotal = base SIN IVA). NC items negate the amount.
     const items = await db
-      .select({ subtotal: invoiceItems.subtotal, supplyId: invoiceItems.supplyId, rubroId: invoiceItems.rubroId })
+      .select({ invoiceId: invoiceItems.invoiceId, subtotal: invoiceItems.subtotal, supplyId: invoiceItems.supplyId, rubroId: invoiceItems.rubroId })
       .from(invoiceItems)
       .where(inArray(invoiceItems.invoiceId, invIds));
 
@@ -2935,7 +2945,9 @@ export class DatabaseStorage implements IStorage {
     const agg = new Map<number, Rub>();
 
     for (const it of items) {
-      const amount = parseFloat(String(it.subtotal)) || 0;
+      // NC invoices are credits → subtract from compras.
+      const sign = ncInvoiceIds.has(it.invoiceId) ? -1 : 1;
+      const amount = (parseFloat(String(it.subtotal)) || 0) * sign;
       if (amount === 0) continue;
 
       let subRubroId: number | null = null;
@@ -3220,7 +3232,11 @@ export class DatabaseStorage implements IStorage {
     const localIds = opts.localId != null ? [opts.localId] : undefined;
     const source = opts.salesSource ?? "extractos";
     const cmc = await this.getCmcReport(clientId, { dateFrom: opts.dateFrom, dateTo: opts.dateTo, localIds });
-    const compras = cmc.total; // sin IVA
+    // Transfer adjustment: add received transfers, subtract sent transfers for this local.
+    const transferAdj = opts.localId != null
+      ? await this.getTransferAdjustment(clientId, opts.localId, opts.dateFrom, opts.dateTo)
+      : 0;
+    const compras = cmc.total + transferAdj; // sin IVA, ajustado por traslados
     const salesGross = await this.getSalesBySource(clientId, { dateFrom: opts.dateFrom, dateTo: opts.dateTo, localIds }, source);
     // ventaNeta = base para calcular CMV%; si ivaIncluded usa el bruto, si no divide por 1.21
     const ventaNeta = opts.ivaIncluded ? salesGross : salesGross / 1.21;
@@ -3977,6 +3993,94 @@ export class DatabaseStorage implements IStorage {
         rubroIds.map(rubroId => ({ supplierId, rubroId, clientId }))
       );
     }
+  }
+
+  // ==========================================
+  // MERCHANDISE TRANSFERS (Traslados de Mercadería)
+  // ==========================================
+
+  async getMerchandiseTransfers(clientId: number): Promise<(MerchandiseTransfer & { fromLocal?: any; toLocal?: any; items?: MerchandiseTransferItem[] })[]> {
+    const rows = await db.select().from(merchandiseTransfers)
+      .where(eq(merchandiseTransfers.clientId, clientId))
+      .orderBy(desc(merchandiseTransfers.transferDate));
+
+    const localRows = await db.select().from(locals).where(eq(locals.clientId, clientId));
+    const localMap = new Map(localRows.map((l) => [l.id, l]));
+
+    const result = [];
+    for (const row of rows) {
+      const items = await db.select().from(merchandiseTransferItems)
+        .where(eq(merchandiseTransferItems.transferId, row.id));
+      result.push({
+        ...row,
+        fromLocal: localMap.get(row.fromLocalId),
+        toLocal: localMap.get(row.toLocalId),
+        items,
+      });
+    }
+    return result;
+  }
+
+  async getMerchandiseTransfer(clientId: number, id: number): Promise<(MerchandiseTransfer & { items: MerchandiseTransferItem[] }) | null> {
+    const [row] = await db.select().from(merchandiseTransfers)
+      .where(and(eq(merchandiseTransfers.id, id), eq(merchandiseTransfers.clientId, clientId)));
+    if (!row) return null;
+    const items = await db.select().from(merchandiseTransferItems)
+      .where(eq(merchandiseTransferItems.transferId, id));
+    return { ...row, items };
+  }
+
+  async createMerchandiseTransfer(
+    transfer: InsertMerchandiseTransfer,
+    items: InsertMerchandiseTransferItem[],
+  ): Promise<MerchandiseTransfer & { items: MerchandiseTransferItem[] }> {
+    const totalValue = items.reduce((acc, it) => acc + (parseFloat(String(it.lineTotal)) || 0), 0);
+    const [newTransfer] = await db.insert(merchandiseTransfers)
+      .values({ ...transfer, totalValue: String(totalValue) })
+      .returning();
+    const insertedItems: MerchandiseTransferItem[] = [];
+    for (const item of items) {
+      const [ins] = await db.insert(merchandiseTransferItems)
+        .values({ ...item, transferId: newTransfer.id })
+        .returning();
+      insertedItems.push(ins);
+    }
+    return { ...newTransfer, items: insertedItems };
+  }
+
+  async reverseMerchandiseTransfer(clientId: number, id: number): Promise<boolean> {
+    const result = await db.update(merchandiseTransfers)
+      .set({ status: "reversed" })
+      .where(and(eq(merchandiseTransfers.id, id), eq(merchandiseTransfers.clientId, clientId)));
+    return (result.rowCount ?? 0) > 0;
+  }
+
+  /** Net transfer value for a local in a period: received − sent (positive = net inflow). */
+  async getTransferAdjustment(
+    clientId: number,
+    localId: number,
+    dateFrom?: string,
+    dateTo?: string,
+  ): Promise<number> {
+    const baseConds = [
+      eq(merchandiseTransfers.clientId, clientId),
+      eq(merchandiseTransfers.status, "active"),
+    ];
+    if (dateFrom) baseConds.push(sql`${merchandiseTransfers.transferDate} >= ${dateFrom}`);
+    if (dateTo) baseConds.push(sql`${merchandiseTransfers.transferDate} <= ${dateTo}`);
+
+    const received = await db.select({ totalValue: merchandiseTransfers.totalValue })
+      .from(merchandiseTransfers)
+      .where(and(...baseConds, eq(merchandiseTransfers.toLocalId, localId)));
+
+    const sent = await db.select({ totalValue: merchandiseTransfers.totalValue })
+      .from(merchandiseTransfers)
+      .where(and(...baseConds, eq(merchandiseTransfers.fromLocalId, localId)));
+
+    const sumReceived = received.reduce((acc, r) => acc + (parseFloat(String(r.totalValue)) || 0), 0);
+    const sumSent = sent.reduce((acc, r) => acc + (parseFloat(String(r.totalValue)) || 0), 0);
+
+    return sumReceived - sumSent;
   }
 }
 

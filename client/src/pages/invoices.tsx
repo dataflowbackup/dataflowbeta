@@ -13,7 +13,7 @@ import { DateRangePicker } from "@/components/date-range-picker";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { formatCurrency, formatDate, formatCuit } from "@/lib/formatters";
-import { 
+import {
   FileText,
   Plus,
   Eye,
@@ -23,6 +23,8 @@ import {
   Clock,
   DollarSign,
   Download,
+  ArrowRight,
+  MinusCircle,
 } from "lucide-react";
 import type { Invoice, Supplier, Local } from "@shared/schema";
 import { formatInvoiceVoucherDisplay } from "@shared/invoiceDisplay";
@@ -377,6 +379,22 @@ export default function InvoicesPage() {
             >
               <Download className="h-4 w-4 mr-2" />
               Exportar
+            </Button>
+            <Button
+              variant="outline"
+              onClick={() => navigate("/facturas/traslados")}
+              data-testid="button-merchandise-transfers"
+            >
+              <ArrowRight className="h-4 w-4 mr-2" />
+              Traslados
+            </Button>
+            <Button
+              variant="outline"
+              onClick={() => navigate("/facturas/nota-credito/nueva")}
+              data-testid="button-new-credit-note"
+            >
+              <MinusCircle className="h-4 w-4 mr-2" />
+              Nota de Crédito
             </Button>
             <Button onClick={() => navigate("/facturas/nueva")} data-testid="button-new-invoice">
               <Plus className="h-4 w-4 mr-2" />
