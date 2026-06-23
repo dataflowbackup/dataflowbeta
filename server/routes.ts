@@ -1354,9 +1354,11 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const thisMonth = today.getMonth();
       const thisYear = today.getFullYear();
       
+      const isNCInv = (i: any) => String(i.invoiceType ?? "").startsWith("NC-");
       const total = invoices.length;
-      const pending = invoices.filter(i => !i.paid && parseFloat(String(i.balance) || "0") > 0).length;
+      const pending = invoices.filter(i => !isNCInv(i) && !i.paid && parseFloat(String(i.balance) || "0") > 0).length;
       const overdue = invoices.filter(i => {
+        if (isNCInv(i)) return false;
         if (i.paid) return false;
         if (!i.dueDate) return false;
         return new Date(i.dueDate) < today;
@@ -1366,7 +1368,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
           const d = new Date(i.invoiceDate);
           return d.getMonth() === thisMonth && d.getFullYear() === thisYear;
         })
-        .reduce((sum, i) => sum + parseFloat(String(i.total) || "0"), 0);
+        .reduce((sum, i) => sum + (isNCInv(i) ? -1 : 1) * parseFloat(String(i.total) || "0"), 0);
       
       res.json({ total, pending, overdue, thisMonth: thisMonthTotal });
     } catch (e: any) {
@@ -1607,15 +1609,17 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       }
       
       const today = new Date();
+      const isNC = (i: any) => String(i.invoiceType ?? "").startsWith("NC-");
       const accounts = suppliersList.map(s => {
         let supplierInvoices = allInvoices.filter(i => i.supplierId === s.id && i.status === 'active');
         if (localId) {
           supplierInvoices = supplierInvoices.filter(i => i.localId === localId);
         }
-        
-        const totalInvoiced = supplierInvoices.reduce((sum, i) => sum + parseFloat(String(i.total) || "0"), 0);
-        const totalDebt = supplierInvoices.reduce((sum, i) => sum + parseFloat(String(i.balance) || "0"), 0);
+
+        const totalInvoiced = supplierInvoices.reduce((sum, i) => sum + (isNC(i) ? -1 : 1) * parseFloat(String(i.total) || "0"), 0);
+        const totalDebt = supplierInvoices.reduce((sum, i) => sum + (isNC(i) ? -1 : 1) * parseFloat(String(i.balance) || "0"), 0);
         const overdueInvoices = supplierInvoices.filter(i => {
+          if (isNC(i)) return false;
           if (parseFloat(String(i.balance) || "0") <= 0) return false;
           if (!i.dueDate) return false;
           return new Date(i.dueDate) < today;
@@ -1673,17 +1677,19 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const today = new Date();
       
       const filtered = rubroId ? suppliersList.filter(s => s.rubroId === rubroId) : suppliersList;
-      
+      const isNCExp = (i: any) => String(i.invoiceType ?? "").startsWith("NC-");
+
       const exportData: any[] = [];
       filtered.forEach(s => {
         let supplierInvoices = allInvoices.filter(i => i.supplierId === s.id && i.status === 'active');
         if (localId) supplierInvoices = supplierInvoices.filter(i => i.localId === localId);
         let supplierPayments = allPayments.filter(p => p.supplierId === s.id);
         if (localId) supplierPayments = supplierPayments.filter(p => p.localId === localId);
-        
-        const totalDebt = supplierInvoices.reduce((sum, i) => sum + parseFloat(String(i.balance) || "0"), 0);
+
+        const totalDebt = supplierInvoices.reduce((sum, i) => sum + (isNCExp(i) ? -1 : 1) * parseFloat(String(i.balance) || "0"), 0);
         const totalPaid = supplierPayments.reduce((sum, p) => sum + parseFloat(String(p.amount) || "0"), 0);
         const overdueDebt = supplierInvoices.filter(i => {
+          if (isNCExp(i)) return false;
           if (parseFloat(String(i.balance) || "0") <= 0) return false;
           return i.dueDate && new Date(i.dueDate) < today;
         }).reduce((sum, i) => sum + parseFloat(String(i.balance) || "0"), 0);
