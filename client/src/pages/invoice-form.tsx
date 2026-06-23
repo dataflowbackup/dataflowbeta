@@ -47,6 +47,8 @@ import type { Supplier, Local, Supply, Tax, Rubro, SubRubro, UnitOfMeasure } fro
 import { computeInvoiceTaxes, isInternalTaxType } from "@shared/invoiceTaxComputation";
 import { formatInvoiceVoucherDisplay } from "@shared/invoiceDisplay";
 import { cn } from "@/lib/utils";
+import { QuickCreateSupplierDialog } from "@/components/quick-create-supplier-dialog";
+import { QuickCreateSupplyDialog } from "@/components/quick-create-supply-dialog";
 
 interface SupplyWithUnit extends Supply {
   rubro?: Rubro | null;
@@ -176,6 +178,8 @@ export default function InvoiceFormPage() {
   const [confirmedItems, setConfirmedItems] = useState<Set<number>>(new Set());
   const [openSupplyPickerIndex, setOpenSupplyPickerIndex] = useState<number | null>(null);
   const [addTaxComboKey, setAddTaxComboKey] = useState(0);
+  const [showCreateSupplier, setShowCreateSupplier] = useState(false);
+  const [createSupplyForIndex, setCreateSupplyForIndex] = useState<number | null>(null);
   // Corrección de factura: editar una factura existente (reemplaza la vieja por una nueva) con clave.
   const [isCorrecting, setIsCorrecting] = useState(false);
   const [showCorrectCodeDialog, setShowCorrectCodeDialog] = useState(false);
@@ -393,7 +397,10 @@ export default function InvoiceFormPage() {
   );
 
   const supplierComboOptions = useMemo(
-    () => suppliers.filter((s) => s.active !== false).map((s) => ({ value: String(s.id), label: s.tradeName })),
+    () => [
+      { value: "__new__", label: "+ Crear nuevo proveedor" },
+      ...suppliers.filter((s) => s.active !== false).map((s) => ({ value: String(s.id), label: s.tradeName })),
+    ],
     [suppliers],
   );
 
@@ -808,7 +815,10 @@ export default function InvoiceFormPage() {
                             <DataEntryCombobox
                               options={supplierComboOptions}
                               value={field.value ? String(field.value) : ""}
-                              onValueChange={(v) => field.onChange(parseInt(v, 10))}
+                              onValueChange={(v) => {
+                                if (v === "__new__") { setShowCreateSupplier(true); return; }
+                                field.onChange(parseInt(v, 10));
+                              }}
                               placeholder="Seleccionar proveedor"
                               searchPlaceholder="Buscar proveedor…"
                               data-testid="select-supplier"
@@ -1144,6 +1154,19 @@ export default function InvoiceFormPage() {
                                     <CommandInput placeholder="Buscar insumo..." />
                                     <CommandList>
                                       <CommandEmpty>Sin resultados</CommandEmpty>
+                                      <CommandGroup>
+                                        <CommandItem
+                                          value="__new__ crear nuevo insumo"
+                                          onSelect={() => {
+                                            setOpenSupplyPickerIndex(null);
+                                            setCreateSupplyForIndex(index);
+                                          }}
+                                          className="text-primary font-medium"
+                                        >
+                                          <Plus className="mr-2 h-4 w-4 shrink-0" />
+                                          Crear nuevo insumo
+                                        </CommandItem>
+                                      </CommandGroup>
                                       <CommandGroup>
                                         {supplierFilteredSupplies.map((supply) => (
                                           <CommandItem
@@ -1616,6 +1639,27 @@ export default function InvoiceFormPage() {
         onConfirm={() => {
           if (pendingCorrection) correctMutation.mutate(pendingCorrection);
           setShowCorrectCodeDialog(false);
+        }}
+      />
+
+      <QuickCreateSupplierDialog
+        open={showCreateSupplier}
+        onOpenChange={setShowCreateSupplier}
+        onCreated={(supplier) => {
+          queryClient.invalidateQueries({ queryKey: ["/api/suppliers"] });
+          form.setValue("supplierId", supplier.id, { shouldValidate: true });
+        }}
+      />
+
+      <QuickCreateSupplyDialog
+        open={createSupplyForIndex !== null}
+        onOpenChange={(o) => { if (!o) setCreateSupplyForIndex(null); }}
+        onCreated={(supply) => {
+          if (createSupplyForIndex !== null) {
+            queryClient.invalidateQueries({ queryKey: ["/api/supplies"] });
+            handleSupplyChange(createSupplyForIndex, supply.id);
+          }
+          setCreateSupplyForIndex(null);
         }}
       />
     </div>

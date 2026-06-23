@@ -41,6 +41,8 @@ import type { Supplier, Local, Supply, Tax, Rubro, Invoice } from "@shared/schem
 import { computeInvoiceTaxes, isInternalTaxType } from "@shared/invoiceTaxComputation";
 import { formatInvoiceVoucherDisplay } from "@shared/invoiceDisplay";
 import { cn } from "@/lib/utils";
+import { QuickCreateSupplierDialog } from "@/components/quick-create-supplier-dialog";
+import { QuickCreateSupplyDialog } from "@/components/quick-create-supply-dialog";
 
 interface SupplyWithDetails extends Supply {
   rubro?: Rubro | null;
@@ -101,6 +103,8 @@ export default function CreditNoteFormPage() {
   const [confirmedItems, setConfirmedItems] = useState<Set<number>>(new Set());
   const [addTaxComboKey, setAddTaxComboKey] = useState(0);
   const [openLinkedInvoice, setOpenLinkedInvoice] = useState(false);
+  const [showCreateSupplier, setShowCreateSupplier] = useState(false);
+  const [createSupplyForIndex, setCreateSupplyForIndex] = useState<number | null>(null);
 
   const { data: suppliers = [] } = useQuery<Supplier[]>({ queryKey: ["/api/suppliers"] });
   const { data: locals = [] } = useQuery<Local[]>({ queryKey: ["/api/locals"] });
@@ -300,9 +304,16 @@ export default function CreditNoteFormPage() {
                         <FormLabel>Proveedor *</FormLabel>
                         <FormControl>
                           <DataEntryCombobox
-                            options={suppliers.filter((s) => s.active !== false).map((s) => ({ value: String(s.id), label: s.tradeName }))}
+                            options={[
+                              { value: "__new__", label: "+ Crear nuevo proveedor" },
+                              ...suppliers.filter((s) => s.active !== false).map((s) => ({ value: String(s.id), label: s.tradeName })),
+                            ]}
                             value={field.value ? String(field.value) : ""}
-                            onValueChange={(v) => { field.onChange(parseInt(v, 10)); form.setValue("linkedInvoiceId", undefined); }}
+                            onValueChange={(v) => {
+                              if (v === "__new__") { setShowCreateSupplier(true); return; }
+                              field.onChange(parseInt(v, 10));
+                              form.setValue("linkedInvoiceId", undefined);
+                            }}
                             placeholder="Seleccionar proveedor"
                             searchPlaceholder="Buscar proveedor…"
                           />
@@ -529,6 +540,16 @@ export default function CreditNoteFormPage() {
                                     <CommandList>
                                       <CommandEmpty>Sin resultados</CommandEmpty>
                                       <CommandGroup>
+                                        <CommandItem
+                                          value="__new__ crear nuevo insumo"
+                                          onSelect={() => { setOpenSupplyPickerIndex(null); setCreateSupplyForIndex(index); }}
+                                          className="text-primary font-medium"
+                                        >
+                                          <Plus className="mr-2 h-4 w-4 shrink-0" />
+                                          Crear nuevo insumo
+                                        </CommandItem>
+                                      </CommandGroup>
+                                      <CommandGroup>
                                         {supplies.filter((s) => s.active).map((supply) => (
                                           <CommandItem
                                             key={supply.id}
@@ -715,6 +736,28 @@ export default function CreditNoteFormPage() {
           </div>
         </form>
       </Form>
+
+      <QuickCreateSupplierDialog
+        open={showCreateSupplier}
+        onOpenChange={setShowCreateSupplier}
+        onCreated={(supplier) => {
+          queryClient.invalidateQueries({ queryKey: ["/api/suppliers"] });
+          form.setValue("supplierId", supplier.id, { shouldValidate: true });
+          form.setValue("linkedInvoiceId", undefined);
+        }}
+      />
+
+      <QuickCreateSupplyDialog
+        open={createSupplyForIndex !== null}
+        onOpenChange={(o) => { if (!o) setCreateSupplyForIndex(null); }}
+        onCreated={(supply) => {
+          if (createSupplyForIndex !== null) {
+            queryClient.invalidateQueries({ queryKey: ["/api/supplies"] });
+            handleSupplyChange(createSupplyForIndex, supply.id);
+          }
+          setCreateSupplyForIndex(null);
+        }}
+      />
     </div>
   );
 }
