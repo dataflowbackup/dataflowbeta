@@ -9,7 +9,7 @@ import { DataEntryCombobox } from "@/components/data-entry-combobox";
 import { DateRangePicker } from "@/components/date-range-picker";
 import { Skeleton } from "@/components/ui/skeleton";
 import { formatCurrency } from "@/lib/formatters";
-import { ChevronRight, ChevronDown, ShoppingCart, Percent, DollarSign } from "lucide-react";
+import { ChevronRight, ChevronDown, ShoppingCart, Percent, DollarSign, ArrowRight } from "lucide-react";
 import type { Local } from "@shared/schema";
 
 interface CmcSubRubro {
@@ -23,6 +23,7 @@ interface CmcRubro extends CmcSubRubro {
 }
 interface CmcReport {
   total: number;
+  transferAdj?: number;
   salesGross: number;
   salesNet: number;
   pct: number | null;
@@ -135,7 +136,12 @@ export default function CmcPage() {
       <div className="grid gap-4 md:grid-cols-3">
         <Card>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">CMC Total (sin IVA)</CardTitle>
+            <CardTitle className="text-sm font-medium">
+              CMC Total (sin IVA)
+              {data?.transferAdj != null && data.transferAdj !== 0 && (
+                <span className="ml-1 text-xs font-normal text-muted-foreground">+ aj. traslados</span>
+              )}
+            </CardTitle>
             <ShoppingCart className="h-4 w-4 text-muted-foreground" />
           </CardHeader>
           <CardContent>
@@ -167,7 +173,7 @@ export default function CmcPage() {
         <CardContent>
           {isLoading ? (
             <div className="space-y-2">{[1, 2, 3, 4].map((i) => <Skeleton key={i} className="h-10 w-full" />)}</div>
-          ) : !data || data.rubros.length === 0 ? (
+          ) : !data || (data.rubros.length === 0 && !data.transferAdj) ? (
             <p className="py-6 text-center text-muted-foreground">
               No hay compras en el período seleccionado.
             </p>
@@ -195,6 +201,17 @@ export default function CmcPage() {
                   </div>
                 );
               })}
+              {data.transferAdj != null && data.transferAdj !== 0 && (
+                <div className="grid grid-cols-[1fr_auto] items-center gap-2 border-t pt-2 mt-1 text-sm font-semibold">
+                  <span className="inline-flex items-center gap-1.5 text-muted-foreground">
+                    <ArrowRight className="h-4 w-4" />
+                    Ajuste por traslados de mercadería
+                  </span>
+                  <span className={`font-mono text-right ${data.transferAdj >= 0 ? "text-green-600 dark:text-green-400" : "text-red-500"}`}>
+                    {data.transferAdj >= 0 ? "+" : ""}{formatCurrency(data.transferAdj)}
+                  </span>
+                </div>
+              )}
             </div>
           )}
         </CardContent>

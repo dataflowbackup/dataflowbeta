@@ -3277,7 +3277,16 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
           : undefined;
       const salesSource = req.query.salesSource === "datalive" ? "datalive" : "extractos";
       const data = await storage.getCmcReport(clientId, { dateFrom, dateTo, localIds, salesSource });
-      res.json(data);
+
+      // Ajuste por traslados: solo cuando se filtra por un único local.
+      let transferAdj = 0;
+      if (localIds && localIds.length === 1) {
+        transferAdj = await storage.getTransferAdjustment(clientId, localIds[0], dateFrom, dateTo);
+      }
+      const totalAdjusted = data.total + transferAdj;
+      const pctAdjusted = data.salesNet > 0 ? (totalAdjusted / data.salesNet) * 100 : null;
+
+      res.json({ ...data, total: totalAdjusted, transferAdj, pct: pctAdjusted });
     } catch (e: any) {
       res.status(500).json({ message: e.message });
     }

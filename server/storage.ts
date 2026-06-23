@@ -3263,7 +3263,10 @@ export class DatabaseStorage implements IStorage {
   ): Promise<number> {
     const localIds = opts.localId != null ? [opts.localId] : undefined;
     const cmc = await this.getCmcReport(clientId, { dateFrom: opts.dateFrom, dateTo: opts.dateTo, localIds });
-    return cmc.total;
+    const transferAdj = opts.localId != null
+      ? await this.getTransferAdjustment(clientId, opts.localId, opts.dateFrom, opts.dateTo)
+      : 0;
+    return cmc.total + transferAdj;
   }
 
   async saveCmvCalculation(
