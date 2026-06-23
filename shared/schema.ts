@@ -1215,6 +1215,30 @@ export type InsertDataliveVenta = z.infer<typeof insertDataliveVentaSchema>;
 export type DataliveVenta = typeof dataliveVentas.$inferSelect;
 
 // ==========================================
+// FUDO VENTAS (Ventas brutas importadas de FUDO — tabla paralela y dedicada)
+// Una fila por (empresa, local, día). Idempotente por ese trío.
+// ==========================================
+export const fudoVentas = pgTable(
+  "fudo_ventas",
+  {
+    id: serial("id").primaryKey(),
+    clientId: integer("client_id").notNull().references(() => clients.id, { onDelete: "cascade" }),
+    localId: integer("local_id").notNull().references(() => locals.id),
+    fecha: date("fecha").notNull(),
+    ventaTotal: decimal("venta_total", { precision: 14, scale: 2 }).default("0"),
+    sourceFile: varchar("source_file", { length: 255 }),
+    createdBy: varchar("created_by").references(() => users.id),
+    createdAt: timestamp("created_at").defaultNow(),
+    updatedAt: timestamp("updated_at").defaultNow(),
+  },
+  (table) => [uniqueIndex("fudo_ventas_client_local_fecha_uq").on(table.clientId, table.localId, table.fecha)],
+);
+
+export const insertFudoVentaSchema = createInsertSchema(fudoVentas).omit({ id: true, createdAt: true, updatedAt: true });
+export type InsertFudoVenta = z.infer<typeof insertFudoVentaSchema>;
+export type FudoVenta = typeof fudoVentas.$inferSelect;
+
+// ==========================================
 // OPERATIONAL AUDITS (Auditorías Operativas)
 // ==========================================
 export const operationalAudits = pgTable("operational_audits", {

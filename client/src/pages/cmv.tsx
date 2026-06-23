@@ -139,6 +139,7 @@ function Dashboard({ records, locals }: { records: CmvSaved[]; locals: Local[] }
     { value: "all", label: "Todas las fuentes" },
     { value: "extractos", label: "Extractos" },
     { value: "datalive", label: "Datalive" },
+    { value: "fudo", label: "FUDO" },
   ];
 
   const hasFilters = filterFrom || filterTo || filterSource !== "all" || filterLocals.length > 0;
@@ -343,6 +344,7 @@ export default function CmvPage() {
   const sourceOptions = [
     { value: "extractos", label: "Extractos" },
     { value: "datalive", label: "Datalive" },
+    { value: "fudo", label: "FUDO" },
   ];
   const ivaOptions = [
     { value: "sin", label: "Sin IVA (÷1,21)" },
@@ -480,7 +482,7 @@ export default function CmvPage() {
               <DataEntryCombobox
                 options={sourceOptions}
                 value={salesSource}
-                onValueChange={(v) => setSalesSource(v as "extractos" | "datalive")}
+                onValueChange={(v) => setSalesSource(v as "extractos" | "datalive" | "fudo")}
                 placeholder="Fuente"
                 searchPlaceholder="Buscar…"
               />

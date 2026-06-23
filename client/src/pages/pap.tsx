@@ -59,6 +59,7 @@ export default function PapPage() {
   const sourceOptions = [
     { value: "extractos", label: "Extractos" },
     { value: "datalive", label: "Datalive" },
+    { value: "fudo", label: "FUDO" },
   ];
 
   const { data, isLoading } = useQuery<PapReport>({

@@ -3275,7 +3275,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         typeof localIdsRaw === "string" && localIdsRaw && localIdsRaw !== "all"
           ? localIdsRaw.split(",").map((s) => parseInt(s, 10)).filter((n) => Number.isFinite(n))
           : undefined;
-      const salesSource = req.query.salesSource === "datalive" ? "datalive" : "extractos";
+      const salesSource = req.query.salesSource === "datalive" ? "datalive" : req.query.salesSource === "fudo" ? "fudo" : "extractos";
       const data = await storage.getCmcReport(clientId, { dateFrom, dateTo, localIds, salesSource });
 
       // Ajuste por traslados: solo cuando se filtra por un único local.
@@ -3304,7 +3304,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
           : undefined;
       const localIds = parseIds(req.query.localIds ?? req.query.localId);
       const supplierIds = parseIds(req.query.supplierIds ?? req.query.supplierId);
-      const salesSource = req.query.salesSource === "datalive" ? "datalive" : "extractos";
+      const salesSource = req.query.salesSource === "datalive" ? "datalive" : req.query.salesSource === "fudo" ? "fudo" : "extractos";
       const data = await storage.getPapReport(clientId, { dateFrom, dateTo, localIds, supplierIds, salesSource });
       res.json(data);
     } catch (e: any) {
@@ -3401,7 +3401,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const localId = req.query.localId && req.query.localId !== "all" ? parseInt(req.query.localId as string, 10) : undefined;
       const dateFrom = typeof req.query.dateFrom === "string" && req.query.dateFrom ? req.query.dateFrom : undefined;
       const dateTo = typeof req.query.dateTo === "string" && req.query.dateTo ? req.query.dateTo : undefined;
-      const salesSource = req.query.salesSource === "datalive" ? "datalive" : "extractos";
+      const salesSource = req.query.salesSource === "datalive" ? "datalive" : req.query.salesSource === "fudo" ? "fudo" : "extractos";
       const ivaIncluded = req.query.ivaIncluded === "true";
       const data = await storage.computeCmv(clientId, { localId, stockInicialId, stockFinalId, dateFrom, dateTo, salesSource, ivaIncluded });
       res.json(data);
@@ -3431,7 +3431,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const localId = req.body?.localId && req.body.localId !== "all" ? parseInt(String(req.body.localId), 10) : undefined;
       const dateFrom = typeof req.body?.dateFrom === "string" && req.body.dateFrom ? req.body.dateFrom : undefined;
       const dateTo = typeof req.body?.dateTo === "string" && req.body.dateTo ? req.body.dateTo : undefined;
-      const salesSource = req.body?.salesSource === "datalive" ? "datalive" : "extractos";
+      const salesSource = req.body?.salesSource === "datalive" ? "datalive" : req.body?.salesSource === "fudo" ? "fudo" : "extractos";
       const ivaIncluded = req.body?.ivaIncluded === true;
       const saved = await storage.saveCmvCalculation(clientId, { localId, stockInicialId, stockFinalId, dateFrom, dateTo, salesSource, ivaIncluded, createdBy: actorId });
       res.json(saved);
@@ -3566,6 +3566,67 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const id = parseInt(req.params.id, 10);
       if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ message: "Id inválido" });
       const ok = await storage.deleteDataliveVenta(clientId, id);
+      if (!ok) return res.status(404).json({ message: "Venta no encontrada" });
+      res.json({ ok: true });
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
+  // Ventas FUDO — tabla paralela de ventas brutas. El parseo del Excel se hace en
+  // el browser (shared/fudoSalesParser); acá se persiste con idempotencia por (local, día).
+  app.get("/api/fudo-ventas", isAuthenticated, async (req, res) => {
+    try {
+      const clientId = await getClientId(req);
+      const localId = req.query.localId && req.query.localId !== "all" ? parseInt(req.query.localId as string, 10) : undefined;
+      res.json(await storage.listFudoVentas(clientId, localId));
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
+  app.post("/api/fudo-ventas/import", isAuthenticated, async (req, res) => {
+    try {
+      const clientId = await getClientId(req);
+      const userId = await getAuthenticatedUserId(req);
+      const bodySchema = z.object({
+        localId: z.coerce.number().int().positive(),
+        sourceFile: z.string().max(255).optional().nullable(),
+        replaceFechas: z.array(z.string()).optional(),
+        days: z
+          .array(
+            z.object({
+              fecha: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Fecha inválida"),
+              ventaTotal: z.coerce.number(),
+            }),
+          )
+          .min(1, "No hay días para importar"),
+      });
+      const parsed = bodySchema.safeParse(req.body);
+      if (!parsed.success) return res.status(400).json({ message: "Datos inválidos", errors: parsed.error.flatten() });
+
+      const locs = await storage.getLocals(clientId);
+      if (!locs.some((l) => l.id === parsed.data.localId)) {
+        return res.status(400).json({ message: "Local inválido para esta empresa." });
+      }
+
+      const result = await storage.importFudoVentas(clientId, parsed.data.localId, parsed.data.days, {
+        sourceFile: parsed.data.sourceFile ?? null,
+        createdBy: userId ?? null,
+        replaceFechas: parsed.data.replaceFechas ?? [],
+      });
+      res.json(result);
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
+  app.delete("/api/fudo-ventas/:id", isAuthenticated, async (req, res) => {
+    try {
+      const clientId = await getClientId(req);
+      const id = parseInt(req.params.id, 10);
+      if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ message: "Id inválido" });
+      const ok = await storage.deleteFudoVenta(clientId, id);
       if (!ok) return res.status(404).json({ message: "Venta no encontrada" });
       res.json({ ok: true });
     } catch (e: any) {

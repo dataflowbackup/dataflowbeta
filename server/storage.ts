@@ -50,6 +50,7 @@ import {
   breakevenFixedCosts,
   cmvCalculations,
   dataliveVentas,
+  fudoVentas,
   auditLog,
   operationalAudits,
   auditTemplates,
@@ -150,6 +151,7 @@ import {
   type BreakevenFixedCost,
   type CmvCalculation,
   type DataliveVenta,
+  type FudoVenta,
   type OperationalAudit,
   type InsertOperationalAudit,
   type AuditTemplate,
@@ -485,7 +487,7 @@ export interface IStorage {
   }): Promise<BreakevenAnalysis>;
 
   /** CMV = stock inicial + compras (CMC) − stock final; CMV% sobre venta (con o sin IVA según ivaIncluded). */
-  computeCmv(clientId: number, opts: { localId?: number; stockInicialId: number; stockFinalId: number; dateFrom?: string; dateTo?: string; salesSource?: "extractos" | "datalive"; ivaIncluded?: boolean }): Promise<{
+  computeCmv(clientId: number, opts: { localId?: number; stockInicialId: number; stockFinalId: number; dateFrom?: string; dateTo?: string; salesSource?: "extractos" | "datalive" | "fudo"; ivaIncluded?: boolean }): Promise<{
     stockInicial: number;
     stockInicialDate: string;
     stockFinal: number;
@@ -499,7 +501,7 @@ export interface IStorage {
   /** Total de compras (CMC sin IVA) para un período — usado para preview en vivo. */
   getCmcTotal(clientId: number, opts: { localId?: number; dateFrom?: string; dateTo?: string }): Promise<number>;
   /** Guarda un cálculo de CMV como registro (recalcula server-side para integridad). */
-  saveCmvCalculation(clientId: number, opts: { localId?: number; stockInicialId: number; stockFinalId: number; dateFrom?: string; dateTo?: string; salesSource?: "extractos" | "datalive"; ivaIncluded?: boolean; createdBy?: string | null }): Promise<CmvCalculation>;
+  saveCmvCalculation(clientId: number, opts: { localId?: number; stockInicialId: number; stockFinalId: number; dateFrom?: string; dateTo?: string; salesSource?: "extractos" | "datalive" | "fudo"; ivaIncluded?: boolean; createdBy?: string | null }): Promise<CmvCalculation>;
   listCmvCalculations(clientId: number): Promise<CmvCalculation[]>;
   deleteCmvCalculation(clientId: number, id: number): Promise<void>;
 
@@ -512,6 +514,16 @@ export interface IStorage {
     opts: { sourceFile?: string | null; createdBy?: string | null; replaceFechas?: string[] },
   ): Promise<{ insertados: number; omitidos: number; reemplazados: number }>;
   deleteDataliveVenta(clientId: number, id: number): Promise<boolean>;
+
+  // Ventas FUDO (tabla paralela)
+  listFudoVentas(clientId: number, localId?: number): Promise<FudoVenta[]>;
+  importFudoVentas(
+    clientId: number,
+    localId: number,
+    days: Array<{ fecha: string; ventaTotal: number }>,
+    opts: { sourceFile?: string | null; createdBy?: string | null; replaceFechas?: string[] },
+  ): Promise<{ insertados: number; omitidos: number; reemplazados: number }>;
+  deleteFudoVenta(clientId: number, id: number): Promise<boolean>;
 
   getPermissions(): Promise<Permission[]>;
   createPermission(permission: InsertPermission): Promise<Permission>;
@@ -2888,20 +2900,31 @@ export class DatabaseStorage implements IStorage {
     return rows.reduce((acc, r) => acc + (parseFloat(String(r.total)) || 0), 0);
   }
 
-  /** Venta bruta (con IVA) por período/local desde la fuente elegida: "extractos" (grupo Ventas) o "datalive". */
+  async getFudoSalesTotalByPeriod(
+    clientId: number,
+    opts: { dateFrom?: string; dateTo?: string; localIds?: number[] },
+  ): Promise<number> {
+    const conds = [eq(fudoVentas.clientId, clientId)];
+    if (opts.dateFrom) conds.push(sql`${fudoVentas.fecha} >= ${opts.dateFrom}`);
+    if (opts.dateTo) conds.push(sql`${fudoVentas.fecha} <= ${opts.dateTo}`);
+    if (opts.localIds && opts.localIds.length > 0) conds.push(inArray(fudoVentas.localId, opts.localIds));
+    const rows = await db.select({ total: fudoVentas.ventaTotal }).from(fudoVentas).where(and(...conds));
+    return rows.reduce((acc, r) => acc + (parseFloat(String(r.total)) || 0), 0);
+  }
+
   private async getSalesBySource(
     clientId: number,
     opts: { dateFrom?: string; dateTo?: string; localIds?: number[] },
-    source: "extractos" | "datalive",
+    source: "extractos" | "datalive" | "fudo",
   ): Promise<number> {
-    return source === "datalive"
-      ? this.getDataliveSalesTotalByPeriod(clientId, opts)
-      : this.getSalesTotalByPeriod(clientId, opts);
+    if (source === "datalive") return this.getDataliveSalesTotalByPeriod(clientId, opts);
+    if (source === "fudo") return this.getFudoSalesTotalByPeriod(clientId, opts);
+    return this.getSalesTotalByPeriod(clientId, opts);
   }
 
   async getCmcReport(
     clientId: number,
-    opts: { dateFrom?: string; dateTo?: string; localIds?: number[]; salesSource?: "extractos" | "datalive" },
+    opts: { dateFrom?: string; dateTo?: string; localIds?: number[]; salesSource?: "extractos" | "datalive" | "fudo" },
   ) {
     // 1) Facturas en alcance (activas, por fecha/local).
     const invConds = [eq(invoices.clientId, clientId), eq(invoices.status, "active")];
@@ -2997,7 +3020,7 @@ export class DatabaseStorage implements IStorage {
 
   async getPapReport(
     clientId: number,
-    opts: { dateFrom?: string; dateTo?: string; localIds?: number[]; supplierIds?: number[]; salesSource?: "extractos" | "datalive" },
+    opts: { dateFrom?: string; dateTo?: string; localIds?: number[]; supplierIds?: number[]; salesSource?: "extractos" | "datalive" | "fudo" },
   ) {
     const hasLocals = opts.localIds && opts.localIds.length > 0;
     const hasSuppliers = opts.supplierIds && opts.supplierIds.length > 0;
@@ -3217,7 +3240,7 @@ export class DatabaseStorage implements IStorage {
 
   async computeCmv(
     clientId: number,
-    opts: { localId?: number; stockInicialId: number; stockFinalId: number; dateFrom?: string; dateTo?: string; salesSource?: "extractos" | "datalive"; ivaIncluded?: boolean },
+    opts: { localId?: number; stockInicialId: number; stockFinalId: number; dateFrom?: string; dateTo?: string; salesSource?: "extractos" | "datalive" | "fudo"; ivaIncluded?: boolean },
   ) {
     const [ini] = await db.select().from(stockValuations)
       .where(and(eq(stockValuations.id, opts.stockInicialId), eq(stockValuations.clientId, clientId)));
@@ -3271,7 +3294,7 @@ export class DatabaseStorage implements IStorage {
 
   async saveCmvCalculation(
     clientId: number,
-    opts: { localId?: number; stockInicialId: number; stockFinalId: number; dateFrom?: string; dateTo?: string; salesSource?: "extractos" | "datalive"; ivaIncluded?: boolean; createdBy?: string | null },
+    opts: { localId?: number; stockInicialId: number; stockFinalId: number; dateFrom?: string; dateTo?: string; salesSource?: "extractos" | "datalive" | "fudo"; ivaIncluded?: boolean; createdBy?: string | null },
   ): Promise<CmvCalculation> {
     // Se recalcula server-side para que el registro sea íntegro (no se confía en el cliente).
     const r = await this.computeCmv(clientId, {
@@ -3384,6 +3407,64 @@ export class DatabaseStorage implements IStorage {
       .delete(dataliveVentas)
       .where(and(eq(dataliveVentas.clientId, clientId), eq(dataliveVentas.id, id)))
       .returning({ id: dataliveVentas.id });
+    return deleted.length > 0;
+  }
+
+  async listFudoVentas(clientId: number, localId?: number): Promise<FudoVenta[]> {
+    const conds = [eq(fudoVentas.clientId, clientId)];
+    if (localId != null) conds.push(eq(fudoVentas.localId, localId));
+    return db.select().from(fudoVentas).where(and(...conds)).orderBy(desc(fudoVentas.fecha));
+  }
+
+  async importFudoVentas(
+    clientId: number,
+    localId: number,
+    days: Array<{ fecha: string; ventaTotal: number }>,
+    opts: { sourceFile?: string | null; createdBy?: string | null; replaceFechas?: string[] },
+  ): Promise<{ insertados: number; omitidos: number; reemplazados: number }> {
+    const replace = new Set(opts.replaceFechas ?? []);
+    const existing = await db
+      .select({ fecha: fudoVentas.fecha })
+      .from(fudoVentas)
+      .where(and(eq(fudoVentas.clientId, clientId), eq(fudoVentas.localId, localId)));
+    const existingSet = new Set(existing.map((r) => String(r.fecha)));
+
+    let insertados = 0;
+    let omitidos = 0;
+    let reemplazados = 0;
+
+    for (const d of days) {
+      const values = {
+        clientId,
+        localId,
+        fecha: d.fecha,
+        ventaTotal: String(d.ventaTotal),
+        sourceFile: opts.sourceFile ?? null,
+        createdBy: opts.createdBy ?? null,
+      };
+      if (existingSet.has(d.fecha)) {
+        if (replace.has(d.fecha)) {
+          await db
+            .update(fudoVentas)
+            .set({ ventaTotal: values.ventaTotal, sourceFile: values.sourceFile, updatedAt: new Date() })
+            .where(and(eq(fudoVentas.clientId, clientId), eq(fudoVentas.localId, localId), eq(fudoVentas.fecha, d.fecha)));
+          reemplazados++;
+        } else {
+          omitidos++;
+        }
+      } else {
+        await db.insert(fudoVentas).values(values as any);
+        insertados++;
+      }
+    }
+    return { insertados, omitidos, reemplazados };
+  }
+
+  async deleteFudoVenta(clientId: number, id: number): Promise<boolean> {
+    const deleted = await db
+      .delete(fudoVentas)
+      .where(and(eq(fudoVentas.clientId, clientId), eq(fudoVentas.id, id)))
+      .returning({ id: fudoVentas.id });
     return deleted.length > 0;
   }
 

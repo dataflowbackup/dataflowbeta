@@ -129,6 +129,7 @@ const menuSections: MenuSection[] = [
       { title: "CMV", url: "/cmv", icon: Calculator, permission: "cmv.view" },
       { title: "Punto de Equilibrio", url: "/punto-equilibrio", icon: Target, permission: "breakeven.view" },
       { title: "Ventas Datalive", url: "/ventas-datalive", icon: Upload },
+      { title: "Ventas FUDO", url: "/ventas-fudo", icon: Upload },
       { title: "Dashboard", url: "/dashboard", icon: BarChart3 },
     ],
   },

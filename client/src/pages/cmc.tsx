@@ -56,6 +56,7 @@ export default function CmcPage() {
   const sourceOptions = [
     { value: "extractos", label: "Extractos" },
     { value: "datalive", label: "Datalive" },
+    { value: "fudo", label: "FUDO" },
   ];
 
   const url = useMemo(() => {
