@@ -1,5 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { useState, useMemo } from "react";
+import { useToast } from "@/hooks/use-toast";
 import { PageHeader } from "@/components/page-header";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -69,6 +70,7 @@ interface SpreadsheetData {
 }
 
 export default function BalancePage() {
+  const { toast } = useToast();
   const currentDate = new Date();
   const currentYear = currentDate.getFullYear();
   const currentMonth = currentDate.getMonth() + 1;
@@ -142,10 +144,23 @@ export default function BalancePage() {
   const totalGastosPercent = monthlyVentas > 0 ? (monthlyGastos / monthlyVentas) * 100 : 0;
   const utilidadPercent = monthlyVentas > 0 ? (monthlyUtilidad / monthlyVentas) * 100 : 0;
 
-  const handleExport = () => {
+  const handleExport = async () => {
     const localParam = selectedLocalId === "all" ? "all" : selectedLocalId;
     const url = `/api/balance-report/export?year=${selectedYear}&month=${selectedMonth}&localId=${localParam}&format=pdf`;
-    window.open(url, "_blank");
+    try {
+      const res = await fetch(url, { credentials: "include" });
+      if (!res.ok) throw new Error(await res.text());
+      const blob = await res.blob();
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = `balance_${selectedYear}_${String(selectedMonth).padStart(2, "0")}.pdf`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(a.href);
+    } catch (e: any) {
+      toast({ title: "No se pudo exportar el PDF", description: String(e?.message ?? e), variant: "destructive" });
+    }
   };
 
   const renderMonthlyView = () => {

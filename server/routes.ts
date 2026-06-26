@@ -3057,7 +3057,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.post("/api/transactions/batch-categorize", isAuthenticated, async (req, res) => {
     try {
       const clientId = await getClientId(req);
-      const { transactionIds, categoryId, localId, dateFrom, dateTo, description, description2 } = req.body;
+      const { transactionIds, categoryId, localId, dateFrom, dateTo, description, description2, descriptions, bankSource } = req.body;
 
       if (!categoryId && categoryId !== null) {
         return res.status(400).json({ message: "Se requiere categoryId" });
@@ -3075,28 +3075,35 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         return txDate >= from && txDate <= to;
       };
 
-      const descFilter =
-        typeof description === "string" && description.trim().length > 0 ? description.trim() : null;
+      // Soporte para array de descripciones (multi-select) o descripción única (legacy)
+      const descFilters: string[] | null =
+        Array.isArray(descriptions) && descriptions.length > 0
+          ? descriptions.map((d: any) => String(d).trim()).filter(Boolean)
+          : typeof description === "string" && description.trim().length > 0
+          ? [description.trim()]
+          : null;
+
       const desc2Filter =
         typeof description2 === "string" && description2.trim().length > 0 ? description2.trim() : null;
-      
+
       let idsToUpdate: number[] = [];
-      
+
       if (transactionIds && Array.isArray(transactionIds) && transactionIds.length > 0) {
         const requestedIds = transactionIds.map((id: any) => parseInt(id));
         idsToUpdate = requestedIds.filter(id => tenantTxIds.has(id));
-        
+
         if (idsToUpdate.length !== requestedIds.length) {
-          return res.status(403).json({ 
-            message: "Algunas transacciones no pertenecen a este cliente" 
+          return res.status(403).json({
+            message: "Algunas transacciones no pertenecen a este cliente"
           });
         }
-      } else if (descFilter !== null || desc2Filter !== null) {
+      } else if (descFilters !== null || desc2Filter !== null) {
         idsToUpdate = allTransactions
           .filter(t => {
             if (t.categoryId) return false;
             if (!matchesDateRange(t)) return false;
-            if (descFilter !== null && t.description !== descFilter) return false;
+            if (bankSource && t.bankSource !== bankSource) return false;
+            if (descFilters !== null && !descFilters.includes(t.description ?? "")) return false;
             if (desc2Filter !== null && t.description2 !== desc2Filter) return false;
             return true;
           })
@@ -3105,10 +3112,11 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         const from = new Date(dateFrom);
         const to = new Date(dateTo);
         to.setHours(23, 59, 59, 999);
-        
+
         idsToUpdate = allTransactions
           .filter(t => {
             const txDate = new Date(t.transactionDate);
+            if (bankSource && t.bankSource !== bankSource) return false;
             return txDate >= from && txDate <= to && !t.categoryId;
           })
           .map(t => t.id);

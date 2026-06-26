@@ -44,10 +44,10 @@ import { apiRequest, queryClient } from "@/lib/queryClient";
 import { formatCurrency, formatDate } from "@/lib/formatters";
 import { cn } from "@/lib/utils";
 import { GenericBankMappingDialog } from "@/components/generic-bank-mapping-dialog";
-import { 
-  Upload, 
-  TrendingUp, 
-  TrendingDown, 
+import {
+  Upload,
+  TrendingUp,
+  TrendingDown,
   DollarSign,
   Receipt,
   ArrowUpRight,
@@ -65,7 +65,10 @@ import {
   ChevronsUpDown,
   Check,
   Filter,
+  Download,
 } from "lucide-react";
+import * as XLSX from "xlsx";
+import { toISODate } from "@/lib/dateHelpers";
 import type {
   Transaction,
   BankAccount,
@@ -221,64 +224,84 @@ function FilterSearchableSelect({
 
 function BatchCategoryCombobox({
   categories,
+  financialGroups = [],
   value,
   onChange,
   placeholder = "Seleccionar categoria...",
 }: {
   categories: TransactionCategory[];
+  financialGroups?: FinancialGroup[];
   value: string;
   onChange: (id: string) => void;
   placeholder?: string;
 }) {
+  const [groupId, setGroupId] = useState("all");
   const [open, setOpen] = useState(false);
+  const [gOpen, setGOpen] = useState(false);
+
   const active = categories.filter((c) => c.active !== false);
+  const visibleCats = groupId === "all" ? active : active.filter((c) => String((c as any).financialGroupId) === groupId);
   const selected = value ? active.find((c) => String(c.id) === value) : undefined;
+  const selectedGroup = groupId !== "all" ? financialGroups.find((g) => String(g.id) === groupId) : null;
+  const groupOptions = [...financialGroups].filter((g) => g.active !== false).sort((a, b) => String(a.name).localeCompare(String(b.name), "es"));
+
   return (
-    <Popover open={open} onOpenChange={setOpen} modal={true}>
-      <PopoverTrigger asChild>
-        <Button
-          type="button"
-          variant="outline"
-          role="combobox"
-          aria-expanded={open}
-          className="w-full justify-between font-normal min-h-9"
-          data-testid="select-batch-category"
-        >
-          <span className="truncate text-left">{selected ? selected.name : placeholder}</span>
-          <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
-        </Button>
-      </PopoverTrigger>
-      <PopoverContent className="w-[min(100vw-2rem,24rem)] p-0 z-[100]" align="start">
-        <Command>
-          <CommandInput placeholder="Buscar categoria..." />
-          <CommandList className="max-h-[260px]">
-            <CommandEmpty>Sin resultados.</CommandEmpty>
-            <CommandGroup>
-              {active.map((cat) => (
-                <CommandItem
-                  key={cat.id}
-                  value={`${cat.name} ${cat.id}`}
-                  onSelect={() => {
-                    onChange(String(cat.id));
-                    setOpen(false);
-                  }}
-                >
-                  <Check
-                    className={cn("mr-2 h-4 w-4 shrink-0", value === String(cat.id) ? "opacity-100" : "opacity-0")}
-                  />
-                  <div className="flex items-center gap-2 min-w-0">
-                    <Badge variant="outline" className="text-xs shrink-0">
-                      {cat.type === "income" ? "I" : cat.type === "expense" ? "E" : "B"}
-                    </Badge>
+    <div className="space-y-2">
+      {financialGroups.length > 0 && (
+        <Popover open={gOpen} onOpenChange={setGOpen} modal={true}>
+          <PopoverTrigger asChild>
+            <Button type="button" variant="outline" role="combobox" className="w-full justify-between font-normal min-h-9 text-xs">
+              <span className="truncate text-left text-muted-foreground">Grupo: {selectedGroup?.name ?? "Todos"}</span>
+              <ChevronsUpDown className="ml-2 h-3.5 w-3.5 shrink-0 opacity-50" />
+            </Button>
+          </PopoverTrigger>
+          <PopoverContent className="w-[min(100vw-2rem,24rem)] p-0 z-[200]" align="start">
+            <Command>
+              <CommandInput placeholder="Buscar grupo…" />
+              <CommandList className="max-h-[220px]">
+                <CommandEmpty>Sin resultados.</CommandEmpty>
+                <CommandGroup>
+                  <CommandItem value="__all__ Todos" onSelect={() => { setGroupId("all"); setGOpen(false); }}>
+                    <Check className={cn("mr-2 h-4 w-4 shrink-0", groupId === "all" ? "opacity-100" : "opacity-0")} />
+                    Todos los grupos
+                  </CommandItem>
+                  {groupOptions.map((g) => (
+                    <CommandItem key={g.id} value={`${g.name} ${g.id}`} onSelect={() => { setGroupId(String(g.id)); setGOpen(false); }}>
+                      <Check className={cn("mr-2 h-4 w-4 shrink-0", groupId === String(g.id) ? "opacity-100" : "opacity-0")} />
+                      {g.name}
+                    </CommandItem>
+                  ))}
+                </CommandGroup>
+              </CommandList>
+            </Command>
+          </PopoverContent>
+        </Popover>
+      )}
+      <Popover open={open} onOpenChange={setOpen} modal={true}>
+        <PopoverTrigger asChild>
+          <Button type="button" variant="outline" role="combobox" aria-expanded={open} className="w-full justify-between font-normal min-h-9" data-testid="select-batch-category">
+            <span className="truncate text-left">{selected ? selected.name : placeholder}</span>
+            <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+          </Button>
+        </PopoverTrigger>
+        <PopoverContent className="w-[min(100vw-2rem,24rem)] p-0 z-[100]" align="start">
+          <Command>
+            <CommandInput placeholder="Buscar categoria..." />
+            <CommandList className="max-h-[260px]">
+              <CommandEmpty>Sin resultados.</CommandEmpty>
+              <CommandGroup>
+                {visibleCats.map((cat) => (
+                  <CommandItem key={cat.id} value={`${cat.name} ${cat.id}`} onSelect={() => { onChange(String(cat.id)); setOpen(false); }}>
+                    <Check className={cn("mr-2 h-4 w-4 shrink-0", value === String(cat.id) ? "opacity-100" : "opacity-0")} />
                     <span className="truncate">{cat.name}</span>
-                  </div>
-                </CommandItem>
-              ))}
-            </CommandGroup>
-          </CommandList>
-        </Command>
-      </PopoverContent>
-    </Popover>
+                  </CommandItem>
+                ))}
+              </CommandGroup>
+            </CommandList>
+          </Command>
+        </PopoverContent>
+      </Popover>
+    </div>
   );
 }
 
@@ -376,9 +399,10 @@ export default function BankStatementsPage() {
   const [isBranchMappingOpen, setIsBranchMappingOpen] = useState(false);
   const [unmappedBranches, setUnmappedBranches] = useState<string[]>([]);
   const [branchMappings, setBranchMappings] = useState<BranchMapping[]>([]);
-  const [selectedDescription, setSelectedDescription] = useState<string>("");
+  const [selectedDescriptions, setSelectedDescriptions] = useState<Set<string>>(new Set());
   const [selectedDescription2, setSelectedDescription2] = useState<string>("");
   const [selectedLocalId, setSelectedLocalId] = useState<string>("");
+  const [batchFilterLocalId, setBatchFilterLocalId] = useState<string>("");
   const [batchLocalId, setBatchLocalId] = useState<string>("");
   const [batchDescSearch, setBatchDescSearch] = useState("");
   const [batchDesc2Search, setBatchDesc2Search] = useState("");
@@ -900,7 +924,7 @@ export default function BankStatementsPage() {
       setSelectedTransactionIds(new Set());
       setBatchDateFrom("");
       setBatchDateTo("");
-      setSelectedDescription("");
+      setSelectedDescriptions(new Set());
       setSelectedDescription2("");
     },
     onError: (error: Error) => {
@@ -1049,23 +1073,23 @@ export default function BankStatementsPage() {
     const hasSelection = selectedTransactionIds.size > 0;
     const hasDateRange = batchDateFrom && batchDateTo;
     const hasPartialDate = (batchDateFrom && !batchDateTo) || (!batchDateFrom && batchDateTo);
-    const hasDescription = !!selectedDescription.trim();
+    const hasDescriptions = selectedDescriptions.size > 0;
     const hasDescription2 = !!selectedDescription2.trim();
-    
+
     if (hasPartialDate) {
       toast({ title: "Complete ambas fechas del periodo", variant: "destructive" });
       return;
     }
-    
-    if (!hasSelection && !hasDateRange && !hasDescription && !hasDescription2) {
+
+    if (!hasSelection && !hasDateRange && !hasDescriptions && !hasDescription2) {
       toast({ title: "Seleccione un filtro: periodo, descripcion o transacciones", variant: "destructive" });
       return;
     }
-    
+
     const localId = batchLocalId && batchLocalId !== "none" ? parseInt(batchLocalId) : null;
-    
+
     batchCategorizeMutation.mutate({
-      ...(hasDescription ? { description: selectedDescription } : {}),
+      ...(hasDescriptions ? { descriptions: Array.from(selectedDescriptions) } : {}),
       ...(hasDescription2 ? { description2: selectedDescription2 } : {}),
       ...(hasSelection ? { transactionIds: Array.from(selectedTransactionIds) } : {}),
       categoryId: parseInt(batchCategoryId),
@@ -1083,6 +1107,10 @@ export default function BankStatementsPage() {
         return d >= batchDateFrom && d <= batchDateTo;
       });
     }
+    if (batchFilterLocalId) {
+      const lid = parseInt(batchFilterLocalId, 10);
+      uncategorized = uncategorized.filter(t => t.localId === lid);
+    }
     const groups = new Map<string, number>();
     for (const t of uncategorized) {
       const desc = t.description || "";
@@ -1091,7 +1119,7 @@ export default function BankStatementsPage() {
     return Array.from(groups.entries())
       .map(([description, count]) => ({ description, count }))
       .sort((a, b) => b.count - a.count);
-  }, [transactions, batchDateFrom, batchDateTo]);
+  }, [transactions, batchDateFrom, batchDateTo, batchFilterLocalId]);
 
   const groupedDescriptions2 = useMemo(() => {
     let uncategorized = transactions.filter(
@@ -1371,12 +1399,11 @@ export default function BankStatementsPage() {
   );
 
   const categorizeCategoryComboOptions = useMemo(() => {
-    const cats = selectedTransaction?.type === "income" ? incomeCategories : expenseCategories;
     return [
       { value: "none", label: "Sin categoria" },
-      ...cats.map((c) => ({ value: String(c.id), label: c.name })),
+      ...categories.filter((c) => c.active !== false).map((c) => ({ value: String(c.id), label: c.name })),
     ];
-  }, [selectedTransaction?.type, incomeCategories, expenseCategories]);
+  }, [categories]);
 
   const transactionLocalPickComboOptions = useMemo(
     () => [
@@ -1596,9 +1623,39 @@ export default function BankStatementsPage() {
                 Clasificar {selectedTransactionIds.size} seleccionados
               </Button>
             )}
-            <Button 
+            <Button
               variant="outline"
-              onClick={() => setIsBatchCategorizeOpen(true)} 
+              onClick={() => {
+                const groupNameByGroupId = new Map(financialGroups.map((g) => [g.id, g.name]));
+                const catGroupName = (catId: number | null | undefined) => {
+                  if (!catId) return "";
+                  const cat = categories.find((c) => c.id === catId);
+                  if (!cat) return "";
+                  return groupNameByGroupId.get((cat as any).financialGroupId) ?? "";
+                };
+                const rows = listFilteredTransactions.map((t) => ({
+                  Fecha: String(t.transactionDate ?? "").slice(0, 10),
+                  Descripción: t.description ?? "",
+                  Entidad: t.description2 ?? "",
+                  Tipo: t.type === "income" ? "Ingreso" : "Egreso",
+                  Importe: parseFloat(String(t.amount)) || 0,
+                  Grupo: catGroupName(t.categoryId),
+                  Categoría: t.category?.name ?? "",
+                  Local: t.local?.name ?? "",
+                }));
+                const ws = XLSX.utils.json_to_sheet(rows);
+                const wb = XLSX.utils.book_new();
+                XLSX.utils.book_append_sheet(wb, ws, "Extractos");
+                XLSX.writeFile(wb, `extractos_${toISODate(new Date())}.xlsx`);
+              }}
+              disabled={listFilteredTransactions.length === 0}
+            >
+              <Download className="h-4 w-4 mr-2" />
+              Exportar
+            </Button>
+            <Button
+              variant="outline"
+              onClick={() => setIsBatchCategorizeOpen(true)}
               data-testid="button-batch-categorize-range"
             >
               <Tag className="h-4 w-4 mr-2" />
@@ -2635,10 +2692,11 @@ export default function BankStatementsPage() {
           setBatchLocalId("");
           setBatchDateFrom("");
           setBatchDateTo("");
-          setSelectedDescription("");
+          setSelectedDescriptions(new Set());
           setSelectedDescription2("");
           setBatchDescSearch("");
           setBatchDesc2Search("");
+          setBatchFilterLocalId("");
         }
       }}>
         <DialogContent className="sm:max-w-2xl max-h-[min(90vh,880px)] h-[min(90vh,880px)] flex flex-col gap-0 p-0 overflow-hidden sm:rounded-lg">
@@ -2660,144 +2718,85 @@ export default function BankStatementsPage() {
                 <div className="grid grid-cols-2 gap-3">
                   <div className="space-y-1">
                     <Label className="text-xs">Desde</Label>
-                    <Input
-                      type="date"
-                      value={batchDateFrom}
-                      onChange={(e) => {
-                        setBatchDateFrom(e.target.value);
-                        setSelectedDescription("");
-                        setSelectedDescription2("");
-                      }}
-                      data-testid="input-batch-date-from"
-                    />
+                    <Input type="date" value={batchDateFrom} onChange={(e) => { setBatchDateFrom(e.target.value); setSelectedDescriptions(new Set()); setSelectedDescription2(""); }} data-testid="input-batch-date-from" />
                   </div>
                   <div className="space-y-1">
                     <Label className="text-xs">Hasta</Label>
-                    <Input
-                      type="date"
-                      value={batchDateTo}
-                      onChange={(e) => {
-                        setBatchDateTo(e.target.value);
-                        setSelectedDescription("");
-                        setSelectedDescription2("");
-                      }}
-                      data-testid="input-batch-date-to"
-                    />
+                    <Input type="date" value={batchDateTo} onChange={(e) => { setBatchDateTo(e.target.value); setSelectedDescriptions(new Set()); setSelectedDescription2(""); }} data-testid="input-batch-date-to" />
                   </div>
                 </div>
-                <p className="text-xs text-muted-foreground">
-                  Solo se clasificaran transacciones SIN categoria dentro del rango
-                </p>
+                <div className="space-y-1">
+                  <Label className="text-xs">Local (filtro de búsqueda)</Label>
+                  <BatchLocalCombobox locals={locals} value={batchFilterLocalId || "none"} onChange={(v) => { setBatchFilterLocalId(v === "none" ? "" : v); setSelectedDescriptions(new Set()); }} />
+                </div>
+                <p className="text-xs text-muted-foreground">Solo se clasificaran transacciones SIN categoria</p>
               </div>
             )}
 
             {selectedTransactionIds.size === 0 && (
               <div className="space-y-4">
                 <div className="space-y-2">
-                  <p className="text-sm font-medium">2. Descripcion (opcional)</p>
-                  <p className="text-xs text-muted-foreground">Linea principal del extracto</p>
+                  <p className="text-sm font-medium">2. Descripcion (podés elegir varias)</p>
                   {groupedDescriptions.length > 0 && (
-                    <Input
-                      placeholder="Buscar en descripciones…"
-                      value={batchDescSearch}
-                      onChange={(e) => setBatchDescSearch(e.target.value)}
-                      className="max-w-md"
-                    />
+                    <Input placeholder="Buscar en descripciones…" value={batchDescSearch} onChange={(e) => setBatchDescSearch(e.target.value)} className="max-w-md" />
                   )}
                   {groupedDescriptions.length === 0 ? (
-                    <div className="text-center py-4 text-sm text-muted-foreground rounded-lg bg-muted/50">
-                      No hay movimientos sin clasificar {batchDateFrom && batchDateTo ? "en el periodo seleccionado" : ""}
-                    </div>
+                    <div className="text-center py-4 text-sm text-muted-foreground rounded-lg bg-muted/50">No hay movimientos sin clasificar</div>
                   ) : filteredGroupedDescriptions.length === 0 ? (
-                    <div className="text-center py-3 text-sm text-muted-foreground rounded-lg bg-muted/50">
-                      Ninguna descripcion coincide con la busqueda
-                    </div>
+                    <div className="text-center py-3 text-sm text-muted-foreground rounded-lg bg-muted/50">Ninguna descripcion coincide</div>
                   ) : (
                     <div className="max-h-48 overflow-y-auto space-y-1 pr-1 rounded-md border bg-muted/20 p-1">
-                      {filteredGroupedDescriptions.map((group) => (
-                        <div
-                          key={group.description}
-                          className={`flex items-center justify-between gap-3 p-2 rounded-lg cursor-pointer transition-colors ${
-                            selectedDescription === group.description
-                              ? "bg-primary/10 border border-primary/30"
-                              : "bg-muted/50 hover-elevate"
-                          }`}
-                          onClick={() => {
-                            setSelectedDescription(
-                              selectedDescription === group.description ? "" : group.description,
-                            );
-                          }}
-                          data-testid={`desc-group-${group.description.slice(0, 20)}`}
-                        >
-                          <div className="flex-1 min-w-0">
-                            <p className="text-sm truncate">{group.description}</p>
+                      {filteredGroupedDescriptions.map((group) => {
+                        const sel = selectedDescriptions.has(group.description);
+                        return (
+                          <div key={group.description}
+                            className={`flex items-center justify-between gap-3 p-2 rounded-lg cursor-pointer transition-colors ${sel ? "bg-primary/10 border border-primary/30" : "bg-muted/50 hover-elevate"}`}
+                            onClick={() => setSelectedDescriptions((prev) => { const n = new Set(prev); if (n.has(group.description)) n.delete(group.description); else n.add(group.description); return n; })}
+                            data-testid={`desc-group-${group.description.slice(0, 20)}`}
+                          >
+                            <div className="flex items-center gap-2 min-w-0">
+                              <div className={`h-4 w-4 shrink-0 rounded border flex items-center justify-center ${sel ? "bg-primary border-primary" : "border-muted-foreground/30"}`}>
+                                {sel && <Check className="h-3 w-3 text-primary-foreground" />}
+                              </div>
+                              <p className="text-sm truncate">{group.description}</p>
+                            </div>
+                            <Badge variant="secondary">{group.count} mov.</Badge>
                           </div>
-                          <Badge variant="secondary">{group.count} mov.</Badge>
-                        </div>
-                      ))}
+                        );
+                      })}
                     </div>
                   )}
-                  {selectedDescription && (
-                    <p className="text-xs text-muted-foreground">
-                      Seleccionado: <span className="font-medium">{selectedDescription}</span> (
-                      {groupedDescriptions.find((g) => g.description === selectedDescription)?.count || 0} mov.)
-                    </p>
+                  {selectedDescriptions.size > 0 && (
+                    <p className="text-xs text-muted-foreground">{selectedDescriptions.size} descripción(es) seleccionada(s)</p>
                   )}
                 </div>
 
                 <div className="space-y-2">
-                  <p className="text-sm font-medium">Descripcion 2 (opcional)</p>
-                  <p className="text-xs text-muted-foreground">
-                    Segunda linea cuando el banco la aporta (p. ej. Galicia, Mercado Pago). Podes combinar con la linea
-                    principal para acotar mas.
-                  </p>
+                  <p className="text-sm font-medium">Entidad / Descripcion 2 (opcional)</p>
+                  <p className="text-xs text-muted-foreground">Segunda linea cuando el banco la aporta (Galicia, Mercado Pago). Combiná con la descripción para acotar más.</p>
                   {groupedDescriptions2.length > 0 && (
-                    <Input
-                      placeholder="Buscar en descripcion 2…"
-                      value={batchDesc2Search}
-                      onChange={(e) => setBatchDesc2Search(e.target.value)}
-                      className="max-w-md"
-                    />
+                    <Input placeholder="Buscar en descripcion 2…" value={batchDesc2Search} onChange={(e) => setBatchDesc2Search(e.target.value)} className="max-w-md" />
                   )}
                   {groupedDescriptions2.length === 0 ? (
-                    <div className="text-center py-3 text-sm text-muted-foreground rounded-lg bg-muted/50">
-                      No hay segunda descripcion en movimientos sin clasificar
-                      {batchDateFrom && batchDateTo ? " en el periodo seleccionado" : ""}
-                    </div>
+                    <div className="text-center py-3 text-sm text-muted-foreground rounded-lg bg-muted/50">No hay segunda descripcion{batchDateFrom && batchDateTo ? " en el periodo seleccionado" : ""}</div>
                   ) : filteredGroupedDescriptions2.length === 0 ? (
-                    <div className="text-center py-3 text-sm text-muted-foreground rounded-lg bg-muted/50">
-                      Ninguna descripcion 2 coincide con la busqueda
-                    </div>
+                    <div className="text-center py-3 text-sm text-muted-foreground rounded-lg bg-muted/50">Ninguna descripcion 2 coincide</div>
                   ) : (
                     <div className="max-h-40 overflow-y-auto space-y-1 pr-1 rounded-md border bg-muted/20 p-1">
                       {filteredGroupedDescriptions2.map((group) => (
-                        <div
-                          key={group.description2}
-                          className={`flex items-center justify-between gap-3 p-2 rounded-lg cursor-pointer transition-colors ${
-                            selectedDescription2 === group.description2
-                              ? "bg-primary/10 border border-primary/30"
-                              : "bg-muted/50 hover-elevate"
-                          }`}
-                          onClick={() => {
-                            setSelectedDescription2(
-                              selectedDescription2 === group.description2 ? "" : group.description2,
-                            );
-                          }}
+                        <div key={group.description2}
+                          className={`flex items-center justify-between gap-3 p-2 rounded-lg cursor-pointer transition-colors ${selectedDescription2 === group.description2 ? "bg-primary/10 border border-primary/30" : "bg-muted/50 hover-elevate"}`}
+                          onClick={() => setSelectedDescription2(selectedDescription2 === group.description2 ? "" : group.description2)}
                           data-testid={`desc2-group-${group.description2.slice(0, 24)}`}
                         >
-                          <div className="flex-1 min-w-0">
-                            <p className="text-sm truncate">{group.description2}</p>
-                          </div>
+                          <div className="flex-1 min-w-0"><p className="text-sm truncate">{group.description2}</p></div>
                           <Badge variant="secondary">{group.count} mov.</Badge>
                         </div>
                       ))}
                     </div>
                   )}
                   {selectedDescription2 && (
-                    <p className="text-xs text-muted-foreground">
-                      Seleccionado detalle: <span className="font-medium">{selectedDescription2}</span> (
-                      {groupedDescriptions2.find((g) => g.description2 === selectedDescription2)?.count || 0} mov.)
-                    </p>
+                    <p className="text-xs text-muted-foreground">Seleccionado: <span className="font-medium">{selectedDescription2}</span></p>
                   )}
                 </div>
               </div>
@@ -2805,62 +2804,28 @@ export default function BankStatementsPage() {
 
             <div className="space-y-2">
               <p className="text-sm font-medium">3. Categoria a Asignar</p>
-              <BatchCategoryCombobox categories={categories} value={batchCategoryId} onChange={setBatchCategoryId} />
+              <BatchCategoryCombobox categories={categories} financialGroups={financialGroups} value={batchCategoryId} onChange={setBatchCategoryId} />
             </div>
 
             <div className="space-y-2">
-              <p className="text-sm font-medium">4. Local (opcional)</p>
+              <p className="text-sm font-medium">4. Local a asignar (opcional)</p>
               <BatchLocalCombobox locals={locals} value={batchLocalId} onChange={setBatchLocalId} />
             </div>
 
             {batchCategoryId &&
-              (selectedTransactionIds.size > 0 ||
-                (batchDateFrom && batchDateTo) ||
-                selectedDescription.trim() ||
-                selectedDescription2.trim()) && (
+              (selectedTransactionIds.size > 0 || (batchDateFrom && batchDateTo) || selectedDescriptions.size > 0 || selectedDescription2.trim()) && (
                 <div className="p-3 rounded-lg bg-amber-500/10 border border-amber-500/20">
                   <div className="flex items-start gap-2">
                     <AlertCircle className="h-4 w-4 text-amber-600 mt-0.5 shrink-0" />
                     <div className="text-sm min-w-0">
                       <p className="font-medium text-amber-700 dark:text-amber-300">Resumen</p>
                       <p className="text-muted-foreground">
-                        Categoria:{" "}
-                        <span className="font-medium">
-                          {categories.find((c) => c.id === parseInt(batchCategoryId, 10))?.name}
-                        </span>
-                        {selectedDescription.trim() && (
-                          <>
-                            <br />
-                            Descripcion: <span className="font-medium">{selectedDescription}</span>
-                          </>
-                        )}
-                        {selectedDescription2.trim() && (
-                          <>
-                            <br />
-                            Descripcion 2: <span className="font-medium">{selectedDescription2}</span>
-                          </>
-                        )}
-                        {batchDateFrom && batchDateTo && (
-                          <>
-                            <br />
-                            Periodo: {batchDateFrom} a {batchDateTo}
-                          </>
-                        )}
-                        {selectedTransactionIds.size > 0 && (
-                          <>
-                            <br />
-                            {selectedTransactionIds.size} transacciones seleccionadas
-                          </>
-                        )}
-                        {batchLocalId && batchLocalId !== "none" && (
-                          <>
-                            <br />
-                            Local:{" "}
-                            <span className="font-medium">
-                              {locals.find((l) => l.id === parseInt(batchLocalId, 10))?.name}
-                            </span>
-                          </>
-                        )}
+                        Categoria: <span className="font-medium">{categories.find((c) => c.id === parseInt(batchCategoryId, 10))?.name}</span>
+                        {selectedDescriptions.size > 0 && (<><br />{selectedDescriptions.size} descripción(es): <span className="font-medium">{Array.from(selectedDescriptions).join(", ")}</span></>)}
+                        {selectedDescription2.trim() && (<><br />Entidad: <span className="font-medium">{selectedDescription2}</span></>)}
+                        {batchDateFrom && batchDateTo && (<><br />Periodo: {batchDateFrom} a {batchDateTo}</>)}
+                        {selectedTransactionIds.size > 0 && (<><br />{selectedTransactionIds.size} transacciones seleccionadas</>)}
+                        {batchLocalId && batchLocalId !== "none" && (<><br />Local asignado: <span className="font-medium">{locals.find((l) => l.id === parseInt(batchLocalId, 10))?.name}</span></>)}
                       </p>
                     </div>
                   </div>
@@ -2869,34 +2834,13 @@ export default function BankStatementsPage() {
           </div>
 
           <div className="shrink-0 border-t px-6 py-4 flex flex-wrap justify-end gap-2 bg-background">
-            <Button
-              variant="outline"
-              onClick={() => {
-                setIsBatchCategorizeOpen(false);
-                setBatchCategoryId("");
-                setBatchLocalId("");
-                setBatchDateFrom("");
-                setBatchDateTo("");
-                setSelectedDescription("");
-                setSelectedDescription2("");
-                setBatchDescSearch("");
-                setBatchDesc2Search("");
-              }}
-              data-testid="button-cancel-batch"
-            >
-              Cancelar
-            </Button>
+            <Button variant="outline" onClick={() => {
+              setIsBatchCategorizeOpen(false); setBatchCategoryId(""); setBatchLocalId(""); setBatchDateFrom(""); setBatchDateTo("");
+              setSelectedDescriptions(new Set()); setSelectedDescription2(""); setBatchDescSearch(""); setBatchDesc2Search(""); setBatchFilterLocalId("");
+            }} data-testid="button-cancel-batch">Cancelar</Button>
             <Button
               onClick={handleBatchCategorize}
-              disabled={
-                batchCategorizeMutation.isPending ||
-                !batchCategoryId ||
-                (selectedTransactionIds.size === 0 &&
-                  !batchDateFrom &&
-                  !batchDateTo &&
-                  !selectedDescription.trim() &&
-                  !selectedDescription2.trim())
-              }
+              disabled={batchCategorizeMutation.isPending || !batchCategoryId || (selectedTransactionIds.size === 0 && !batchDateFrom && !batchDateTo && selectedDescriptions.size === 0 && !selectedDescription2.trim())}
               data-testid="button-apply-batch"
             >
               {batchCategorizeMutation.isPending ? "Procesando..." : "Aplicar Clasificacion"}

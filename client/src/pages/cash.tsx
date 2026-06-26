@@ -60,7 +60,7 @@ import {
   Upload,
   FileSpreadsheet,
 } from "lucide-react";
-import type { Transaction, BankAccount, TransactionCategory, Local } from "@shared/schema";
+import type { Transaction, BankAccount, TransactionCategory, Local, FinancialGroup } from "@shared/schema";
 
 interface TransactionWithRelations extends Transaction {
   bankAccount?: BankAccount | null;
@@ -267,6 +267,105 @@ function CategoryPicker({
   );
 }
 
+/** Selector de categoría con filtro previo por grupo financiero. */
+function GroupedCategoryPicker({
+  value,
+  onChange,
+  categories,
+  financialGroups,
+  allowClear = false,
+  clearLabel = "Sin categoría",
+}: {
+  value: string;
+  onChange: (id: string) => void;
+  categories: TransactionCategory[];
+  financialGroups: FinancialGroup[];
+  allowClear?: boolean;
+  clearLabel?: string;
+}) {
+  const [groupId, setGroupId] = useState("all");
+  const [open, setOpen] = useState(false);
+  const groupOpen = useState(false);
+  const [gOpen, setGOpen] = groupOpen;
+
+  const visibleCats = useMemo(() => {
+    if (groupId === "all") return categories.filter((c) => c.active !== false);
+    return categories.filter((c) => c.active !== false && String((c as any).financialGroupId) === groupId);
+  }, [categories, groupId]);
+
+  const selected = value ? categories.find((c) => String(c.id) === value) : undefined;
+  const selectedGroup = groupId !== "all" ? financialGroups.find((g) => String(g.id) === groupId) : null;
+
+  const groupOptions = useMemo(
+    () => [...financialGroups].filter((g) => g.active !== false).sort((a, b) => String(a.name).localeCompare(String(b.name), "es")),
+    [financialGroups],
+  );
+
+  return (
+    <div className="space-y-2">
+      <Popover open={gOpen} onOpenChange={setGOpen} modal={false}>
+        <PopoverTrigger asChild>
+          <Button type="button" variant="outline" role="combobox" className="w-full justify-between font-normal min-h-9 text-xs">
+            <span className="truncate text-left text-muted-foreground">Grupo: {selectedGroup?.name ?? "Todos"}</span>
+            <ChevronsUpDown className="ml-2 h-3.5 w-3.5 shrink-0 opacity-50" />
+          </Button>
+        </PopoverTrigger>
+        <PopoverContent className="w-[min(100vw-2rem,28rem)] p-0 z-[200]" align="start">
+          <Command>
+            <CommandInput placeholder="Buscar grupo…" />
+            <CommandList className="max-h-[220px]">
+              <CommandEmpty>Sin resultados.</CommandEmpty>
+              <CommandGroup>
+                <CommandItem value="__all__ Todos los grupos" onSelect={() => { setGroupId("all"); setGOpen(false); }}>
+                  <Check className={cn("mr-2 h-4 w-4 shrink-0", groupId === "all" ? "opacity-100" : "opacity-0")} />
+                  Todos los grupos
+                </CommandItem>
+                {groupOptions.map((g) => (
+                  <CommandItem key={g.id} value={`${g.name} ${g.id}`} onSelect={() => { setGroupId(String(g.id)); setGOpen(false); }}>
+                    <Check className={cn("mr-2 h-4 w-4 shrink-0", groupId === String(g.id) ? "opacity-100" : "opacity-0")} />
+                    {g.name}
+                  </CommandItem>
+                ))}
+              </CommandGroup>
+            </CommandList>
+          </Command>
+        </PopoverContent>
+      </Popover>
+
+      <Popover open={open} onOpenChange={setOpen} modal={false}>
+        <PopoverTrigger asChild>
+          <Button type="button" variant="outline" role="combobox" aria-expanded={open} className="w-full justify-between font-normal min-h-9">
+            <span className="truncate text-left">{selected?.name ?? (allowClear && !value ? clearLabel : "Elegir categoría…")}</span>
+            <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+          </Button>
+        </PopoverTrigger>
+        <PopoverContent className="w-[min(100vw-2rem,28rem)] p-0 z-[200]" align="start">
+          <Command>
+            <CommandInput placeholder="Buscar categoría…" />
+            <CommandList className="max-h-[280px]">
+              <CommandEmpty>No se encontró ninguna categoría.</CommandEmpty>
+              <CommandGroup>
+                {allowClear && (
+                  <CommandItem value={`__clear__ ${clearLabel}`} onSelect={() => { onChange(""); setOpen(false); }}>
+                    <Check className={cn("mr-2 h-4 w-4 shrink-0", !value ? "opacity-100" : "opacity-0")} />
+                    {clearLabel}
+                  </CommandItem>
+                )}
+                {visibleCats.map((c) => (
+                  <CommandItem key={c.id} value={`${c.name} ${c.id}`} onSelect={() => { onChange(String(c.id)); setOpen(false); }}>
+                    <Check className={cn("mr-2 h-4 w-4 shrink-0", value === String(c.id) ? "opacity-100" : "opacity-0")} />
+                    <span className="truncate">{c.name}</span>
+                  </CommandItem>
+                ))}
+              </CommandGroup>
+            </CommandList>
+          </Command>
+        </PopoverContent>
+      </Popover>
+    </div>
+  );
+}
+
 /** Filtro de listado: opción "todos" + lista con búsqueda (cmdk). */
 function FilterSearchableSelect({
   value,
@@ -363,6 +462,19 @@ export default function CashPage() {
   const { data: locals = [] } = useQuery<Local[]>({
     queryKey: ["/api/locals"],
   });
+  const { data: financialGroups = [] } = useQuery<FinancialGroup[]>({
+    queryKey: ["/api/financial-groups"],
+  });
+
+  // Clasificación Masiva en Efectivo
+  const [isMasivaOpen, setIsMasivaOpen] = useState(false);
+  const [masivaDateFrom, setMasivaDateFrom] = useState("");
+  const [masivaDateTo, setMasivaDateTo] = useState("");
+  const [masivaLocalId, setMasivaLocalId] = useState("");
+  const [masivaDescSearch, setMasivaDescSearch] = useState("");
+  const [masivaSelectedDescs, setMasivaSelectedDescs] = useState<Set<string>>(new Set());
+  const [masivaCategoryId, setMasivaCategoryId] = useState("");
+  const [masivaNewLocalId, setMasivaNewLocalId] = useState("");
 
   const incomeCategories = useMemo(
     () => categories.filter((c) => c.active !== false && (c.type === "income" || c.type === "both")),
@@ -560,7 +672,7 @@ export default function CashPage() {
         items: items.map((r) => ({
           transactionDate: r.transactionDate,
           description: r.description.trim(),
-          categoryId: parseInt(r.categoryId, 10),
+          categoryId: r.categoryId ? parseInt(r.categoryId, 10) : null,
           localId: r.localId === "none" ? null : parseInt(r.localId, 10),
           type: r.type,
           amount: parseEsArAmount(String(r.amount)),
@@ -581,11 +693,11 @@ export default function CashPage() {
   });
 
   const submitBatch = () => {
-    const prepared = draftRows.filter((r) => r.description.trim() !== "" && r.categoryId !== "" && r.amount !== "");
+    const prepared = draftRows.filter((r) => r.description.trim() !== "" && r.amount !== "");
     if (prepared.length === 0) {
       toast({
         title: "Completá al menos un movimiento",
-        description: "Descripción, categoría e importe son obligatorios.",
+        description: "Descripción e importe son obligatorios.",
         variant: "destructive",
       });
       return;
@@ -683,16 +795,25 @@ export default function CashPage() {
     [localsSorted],
   );
 
+  const categoryGroupNameById = useMemo(() => {
+    const catToGroup = new Map(categories.map((c) => [c.id, (c as any).financialGroupId as number | null]));
+    const groupNameById = new Map(financialGroups.map((g) => [g.id, g.name]));
+    return new Map(
+      categories.map((c) => [c.id, groupNameById.get(catToGroup.get(c.id) ?? -1) ?? ""]),
+    );
+  }, [categories, financialGroups]);
+
   const exportToExcel = () => {
     const rows = filteredTransactions.map((t) => ({
       Fecha: String(t.transactionDate ?? "").slice(0, 10),
       Descripción: t.description ?? "",
       Tipo: t.type === "income" ? "Ingreso" : "Egreso",
       Importe: parseFloat(String(t.amount)) || 0,
+      Grupo: t.categoryId ? (categoryGroupNameById.get(t.categoryId) ?? "") : "",
       Categoría: t.category?.name ?? "",
       Local: t.local?.name ?? "",
     }));
-    const ws = XLSX.utils.json_to_sheet(rows, { header: [...CASH_IMPORT_HEADERS, "Local"] as string[] });
+    const ws = XLSX.utils.json_to_sheet(rows, { header: ["Fecha", "Descripción", "Tipo", "Importe", "Grupo", "Categoría", "Local"] });
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, "Efectivo");
     XLSX.writeFile(wb, `efectivo_${toISODate(new Date())}.xlsx`);
@@ -745,8 +866,7 @@ export default function CashPage() {
         else if (!description) error = "Falta descripción";
         else if (!type) error = "Tipo debe ser Ingreso o Egreso";
         else if (!Number.isFinite(amount) || amount <= 0) error = "Importe inválido";
-        else if (!categoryName) error = "Falta categoría";
-        else if (categoryId == null) error = `Categoría "${categoryName}" no existe para ${type === "income" ? "ingresos" : "egresos"}`;
+        else if (categoryName && categoryId == null) error = `Categoría "${categoryName}" no encontrada (se importará sin categoría)`;
 
         return { idx: i + 2, transactionDate, description, type, amount, categoryName, categoryId, error };
       });
@@ -767,7 +887,7 @@ export default function CashPage() {
         items: importValidRows.map((r) => ({
           transactionDate: r.transactionDate as string,
           description: r.description,
-          categoryId: r.categoryId as number,
+          categoryId: r.categoryId ?? null,
           localId,
           type: r.type as "income" | "expense",
           amount: r.amount,
@@ -801,15 +921,12 @@ export default function CashPage() {
       if (!Number.isFinite(amt) || amt <= 0) {
         throw new Error("Importe inválido");
       }
-      if (editCategoryId === "") {
-        throw new Error("Elegí una categoría");
-      }
       await apiRequest("PATCH", `/api/transactions/${editRow.id}`, {
         transactionDate: editTransactionDate.trim(),
         description: desc,
         type: editType,
         amount: amt,
-        categoryId: parseInt(editCategoryId, 10),
+        categoryId: editCategoryId ? parseInt(editCategoryId, 10) : null,
         localId: editLocalId === "none" ? null : parseInt(editLocalId, 10),
       });
     },
@@ -822,6 +939,55 @@ export default function CashPage() {
     onError: (e: Error) => {
       toast({ title: "Error", description: e.message, variant: "destructive" });
     },
+  });
+
+  // Clasificación Masiva — descripciones disponibles (sin categoría, efectivo)
+  const masivaGroupedDescs = useMemo(() => {
+    let rows = transactions.filter((t) => !t.categoryId && t.description);
+    if (masivaDateFrom && masivaDateTo) {
+      rows = rows.filter((t) => {
+        const d = String(t.transactionDate ?? "").slice(0, 10);
+        return d >= masivaDateFrom && d <= masivaDateTo;
+      });
+    }
+    if (masivaLocalId) {
+      const lid = parseInt(masivaLocalId, 10);
+      rows = rows.filter((t) => t.localId === lid);
+    }
+    const map = new Map<string, number>();
+    for (const t of rows) map.set(t.description!, (map.get(t.description!) || 0) + 1);
+    return Array.from(map.entries()).map(([description, count]) => ({ description, count })).sort((a, b) => b.count - a.count);
+  }, [transactions, masivaDateFrom, masivaDateTo, masivaLocalId]);
+
+  const masivaFilteredDescs = useMemo(() => {
+    const q = masivaDescSearch.trim().toLowerCase();
+    if (!q) return masivaGroupedDescs;
+    return masivaGroupedDescs.filter((g) => g.description.toLowerCase().includes(q));
+  }, [masivaGroupedDescs, masivaDescSearch]);
+
+  const masivaMutation = useMutation({
+    mutationFn: async () => {
+      if (!masivaCategoryId) throw new Error("Elegí una categoría");
+      const body: Record<string, any> = {
+        categoryId: parseInt(masivaCategoryId, 10),
+        bankSource: "cash",
+      };
+      if (masivaNewLocalId) body.localId = parseInt(masivaNewLocalId, 10);
+      if (masivaDateFrom && masivaDateTo) { body.dateFrom = masivaDateFrom; body.dateTo = masivaDateTo; }
+      const descs = Array.from(masivaSelectedDescs);
+      if (descs.length > 0) body.descriptions = descs;
+      const res = await apiRequest("POST", "/api/transactions/batch-categorize", body);
+      return res.json();
+    },
+    onSuccess: (r: any) => {
+      toast({ title: `${r.updated ?? 0} movimiento(s) categorizados` });
+      setIsMasivaOpen(false);
+      setMasivaDateFrom(""); setMasivaDateTo(""); setMasivaLocalId(""); setMasivaDescSearch("");
+      setMasivaSelectedDescs(new Set()); setMasivaCategoryId(""); setMasivaNewLocalId("");
+      queryClient.invalidateQueries({ queryKey: ["/api/transactions"] });
+      refetch();
+    },
+    onError: (e: Error) => toast({ title: "Error", description: e.message, variant: "destructive" }),
   });
 
   const deleteMutation = useMutation({
@@ -977,6 +1143,10 @@ export default function CashPage() {
             <Button variant="outline" onClick={exportToExcel} disabled={filteredTransactions.length === 0} data-testid="button-export-cash">
               <Download className="h-4 w-4 mr-2" />
               Exportar
+            </Button>
+            <Button variant="outline" onClick={() => setIsMasivaOpen(true)} data-testid="button-masiva-cash">
+              <Filter className="h-4 w-4 mr-2" />
+              Clasificación Masiva
             </Button>
             <Button variant="outline" onClick={openImport} data-testid="button-import-cash">
               <Upload className="h-4 w-4 mr-2" />
@@ -1231,12 +1401,13 @@ export default function CashPage() {
                     />
                   </div>
                   <div className="md:col-span-6 space-y-1">
-                    <Label className="text-xs">Categoría</Label>
-                    <CategoryPicker
+                    <Label className="text-xs">Categoría (opcional)</Label>
+                    <GroupedCategoryPicker
                       value={r.categoryId}
                       onChange={(id) => patchDraft(r.key, { categoryId: id })}
-                      categories={categoriasForType(r.type)}
-                      placeholder="Elegir categoría…"
+                      categories={allCategoriesSorted}
+                      financialGroups={financialGroups}
+                      allowClear
                     />
                   </div>
                   <div className="md:col-span-6 space-y-1">
@@ -1363,12 +1534,13 @@ export default function CashPage() {
                 </div>
               </div>
               <div className="space-y-1">
-                <Label>Categoría</Label>
-                <CategoryPicker
+                <Label>Categoría (opcional)</Label>
+                <GroupedCategoryPicker
                   value={editCategoryId}
                   onChange={setEditCategoryId}
-                  categories={categoriasForType(editType)}
-                  placeholder="Elegir categoría…"
+                  categories={allCategoriesSorted}
+                  financialGroups={financialGroups}
+                  allowClear
                 />
               </div>
               <div className="space-y-1">
@@ -1391,6 +1563,121 @@ export default function CashPage() {
               Guardar
             </Button>
           </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={isMasivaOpen} onOpenChange={(o) => {
+        setIsMasivaOpen(o);
+        if (!o) {
+          setMasivaDateFrom(""); setMasivaDateTo(""); setMasivaLocalId(""); setMasivaDescSearch("");
+          setMasivaSelectedDescs(new Set()); setMasivaCategoryId(""); setMasivaNewLocalId("");
+        }
+      }}>
+        <DialogContent className="sm:max-w-2xl max-h-[min(90vh,880px)] h-[min(90vh,880px)] flex flex-col gap-0 p-0 overflow-hidden sm:rounded-lg">
+          <div className="px-6 pt-6 pb-2 pr-12 shrink-0 border-b border-border/50">
+            <DialogHeader>
+              <DialogTitle>Clasificación Masiva — Efectivo</DialogTitle>
+              <DialogDescription>Filtrá por período, local y descripción; asigná categoría a todos los movimientos sin categorizar que coincidan.</DialogDescription>
+            </DialogHeader>
+          </div>
+          <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain px-6 py-4 space-y-4">
+            <div className="grid gap-3 p-3 rounded-lg bg-muted/50">
+              <p className="text-sm font-medium">1. Filtros (opcionales)</p>
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-1">
+                  <Label className="text-xs">Desde</Label>
+                  <Input type="date" value={masivaDateFrom} onChange={(e) => { setMasivaDateFrom(e.target.value); setMasivaSelectedDescs(new Set()); }} />
+                </div>
+                <div className="space-y-1">
+                  <Label className="text-xs">Hasta</Label>
+                  <Input type="date" value={masivaDateTo} onChange={(e) => { setMasivaDateTo(e.target.value); setMasivaSelectedDescs(new Set()); }} />
+                </div>
+              </div>
+              <div className="space-y-1">
+                <Label className="text-xs">Local</Label>
+                <FilterSearchableSelect
+                  value={masivaLocalId || "all"}
+                  onChange={(v) => { setMasivaLocalId(v === "all" ? "" : v); setMasivaSelectedDescs(new Set()); }}
+                  allLabel="Todos los locales"
+                  items={localFiltersItems}
+                  searchPlaceholder="Buscar local…"
+                />
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <p className="text-sm font-medium">2. Descripciones (opcional — podés elegir varias)</p>
+              {masivaGroupedDescs.length > 0 && (
+                <Input placeholder="Buscar en descripciones…" value={masivaDescSearch} onChange={(e) => setMasivaDescSearch(e.target.value)} className="max-w-md" />
+              )}
+              {masivaGroupedDescs.length === 0 ? (
+                <div className="text-center py-4 text-sm text-muted-foreground rounded-lg bg-muted/50">No hay movimientos sin categorizar</div>
+              ) : masivaFilteredDescs.length === 0 ? (
+                <div className="text-center py-3 text-sm text-muted-foreground rounded-lg bg-muted/50">Ninguna descripción coincide</div>
+              ) : (
+                <div className="max-h-48 overflow-y-auto space-y-1 pr-1 rounded-md border bg-muted/20 p-1">
+                  {masivaFilteredDescs.map((g) => {
+                    const sel = masivaSelectedDescs.has(g.description);
+                    return (
+                      <div key={g.description}
+                        className={`flex items-center justify-between gap-3 p-2 rounded-lg cursor-pointer transition-colors ${sel ? "bg-primary/10 border border-primary/30" : "bg-muted/50 hover:bg-muted"}`}
+                        onClick={() => {
+                          setMasivaSelectedDescs((prev) => {
+                            const n = new Set(prev);
+                            if (n.has(g.description)) n.delete(g.description); else n.add(g.description);
+                            return n;
+                          });
+                        }}
+                      >
+                        <div className="flex items-center gap-2 min-w-0">
+                          <div className={`h-4 w-4 shrink-0 rounded border ${sel ? "bg-primary border-primary" : "border-muted-foreground/30"}`}>
+                            {sel && <Check className="h-3 w-3 text-primary-foreground m-0.5" />}
+                          </div>
+                          <p className="text-sm truncate">{g.description}</p>
+                        </div>
+                        <Badge variant="secondary">{g.count} mov.</Badge>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+              {masivaSelectedDescs.size > 0 && (
+                <p className="text-xs text-muted-foreground">{masivaSelectedDescs.size} descripción(es) seleccionada(s)</p>
+              )}
+            </div>
+
+            <div className="space-y-2">
+              <p className="text-sm font-medium">3. Categoría a asignar</p>
+              <GroupedCategoryPicker
+                value={masivaCategoryId}
+                onChange={setMasivaCategoryId}
+                categories={allCategoriesSorted}
+                financialGroups={financialGroups}
+              />
+            </div>
+
+            <div className="space-y-2">
+              <p className="text-sm font-medium">4. Local a asignar (opcional)</p>
+              <FilterSearchableSelect
+                value={masivaNewLocalId || "all"}
+                onChange={(v) => setMasivaNewLocalId(v === "all" ? "" : v)}
+                allLabel="No cambiar local"
+                items={localFiltersItems}
+                searchPlaceholder="Buscar local…"
+              />
+            </div>
+          </div>
+          <div className="px-6 py-4 border-t shrink-0">
+            <div className="flex justify-end gap-2">
+              <Button variant="outline" onClick={() => setIsMasivaOpen(false)}>Cancelar</Button>
+              <Button
+                disabled={!masivaCategoryId || masivaMutation.isPending}
+                onClick={() => masivaMutation.mutate()}
+              >
+                {masivaMutation.isPending ? "Clasificando…" : "Clasificar"}
+              </Button>
+            </div>
+          </div>
         </DialogContent>
       </Dialog>
 
