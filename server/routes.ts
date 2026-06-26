@@ -109,7 +109,7 @@ const updateTransactionSchema = z.object({
 const cashMovementRowSchema = z.object({
   transactionDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
   description: z.string().trim().min(1).max(2000),
-  categoryId: z.coerce.number().int().positive(),
+  categoryId: z.union([z.coerce.number().int().positive(), z.null()]).optional().transform((v) => v ?? null),
   localId: z
     .union([z.coerce.number().int().positive(), z.null(), z.literal(""), z.literal("none")])
     .optional()
@@ -120,7 +120,7 @@ const cashMovementRowSchema = z.object({
 
 const cashBatchBodySchema = z
   .object({
-    items: z.array(cashMovementRowSchema).min(1).max(200),
+    items: z.array(cashMovementRowSchema).min(1).max(5000),
   })
   .strict();
 

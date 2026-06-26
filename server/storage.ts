@@ -375,11 +375,11 @@ export interface IStorage {
   ): Promise<Transaction[]>;
   getTransactionById(clientId: number, id: number): Promise<Transaction | undefined>;
   getTransactionCount(clientId: number, options?: { bankSource?: string }): Promise<number>;
-  /** Valida fila de efectivo (categoría vs tipo, local, importe). */
+  /** Valida fila de efectivo (local, importe). Categoría es opcional. */
   assertCashMovementRowValid(
     clientId: number,
     row: {
-      categoryId: number;
+      categoryId: number | null | undefined;
       localId: number | null | undefined;
       type: "income" | "expense";
       amount: number;
@@ -391,7 +391,7 @@ export interface IStorage {
     rows: Array<{
       transactionDate: string;
       description: string;
-      categoryId: number;
+      categoryId: number | null | undefined;
       localId: number | null | undefined;
       type: "income" | "expense";
       amount: number;
@@ -2408,20 +2408,6 @@ export class DatabaseStorage implements IStorage {
       amount: number;
     },
   ): Promise<void> {
-    const cats = await db
-      .select()
-      .from(transactionCategories)
-      .where(eq(transactionCategories.clientId, clientId));
-    const catById = new Map(cats.map((c) => [c.id, c]));
-    const cat = catById.get(row.categoryId);
-    if (!cat) {
-      throw new Error(`Categoría no encontrada (${row.categoryId})`);
-    }
-    if (cat.type !== "both" && cat.type !== row.type) {
-      throw new Error(
-        `La categoría «${cat.name}» no corresponde a un movimiento de ${row.type === "income" ? "ingreso" : "egreso"}`,
-      );
-    }
     const localsList = await this.getLocals(clientId);
     const localIds = new Set(localsList.map((l) => l.id));
     if (row.localId != null && !localIds.has(row.localId)) {
@@ -2438,7 +2424,7 @@ export class DatabaseStorage implements IStorage {
     rows: Array<{
       transactionDate: string;
       description: string;
-      categoryId: number;
+      categoryId: number | null | undefined;
       localId: number | null | undefined;
       type: "income" | "expense";
       amount: number;
@@ -2464,7 +2450,7 @@ export class DatabaseStorage implements IStorage {
             clientId,
             localId: r.localId ?? undefined,
             bankAccountId: undefined,
-            categoryId: r.categoryId,
+            categoryId: r.categoryId ?? undefined,
             transactionDate: r.transactionDate,
             description: r.description,
             amount: String(Math.abs(r.amount)),
