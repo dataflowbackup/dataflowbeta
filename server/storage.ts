@@ -51,8 +51,10 @@ import {
   cmvCalculations,
   dataliveVentas,
   fudoVentas,
+  fudoPagos,
   fudoProductos,
   dataliveProductos,
+  monthlyGoals,
   auditLog,
   operationalAudits,
   auditTemplates,
@@ -3431,7 +3433,7 @@ export class DatabaseStorage implements IStorage {
   async importFudoVentas(
     clientId: number,
     localId: number,
-    days: Array<{ fecha: string; ventaTotal: number }>,
+    days: Array<{ fecha: string; ventaTotal: number; ticketCount?: number }>,
     opts: { sourceFile?: string | null; createdBy?: string | null; replaceFechas?: string[] },
   ): Promise<{ insertados: number; omitidos: number; reemplazados: number }> {
     const replace = new Set(opts.replaceFechas ?? []);
@@ -3451,6 +3453,7 @@ export class DatabaseStorage implements IStorage {
         localId,
         fecha: d.fecha,
         ventaTotal: String(d.ventaTotal),
+        ticketCount: d.ticketCount ?? 0,
         sourceFile: opts.sourceFile ?? null,
         createdBy: opts.createdBy ?? null,
       };
@@ -3458,7 +3461,7 @@ export class DatabaseStorage implements IStorage {
         if (replace.has(d.fecha)) {
           await db
             .update(fudoVentas)
-            .set({ ventaTotal: values.ventaTotal, sourceFile: values.sourceFile, updatedAt: new Date() })
+            .set({ ventaTotal: values.ventaTotal, ticketCount: values.ticketCount, sourceFile: values.sourceFile, updatedAt: new Date() })
             .where(and(eq(fudoVentas.clientId, clientId), eq(fudoVentas.localId, localId), eq(fudoVentas.fecha, d.fecha)));
           reemplazados++;
         } else {
@@ -3470,6 +3473,42 @@ export class DatabaseStorage implements IStorage {
       }
     }
     return { insertados, omitidos, reemplazados };
+  }
+
+  async importFudoPagos(
+    clientId: number,
+    localId: number,
+    pagos: Array<{ fecha: string; medioPago: string; importe: number }>,
+    opts: { sourceFile?: string | null; createdBy?: string | null; replaceFechas?: string[] },
+  ): Promise<{ insertados: number; reemplazados: number }> {
+    const replace = new Set(opts.replaceFechas ?? []);
+    let insertados = 0;
+    let reemplazados = 0;
+    for (const p of pagos) {
+      const values = {
+        clientId,
+        localId,
+        fecha: p.fecha,
+        medioPago: p.medioPago,
+        importe: String(p.importe),
+        sourceFile: opts.sourceFile ?? null,
+        createdBy: opts.createdBy ?? null,
+      };
+      const existing = await db
+        .select({ id: fudoPagos.id })
+        .from(fudoPagos)
+        .where(and(eq(fudoPagos.clientId, clientId), eq(fudoPagos.localId, localId), eq(fudoPagos.fecha, p.fecha), eq(fudoPagos.medioPago, p.medioPago)));
+      if (existing.length > 0) {
+        if (replace.has(p.fecha)) {
+          await db.update(fudoPagos).set({ importe: values.importe, sourceFile: values.sourceFile }).where(eq(fudoPagos.id, existing[0].id));
+          reemplazados++;
+        }
+      } else {
+        await db.insert(fudoPagos).values(values as any);
+        insertados++;
+      }
+    }
+    return { insertados, reemplazados };
   }
 
   async deleteFudoVenta(clientId: number, id: number): Promise<boolean> {
@@ -4341,6 +4380,322 @@ export class DatabaseStorage implements IStorage {
     const sumSent = sent.reduce((acc, r) => acc + (parseFloat(String(r.totalValue)) || 0), 0);
 
     return sumReceived - sumSent;
+  }
+
+  // ==========================================
+  // MONTHLY GOALS
+  // ==========================================
+
+  async getMonthlyGoals(clientId: number, year: number, month: number) {
+    return db
+      .select()
+      .from(monthlyGoals)
+      .where(and(eq(monthlyGoals.clientId, clientId), eq(monthlyGoals.year, year), eq(monthlyGoals.month, month)));
+  }
+
+  async upsertMonthlyGoal(clientId: number, data: {
+    localId: number; year: number; month: number;
+    facturacionObjetivo?: number | null; ticketsObjetivo?: number | null; cmvObjetivo?: number | null;
+  }) {
+    const existing = await db
+      .select()
+      .from(monthlyGoals)
+      .where(and(eq(monthlyGoals.clientId, clientId), eq(monthlyGoals.localId, data.localId), eq(monthlyGoals.year, data.year), eq(monthlyGoals.month, data.month)));
+    const vals = {
+      clientId,
+      localId: data.localId,
+      year: data.year,
+      month: data.month,
+      facturacionObjetivo: data.facturacionObjetivo != null ? String(data.facturacionObjetivo) : null,
+      ticketsObjetivo: data.ticketsObjetivo ?? null,
+      cmvObjetivo: data.cmvObjetivo != null ? String(data.cmvObjetivo) : null,
+      updatedAt: new Date(),
+    };
+    if (existing.length > 0) {
+      const [updated] = await db.update(monthlyGoals).set(vals).where(eq(monthlyGoals.id, existing[0].id)).returning();
+      return updated;
+    }
+    const [inserted] = await db.insert(monthlyGoals).values(vals as any).returning();
+    return inserted;
+  }
+
+  async deleteMonthlyGoal(clientId: number, localId: number, year: number, month: number) {
+    await db.delete(monthlyGoals).where(
+      and(eq(monthlyGoals.clientId, clientId), eq(monthlyGoals.localId, localId), eq(monthlyGoals.year, year), eq(monthlyGoals.month, month)),
+    );
+  }
+
+  // ==========================================
+  // DASHBOARD AGGREGATIONS
+  // ==========================================
+
+  async getDashboardVentasSummary(clientId: number, year: number, month: number, localIds: number[], source: "fudo" | "datalive") {
+    const pad = (n: number) => String(n).padStart(2, "0");
+    const makeRange = (y: number, m: number) => {
+      const from = `${y}-${pad(m)}-01`;
+      const lastDay = new Date(y, m, 0).getDate();
+      const to = `${y}-${pad(m)}-${pad(lastDay)}`;
+      return { from, to };
+    };
+
+    const sumMonth = async (y: number, m: number) => {
+      const { from, to } = makeRange(y, m);
+      if (source === "fudo") {
+        const conds = [eq(fudoVentas.clientId, clientId), gte(fudoVentas.fecha, from), lte(fudoVentas.fecha, to)];
+        if (localIds.length > 0) conds.push(inArray(fudoVentas.localId, localIds));
+        const rows = await db.select({ vt: fudoVentas.ventaTotal, tc: fudoVentas.ticketCount }).from(fudoVentas).where(and(...conds));
+        return {
+          ventaTotal: rows.reduce((s, r) => s + (parseFloat(String(r.vt)) || 0), 0),
+          ticketCount: rows.reduce((s, r) => s + (r.tc ?? 0), 0),
+        };
+      } else {
+        const conds = [eq(dataliveVentas.clientId, clientId), gte(dataliveVentas.fecha, from), lte(dataliveVentas.fecha, to)];
+        if (localIds.length > 0) conds.push(inArray(dataliveVentas.localId, localIds));
+        const rows = await db.select({ vt: dataliveVentas.ventaTotal }).from(dataliveVentas).where(and(...conds));
+        return { ventaTotal: rows.reduce((s, r) => s + (parseFloat(String(r.vt)) || 0), 0), ticketCount: null };
+      }
+    };
+
+    const prevM = month === 1 ? { y: year - 1, m: 12 } : { y: year, m: month - 1 };
+    const prev2M = prevM.m === 1 ? { y: prevM.y - 1, m: 12 } : { y: prevM.y, m: prevM.m - 1 };
+
+    const [current, prev, prev2] = await Promise.all([
+      sumMonth(year, month),
+      sumMonth(prevM.y, prevM.m),
+      sumMonth(prev2M.y, prev2M.m),
+    ]);
+
+    const pctVsPrev = prev.ventaTotal > 0 ? ((current.ventaTotal - prev.ventaTotal) / prev.ventaTotal) * 100 : null;
+    const pctVsPrev2 = prev2.ventaTotal > 0 ? ((current.ventaTotal - prev2.ventaTotal) / prev2.ventaTotal) * 100 : null;
+
+    return { current, prev, prev2, pctVsPrev, pctVsPrev2 };
+  }
+
+  async getDashboardSaldos(clientId: number, year: number, month: number) {
+    const lastDay = new Date(year, month, 0).getDate();
+    const toDate = `${year}-${String(month).padStart(2, "0")}-${String(lastDay).padStart(2, "0")}`;
+
+    const allAccounts = await db
+      .select({ id: bankAccounts.id, name: bankAccounts.name })
+      .from(bankAccounts)
+      .where(eq(bankAccounts.clientId, clientId));
+
+    const result = [];
+    for (const acc of allAccounts) {
+      const rows = await db
+        .select({ amount: transactions.amount, type: transactions.type, date: transactions.transactionDate })
+        .from(transactions)
+        .where(and(eq(transactions.clientId, clientId), eq(transactions.bankAccountId, acc.id), lte(transactions.transactionDate, toDate)));
+      let saldo = 0;
+      let lastDate: string | null = null;
+      for (const r of rows) {
+        const amt = parseFloat(String(r.amount)) || 0;
+        saldo += r.type === "income" ? amt : -amt;
+        if (!lastDate || String(r.date) > lastDate) lastDate = String(r.date);
+      }
+      result.push({ accountId: acc.id, accountName: acc.name, saldo, lastMovementDate: lastDate });
+    }
+    return result;
+  }
+
+  async getDashboardDeudasProveedores(clientId: number) {
+    const allInvoices = await db
+      .select({ id: invoices.id, supplierId: invoices.supplierId, totalAmount: invoices.totalAmount })
+      .from(invoices)
+      .where(and(eq(invoices.clientId, clientId)));
+
+    const allAllocations = await db
+      .select({ invoiceId: paymentAllocations.invoiceId, amount: paymentAllocations.amount })
+      .from(paymentAllocations)
+      .where(eq(paymentAllocations.clientId, clientId));
+
+    const paidByInvoice = new Map<number, number>();
+    for (const a of allAllocations) {
+      paidByInvoice.set(a.invoiceId, (paidByInvoice.get(a.invoiceId) ?? 0) + (parseFloat(String(a.amount)) || 0));
+    }
+
+    const allSuppliers = await db.select({ id: suppliers.id, name: suppliers.name }).from(suppliers).where(eq(suppliers.clientId, clientId));
+    const supplierMap = new Map(allSuppliers.map((s) => [s.id, s.name]));
+
+    const debtBySupplier = new Map<number, number>();
+    for (const inv of allInvoices) {
+      const total = parseFloat(String(inv.totalAmount)) || 0;
+      const paid = paidByInvoice.get(inv.id) ?? 0;
+      const debt = total - paid;
+      if (debt > 0) {
+        debtBySupplier.set(inv.supplierId, (debtBySupplier.get(inv.supplierId) ?? 0) + debt);
+      }
+    }
+
+    return Array.from(debtBySupplier.entries())
+      .map(([supplierId, deuda]) => ({ supplierId, supplierName: supplierMap.get(supplierId) ?? "Desconocido", deuda }))
+      .sort((a, b) => b.deuda - a.deuda);
+  }
+
+  async getDashboardVentasSemanales(clientId: number, weekStart: string, localIds: number[], source: "fudo" | "datalive") {
+    const startDate = new Date(weekStart + "T00:00:00Z");
+    const prevStartDate = new Date(startDate);
+    prevStartDate.setUTCDate(prevStartDate.getUTCDate() - 7);
+
+    const toIso = (d: Date) => d.toISOString().slice(0, 10);
+    const addDays = (d: Date, n: number) => { const r = new Date(d); r.setUTCDate(r.getUTCDate() + n); return r; };
+
+    const fetchWeek = async (start: Date) => {
+      const days: { date: string; ventaTotal: number }[] = [];
+      for (let i = 0; i < 7; i++) {
+        const d = toIso(addDays(start, i));
+        if (source === "fudo") {
+          const conds = [eq(fudoVentas.clientId, clientId), eq(fudoVentas.fecha, d)];
+          if (localIds.length > 0) conds.push(inArray(fudoVentas.localId, localIds));
+          const rows = await db.select({ vt: fudoVentas.ventaTotal }).from(fudoVentas).where(and(...conds));
+          days.push({ date: d, ventaTotal: rows.reduce((s, r) => s + (parseFloat(String(r.vt)) || 0), 0) });
+        } else {
+          const conds = [eq(dataliveVentas.clientId, clientId), eq(dataliveVentas.fecha, d)];
+          if (localIds.length > 0) conds.push(inArray(dataliveVentas.localId, localIds));
+          const rows = await db.select({ vt: dataliveVentas.ventaTotal }).from(dataliveVentas).where(and(...conds));
+          days.push({ date: d, ventaTotal: rows.reduce((s, r) => s + (parseFloat(String(r.vt)) || 0), 0) });
+        }
+      }
+      return days;
+    };
+
+    const [current, previous] = await Promise.all([fetchWeek(startDate), fetchWeek(prevStartDate)]);
+    return { current, previous, weekStart: toIso(startDate), prevWeekStart: toIso(prevStartDate) };
+  }
+
+  async getDashboardCmvPeriodo(clientId: number, dateFrom: string, dateTo: string, localIds: number[]) {
+    const conds = [eq(cmvCalculations.clientId, clientId), gte(cmvCalculations.periodFrom, dateFrom), lte(cmvCalculations.periodTo, dateTo)];
+    if (localIds.length > 0) conds.push(inArray(cmvCalculations.localId, localIds));
+    const rows = await db.select().from(cmvCalculations).where(and(...conds));
+    const totalVentas = rows.reduce((s, r) => s + (parseFloat(String(r.totalSales)) || 0), 0);
+    const totalCosto = rows.reduce((s, r) => s + (parseFloat(String(r.totalCost)) || 0), 0);
+    const cmvPct = totalVentas > 0 ? (totalCosto / totalVentas) * 100 : 0;
+    return { totalVentas, totalCosto, cmvPct, rows };
+  }
+
+  async getDashboardTopProductos(clientId: number, dateFrom: string, dateTo: string, localIds: number[], source: "fudo" | "datalive") {
+    if (source === "fudo") {
+      const conds = [eq(fudoProductos.clientId, clientId), gte(fudoProductos.fecha, dateFrom), lte(fudoProductos.fecha, dateTo)];
+      if (localIds.length > 0) conds.push(inArray(fudoProductos.localId, localIds));
+      const rows = await db.select({ producto: fudoProductos.producto, cantidad: fudoProductos.cantidad }).from(fudoProductos).where(and(...conds));
+      const map = new Map<string, number>();
+      for (const r of rows) map.set(r.producto, (map.get(r.producto) ?? 0) + (r.cantidad ?? 0));
+      return Array.from(map.entries()).map(([producto, cantidad]) => ({ producto, cantidad })).sort((a, b) => b.cantidad - a.cantidad);
+    } else {
+      const conds = [eq(dataliveProductos.clientId, clientId), gte(dataliveProductos.fechaDesde, dateFrom), lte(dataliveProductos.fechaHasta, dateTo)];
+      if (localIds.length > 0) conds.push(inArray(dataliveProductos.localId, localIds));
+      const rows = await db.select({ producto: dataliveProductos.producto, cantidad: dataliveProductos.cantidad }).from(dataliveProductos).where(and(...conds));
+      const map = new Map<string, number>();
+      for (const r of rows) map.set(r.producto, (map.get(r.producto) ?? 0) + (r.cantidad ?? 0));
+      return Array.from(map.entries()).map(([producto, cantidad]) => ({ producto, cantidad })).sort((a, b) => b.cantidad - a.cantidad);
+    }
+  }
+
+  async getDashboardTopCategorias(clientId: number, dateFrom: string, dateTo: string, localIds: number[], source: "fudo" | "datalive") {
+    if (source === "fudo") {
+      const conds = [eq(fudoProductos.clientId, clientId), gte(fudoProductos.fecha, dateFrom), lte(fudoProductos.fecha, dateTo)];
+      if (localIds.length > 0) conds.push(inArray(fudoProductos.localId, localIds));
+      const rows = await db.select({ categoria: fudoProductos.categoria, cantidad: fudoProductos.cantidad }).from(fudoProductos).where(and(...conds));
+      const map = new Map<string, number>();
+      for (const r of rows) {
+        const cat = r.categoria || "Sin categoría";
+        map.set(cat, (map.get(cat) ?? 0) + (r.cantidad ?? 0));
+      }
+      return Array.from(map.entries()).map(([categoria, cantidad]) => ({ categoria, cantidad })).sort((a, b) => b.cantidad - a.cantidad);
+    } else {
+      // Datalive products don't have categories in current schema — return empty
+      return [];
+    }
+  }
+
+  async getDashboardComposicionPagos(clientId: number, year: number, month: number, localIds: number[], source: "fudo" | "datalive") {
+    const pad = (n: number) => String(n).padStart(2, "0");
+    const from = `${year}-${pad(month)}-01`;
+    const lastDay = new Date(year, month, 0).getDate();
+    const to = `${year}-${pad(month)}-${pad(lastDay)}`;
+
+    if (source === "fudo") {
+      const conds = [eq(fudoPagos.clientId, clientId), gte(fudoPagos.fecha, from), lte(fudoPagos.fecha, to)];
+      if (localIds.length > 0) conds.push(inArray(fudoPagos.localId, localIds));
+      const rows = await db.select({ medioPago: fudoPagos.medioPago, importe: fudoPagos.importe }).from(fudoPagos).where(and(...conds));
+      const map = new Map<string, number>();
+      for (const r of rows) map.set(r.medioPago, (map.get(r.medioPago) ?? 0) + (parseFloat(String(r.importe)) || 0));
+      const total = Array.from(map.values()).reduce((s, v) => s + v, 0);
+      return Array.from(map.entries())
+        .map(([medioPago, importe]) => ({ medioPago, importe, pct: total > 0 ? (importe / total) * 100 : 0 }))
+        .sort((a, b) => b.importe - a.importe);
+    } else {
+      const conds = [eq(dataliveVentas.clientId, clientId), gte(dataliveVentas.fecha, from), lte(dataliveVentas.fecha, to)];
+      if (localIds.length > 0) conds.push(inArray(dataliveVentas.localId, localIds));
+      const rows = await db.select({ ef: dataliveVentas.ventaEfectivo, on: dataliveVentas.ventaOnline }).from(dataliveVentas).where(and(...conds));
+      const efectivo = rows.reduce((s, r) => s + (parseFloat(String(r.ef)) || 0), 0);
+      const online = rows.reduce((s, r) => s + (parseFloat(String(r.on)) || 0), 0);
+      const total = efectivo + online;
+      return [
+        { medioPago: "Efectivo", importe: efectivo, pct: total > 0 ? (efectivo / total) * 100 : 0 },
+        { medioPago: "Online / Tarjeta", importe: online, pct: total > 0 ? (online / total) * 100 : 0 },
+      ].filter((x) => x.importe > 0);
+    }
+  }
+
+  async getDashboardEvolucionMensual(clientId: number, year: number, localIds: number[], source: "fudo" | "datalive") {
+    const pad = (n: number) => String(n).padStart(2, "0");
+    const months = Array.from({ length: 12 }, (_, i) => i + 1);
+    const result = [];
+    for (const month of months) {
+      const from = `${year}-${pad(month)}-01`;
+      const lastDay = new Date(year, month, 0).getDate();
+      const to = `${year}-${pad(month)}-${pad(lastDay)}`;
+      let ventaTotal = 0;
+      if (source === "fudo") {
+        const conds = [eq(fudoVentas.clientId, clientId), gte(fudoVentas.fecha, from), lte(fudoVentas.fecha, to)];
+        if (localIds.length > 0) conds.push(inArray(fudoVentas.localId, localIds));
+        const rows = await db.select({ vt: fudoVentas.ventaTotal }).from(fudoVentas).where(and(...conds));
+        ventaTotal = rows.reduce((s, r) => s + (parseFloat(String(r.vt)) || 0), 0);
+      } else {
+        const conds = [eq(dataliveVentas.clientId, clientId), gte(dataliveVentas.fecha, from), lte(dataliveVentas.fecha, to)];
+        if (localIds.length > 0) conds.push(inArray(dataliveVentas.localId, localIds));
+        const rows = await db.select({ vt: dataliveVentas.ventaTotal }).from(dataliveVentas).where(and(...conds));
+        ventaTotal = rows.reduce((s, r) => s + (parseFloat(String(r.vt)) || 0), 0);
+      }
+      result.push({ month, ventaTotal });
+    }
+    return result;
+  }
+
+  async getDashboardTop3Balance(clientId: number, year: number, localId?: number) {
+    const spreadsheet = await this.getBalanceSpreadsheet(clientId, year, localId);
+    const monthNames = ["Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"];
+
+    const monthlyVentas: { month: string; value: number }[] = [];
+    const monthlyGastos: { month: string; value: number }[] = [];
+    const monthlyRentabilidad: { month: string; value: number }[] = [];
+
+    for (let m = 1; m <= 12; m++) {
+      let ingresos = 0;
+      let egresos = 0;
+      for (const group of spreadsheet.groups) {
+        if (group.type === "income") {
+          for (const cat of group.categories) {
+            ingresos += parseFloat(String(cat.monthlyAmounts?.[m] ?? 0)) || 0;
+          }
+        } else if (group.type === "expense") {
+          for (const cat of group.categories) {
+            egresos += parseFloat(String(cat.monthlyAmounts?.[m] ?? 0)) || 0;
+          }
+        }
+      }
+      const label = monthNames[m - 1];
+      if (ingresos > 0) monthlyVentas.push({ month: label, value: ingresos });
+      if (egresos > 0) monthlyGastos.push({ month: label, value: egresos });
+      if (ingresos > 0 || egresos > 0) monthlyRentabilidad.push({ month: label, value: ingresos - egresos });
+    }
+
+    return {
+      topVentas: monthlyVentas.sort((a, b) => b.value - a.value).slice(0, 3),
+      topGastos: monthlyGastos.sort((a, b) => b.value - a.value).slice(0, 3),
+      topRentabilidad: monthlyRentabilidad.sort((a, b) => b.value - a.value).slice(0, 3),
+    };
   }
 }
 

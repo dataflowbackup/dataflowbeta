@@ -140,6 +140,59 @@ export function parseFudoAdiciones(rows: any[][], ventasRows?: any[][]): FudoAdi
   return { items: Array.from(byKey.values()), warnings };
 }
 
+export interface ParsedFudoPago {
+  fecha: string;
+  medioPago: string;
+  importe: number;
+}
+
+export interface FudoPagosParseResult {
+  items: ParsedFudoPago[];
+  warnings: string[];
+}
+
+/**
+ * Parsea la solapa "Pagos" del reporte FUDO (4ta hoja, índice 3).
+ * Col B (índice 1) = Fecha, Col C (índice 2) = Medio de pago, Col D (índice 3) = Importe.
+ * Fila 0 = cabecera; datos desde fila 1.
+ * Agrupa por (fecha, medioPago) sumando importes.
+ */
+export function parseFudoPagos(rows: any[][]): FudoPagosParseResult {
+  const warnings: string[] = [];
+  if (!rows || rows.length <= 1) return { items: [], warnings: ["Solapa Pagos vacía o no encontrada."] };
+
+  const byKey = new Map<string, ParsedFudoPago>();
+
+  for (let i = 1; i < rows.length; i++) {
+    const row = rows[i];
+    if (!row || row.every((c: any) => c == null || c === "")) continue;
+
+    const fecha = excelDateToIso(row[1]);
+    if (!fecha) continue;
+
+    const medioPago = String(row[2] ?? "").trim();
+    if (!medioPago) continue;
+
+    const importe = parseFloat(String(row[3] ?? 0)) || 0;
+
+    const key = `${fecha}||${medioPago}`;
+    if (byKey.has(key)) {
+      byKey.get(key)!.importe += importe;
+    } else {
+      byKey.set(key, { fecha, medioPago, importe });
+    }
+  }
+
+  const items = Array.from(byKey.values()).map((p) => ({
+    ...p,
+    importe: Math.round(p.importe * 100) / 100,
+  }));
+
+  if (items.length === 0) warnings.push("No se encontraron registros válidos en la solapa Pagos.");
+
+  return { items, warnings };
+}
+
 export function parseFudoReport(rows: any[][]): FudoParseResult {
   const warnings: string[] = [];
 

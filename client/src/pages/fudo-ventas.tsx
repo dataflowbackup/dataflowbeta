@@ -23,7 +23,7 @@ import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { formatCurrency } from "@/lib/formatters";
 import { Upload, Save, Trash2 } from "lucide-react";
-import { parseFudoReport, parseFudoAdiciones, type ParsedFudoDay, type ParsedFudoAdicion } from "@shared/fudoSalesParser";
+import { parseFudoReport, parseFudoAdiciones, parseFudoPagos, type ParsedFudoDay, type ParsedFudoAdicion, type ParsedFudoPago } from "@shared/fudoSalesParser";
 import type { Local } from "@shared/schema";
 
 const DELETE_KEYWORD = "BORRAR";
@@ -51,6 +51,7 @@ export default function FudoVentasPage() {
   const [fileName, setFileName] = useState("");
   const [parsedDays, setParsedDays] = useState<ParsedFudoDay[]>([]);
   const [parsedAdiciones, setParsedAdiciones] = useState<ParsedFudoAdicion[]>([]);
+  const [parsedPagos, setParsedPagos] = useState<ParsedFudoPago[]>([]);
   const [warnings, setWarnings] = useState<string[]>([]);
   const [replaceSet, setReplaceSet] = useState<Set<string>>(new Set());
 
@@ -120,7 +121,19 @@ export default function FudoVentasPage() {
         adicionesWarnings.push("El archivo no tiene solapa Adiciones.");
       }
 
-      setWarnings([...res.warnings, ...adicionesWarnings]);
+      // Hoja 4: Pagos (índice 3)
+      const pagosWarnings: string[] = [];
+      if (wb.SheetNames.length > 3) {
+        const ws3 = wb.Sheets[wb.SheetNames[3]];
+        const rows3 = XLSX.utils.sheet_to_json(ws3, { header: 1, blankrows: false, defval: null }) as any[][];
+        const resPagos = parseFudoPagos(rows3);
+        setParsedPagos(resPagos.items);
+        pagosWarnings.push(...resPagos.warnings);
+      } else {
+        setParsedPagos([]);
+      }
+
+      setWarnings([...res.warnings, ...adicionesWarnings, ...pagosWarnings]);
       setFileName(file.name);
       setReplaceSet(new Set());
       if (res.days.length === 0) {
@@ -150,13 +163,18 @@ export default function FudoVentasPage() {
       const res = await apiRequest("POST", "/api/fudo-ventas/import", {
         localId: parseInt(localId, 10),
         sourceFile: fileName,
-        days: parsedDays.map((d) => ({ fecha: d.fecha, ventaTotal: d.ventaTotal })),
+        days: parsedDays.map((d) => ({ fecha: d.fecha, ventaTotal: d.ventaTotal, ticketCount: d.ticketCount })),
         replaceFechas: Array.from(replaceSet),
         adiciones: parsedAdiciones.map((a) => ({
           fecha: a.fecha,
           producto: a.producto,
           categoria: a.categoria,
           cantidad: a.cantidad,
+        })),
+        pagos: parsedPagos.map((p) => ({
+          fecha: p.fecha,
+          medioPago: p.medioPago,
+          importe: p.importe,
         })),
       });
       return res.json();

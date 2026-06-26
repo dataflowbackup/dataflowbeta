@@ -1226,6 +1226,7 @@ export const fudoVentas = pgTable(
     localId: integer("local_id").notNull().references(() => locals.id),
     fecha: date("fecha").notNull(),
     ventaTotal: decimal("venta_total", { precision: 14, scale: 2 }).default("0"),
+    ticketCount: integer("ticket_count").default(0),
     sourceFile: varchar("source_file", { length: 255 }),
     createdBy: varchar("created_by").references(() => users.id),
     createdAt: timestamp("created_at").defaultNow(),
@@ -1237,6 +1238,30 @@ export const fudoVentas = pgTable(
 export const insertFudoVentaSchema = createInsertSchema(fudoVentas).omit({ id: true, createdAt: true, updatedAt: true });
 export type InsertFudoVenta = z.infer<typeof insertFudoVentaSchema>;
 export type FudoVenta = typeof fudoVentas.$inferSelect;
+
+// ==========================================
+// FUDO PAGOS (Medios de pago por día — solapa "Pagos" del reporte FUDO)
+// Una fila por (empresa, local, fecha, medioPago). Idempotente por ese cuarteto.
+// ==========================================
+export const fudoPagos = pgTable(
+  "fudo_pagos",
+  {
+    id: serial("id").primaryKey(),
+    clientId: integer("client_id").notNull().references(() => clients.id, { onDelete: "cascade" }),
+    localId: integer("local_id").notNull().references(() => locals.id),
+    fecha: date("fecha").notNull(),
+    medioPago: varchar("medio_pago", { length: 100 }).notNull(),
+    importe: decimal("importe", { precision: 14, scale: 2 }).default("0"),
+    sourceFile: varchar("source_file", { length: 255 }),
+    createdBy: varchar("created_by").references(() => users.id),
+    createdAt: timestamp("created_at").defaultNow(),
+  },
+  (table) => [uniqueIndex("fudo_pagos_client_local_fecha_medio_uq").on(table.clientId, table.localId, table.fecha, table.medioPago)],
+);
+
+export const insertFudoPagoSchema = createInsertSchema(fudoPagos).omit({ id: true, createdAt: true });
+export type InsertFudoPago = z.infer<typeof insertFudoPagoSchema>;
+export type FudoPago = typeof fudoPagos.$inferSelect;
 
 // ==========================================
 // FUDO PRODUCTOS (Adiciones por producto/día importadas de la solapa "Adiciones" del reporte FUDO)
@@ -1452,6 +1477,31 @@ export const localAliases = pgTable("local_aliases", {
 export const insertLocalAliasSchema = createInsertSchema(localAliases).omit({ id: true, createdAt: true });
 export type InsertLocalAlias = z.infer<typeof insertLocalAliasSchema>;
 export type LocalAlias = typeof localAliases.$inferSelect;
+
+// ==========================================
+// MONTHLY GOALS (Objetivos mensuales por local)
+// Una fila por (empresa, local, año, mes). Idempotente por ese cuarteto.
+// ==========================================
+export const monthlyGoals = pgTable(
+  "monthly_goals",
+  {
+    id: serial("id").primaryKey(),
+    clientId: integer("client_id").notNull().references(() => clients.id, { onDelete: "cascade" }),
+    localId: integer("local_id").notNull().references(() => locals.id, { onDelete: "cascade" }),
+    year: integer("year").notNull(),
+    month: integer("month").notNull(),
+    facturacionObjetivo: decimal("facturacion_objetivo", { precision: 14, scale: 2 }),
+    ticketsObjetivo: integer("tickets_objetivo"),
+    cmvObjetivo: decimal("cmv_objetivo", { precision: 5, scale: 2 }),
+    createdAt: timestamp("created_at").defaultNow(),
+    updatedAt: timestamp("updated_at").defaultNow(),
+  },
+  (table) => [uniqueIndex("monthly_goals_client_local_year_month_uq").on(table.clientId, table.localId, table.year, table.month)],
+);
+
+export const insertMonthlyGoalSchema = createInsertSchema(monthlyGoals).omit({ id: true, createdAt: true, updatedAt: true });
+export type InsertMonthlyGoal = z.infer<typeof insertMonthlyGoalSchema>;
+export type MonthlyGoal = typeof monthlyGoals.$inferSelect;
 
 // ==========================================
 // AUDIT LOG

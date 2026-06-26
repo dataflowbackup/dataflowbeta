@@ -130,6 +130,7 @@ const menuSections: MenuSection[] = [
       { title: "Punto de Equilibrio", url: "/punto-equilibrio", icon: Target, permission: "breakeven.view" },
       { title: "Ventas Datalive", url: "/ventas-datalive", icon: Upload },
       { title: "Ventas FUDO", url: "/ventas-fudo", icon: Upload },
+      { title: "Objetivos Mensuales", url: "/objetivos-mensuales", icon: Target },
       { title: "Dashboard", url: "/dashboard", icon: BarChart3 },
     ],
   },

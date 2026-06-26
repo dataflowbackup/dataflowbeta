@@ -3606,6 +3606,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
             z.object({
               fecha: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Fecha inválida"),
               ventaTotal: z.coerce.number(),
+              ticketCount: z.coerce.number().int().optional().default(0),
             }),
           )
           .min(1, "No hay días para importar"),
@@ -3616,6 +3617,16 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
               producto: z.string().max(255),
               categoria: z.string().max(255).optional().default(""),
               cantidad: z.coerce.number().int(),
+            }),
+          )
+          .optional()
+          .default([]),
+        pagos: z
+          .array(
+            z.object({
+              fecha: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Fecha inválida"),
+              medioPago: z.string().max(100),
+              importe: z.coerce.number(),
             }),
           )
           .optional()
@@ -3645,7 +3656,17 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         );
       }
 
-      res.json({ ...result, productos: productosResult });
+      let pagosResult = { insertados: 0, reemplazados: 0 };
+      if (parsed.data.pagos.length > 0) {
+        pagosResult = await storage.importFudoPagos(
+          clientId,
+          parsed.data.localId,
+          parsed.data.pagos,
+          { sourceFile: parsed.data.sourceFile ?? null, createdBy: userId ?? null, replaceFechas: parsed.data.replaceFechas ?? [] },
+        );
+      }
+
+      res.json({ ...result, productos: productosResult, pagos: pagosResult });
     } catch (e: any) {
       res.status(500).json({ message: e.message });
     }
@@ -5062,6 +5083,167 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     } catch (e: any) {
       res.status(500).json({ message: e.message });
     }
+  });
+
+  // ==========================================
+  // MONTHLY GOALS (Objetivos mensuales)
+  // ==========================================
+
+  app.get("/api/monthly-goals", isAuthenticated, async (req, res) => {
+    try {
+      const clientId = await getClientId(req);
+      const year = parseInt(String(req.query.year ?? new Date().getFullYear()), 10);
+      const month = parseInt(String(req.query.month ?? new Date().getMonth() + 1), 10);
+      const goals = await storage.getMonthlyGoals(clientId, year, month);
+      res.json(goals);
+    } catch (e: any) { res.status(500).json({ message: e.message }); }
+  });
+
+  app.put("/api/monthly-goals", isAuthenticated, async (req, res) => {
+    try {
+      const clientId = await getClientId(req);
+      const schema = z.object({
+        localId: z.coerce.number().int().positive(),
+        year: z.coerce.number().int().min(2020).max(2100),
+        month: z.coerce.number().int().min(1).max(12),
+        facturacionObjetivo: z.coerce.number().nullable().optional(),
+        ticketsObjetivo: z.coerce.number().int().nullable().optional(),
+        cmvObjetivo: z.coerce.number().nullable().optional(),
+      });
+      const parsed = schema.safeParse(req.body);
+      if (!parsed.success) return res.status(400).json({ message: "Datos inválidos", errors: parsed.error.flatten() });
+      const goal = await storage.upsertMonthlyGoal(clientId, parsed.data);
+      res.json(goal);
+    } catch (e: any) { res.status(500).json({ message: e.message }); }
+  });
+
+  app.delete("/api/monthly-goals", isAuthenticated, async (req, res) => {
+    try {
+      const clientId = await getClientId(req);
+      const schema = z.object({
+        localId: z.coerce.number().int().positive(),
+        year: z.coerce.number().int(),
+        month: z.coerce.number().int(),
+      });
+      const parsed = schema.safeParse(req.body);
+      if (!parsed.success) return res.status(400).json({ message: "Datos inválidos" });
+      await storage.deleteMonthlyGoal(clientId, parsed.data.localId, parsed.data.year, parsed.data.month);
+      res.json({ ok: true });
+    } catch (e: any) { res.status(500).json({ message: e.message }); }
+  });
+
+  // ==========================================
+  // DASHBOARD API
+  // ==========================================
+
+  app.get("/api/dashboard/ventas-summary", isAuthenticated, async (req, res) => {
+    try {
+      const clientId = await getClientId(req);
+      const year = parseInt(String(req.query.year ?? new Date().getFullYear()), 10);
+      const month = parseInt(String(req.query.month ?? new Date().getMonth() + 1), 10);
+      const localIds = String(req.query.localIds ?? "").split(",").map(Number).filter((n) => n > 0);
+      const source = String(req.query.source ?? "fudo") as "fudo" | "datalive";
+      const data = await storage.getDashboardVentasSummary(clientId, year, month, localIds, source);
+      res.json(data);
+    } catch (e: any) { res.status(500).json({ message: e.message }); }
+  });
+
+  app.get("/api/dashboard/saldos", isAuthenticated, async (req, res) => {
+    try {
+      const clientId = await getClientId(req);
+      const year = parseInt(String(req.query.year ?? new Date().getFullYear()), 10);
+      const month = parseInt(String(req.query.month ?? new Date().getMonth() + 1), 10);
+      const data = await storage.getDashboardSaldos(clientId, year, month);
+      res.json(data);
+    } catch (e: any) { res.status(500).json({ message: e.message }); }
+  });
+
+  app.get("/api/dashboard/deudas-proveedores", isAuthenticated, async (req, res) => {
+    try {
+      const clientId = await getClientId(req);
+      const data = await storage.getDashboardDeudasProveedores(clientId);
+      res.json(data);
+    } catch (e: any) { res.status(500).json({ message: e.message }); }
+  });
+
+  app.get("/api/dashboard/ventas-semanales", isAuthenticated, async (req, res) => {
+    try {
+      const clientId = await getClientId(req);
+      const weekStart = String(req.query.weekStart ?? "");
+      const localIds = String(req.query.localIds ?? "").split(",").map(Number).filter((n) => n > 0);
+      const source = String(req.query.source ?? "fudo") as "fudo" | "datalive";
+      if (!weekStart.match(/^\d{4}-\d{2}-\d{2}$/)) return res.status(400).json({ message: "weekStart inválido" });
+      const data = await storage.getDashboardVentasSemanales(clientId, weekStart, localIds, source);
+      res.json(data);
+    } catch (e: any) { res.status(500).json({ message: e.message }); }
+  });
+
+  app.get("/api/dashboard/cmv-semanal", isAuthenticated, async (req, res) => {
+    try {
+      const clientId = await getClientId(req);
+      const dateFrom = String(req.query.dateFrom ?? "");
+      const dateTo = String(req.query.dateTo ?? "");
+      const localIds = String(req.query.localIds ?? "").split(",").map(Number).filter((n) => n > 0);
+      const data = await storage.getDashboardCmvPeriodo(clientId, dateFrom, dateTo, localIds);
+      res.json(data);
+    } catch (e: any) { res.status(500).json({ message: e.message }); }
+  });
+
+  app.get("/api/dashboard/top-productos", isAuthenticated, async (req, res) => {
+    try {
+      const clientId = await getClientId(req);
+      const dateFrom = String(req.query.dateFrom ?? "");
+      const dateTo = String(req.query.dateTo ?? "");
+      const localIds = String(req.query.localIds ?? "").split(",").map(Number).filter((n) => n > 0);
+      const source = String(req.query.source ?? "fudo") as "fudo" | "datalive";
+      const data = await storage.getDashboardTopProductos(clientId, dateFrom, dateTo, localIds, source);
+      res.json(data);
+    } catch (e: any) { res.status(500).json({ message: e.message }); }
+  });
+
+  app.get("/api/dashboard/top-categorias", isAuthenticated, async (req, res) => {
+    try {
+      const clientId = await getClientId(req);
+      const dateFrom = String(req.query.dateFrom ?? "");
+      const dateTo = String(req.query.dateTo ?? "");
+      const localIds = String(req.query.localIds ?? "").split(",").map(Number).filter((n) => n > 0);
+      const source = String(req.query.source ?? "fudo") as "fudo" | "datalive";
+      const data = await storage.getDashboardTopCategorias(clientId, dateFrom, dateTo, localIds, source);
+      res.json(data);
+    } catch (e: any) { res.status(500).json({ message: e.message }); }
+  });
+
+  app.get("/api/dashboard/composicion-pagos", isAuthenticated, async (req, res) => {
+    try {
+      const clientId = await getClientId(req);
+      const year = parseInt(String(req.query.year ?? new Date().getFullYear()), 10);
+      const month = parseInt(String(req.query.month ?? new Date().getMonth() + 1), 10);
+      const localIds = String(req.query.localIds ?? "").split(",").map(Number).filter((n) => n > 0);
+      const source = String(req.query.source ?? "fudo") as "fudo" | "datalive";
+      const data = await storage.getDashboardComposicionPagos(clientId, year, month, localIds, source);
+      res.json(data);
+    } catch (e: any) { res.status(500).json({ message: e.message }); }
+  });
+
+  app.get("/api/dashboard/evolucion-mensual", isAuthenticated, async (req, res) => {
+    try {
+      const clientId = await getClientId(req);
+      const year = parseInt(String(req.query.year ?? new Date().getFullYear()), 10);
+      const localIds = String(req.query.localIds ?? "").split(",").map(Number).filter((n) => n > 0);
+      const source = String(req.query.source ?? "fudo") as "fudo" | "datalive";
+      const data = await storage.getDashboardEvolucionMensual(clientId, year, localIds, source);
+      res.json(data);
+    } catch (e: any) { res.status(500).json({ message: e.message }); }
+  });
+
+  app.get("/api/dashboard/top3-balance", isAuthenticated, async (req, res) => {
+    try {
+      const clientId = await getClientId(req);
+      const year = parseInt(String(req.query.year ?? new Date().getFullYear()), 10);
+      const localId = req.query.localId ? parseInt(String(req.query.localId), 10) : undefined;
+      const data = await storage.getDashboardTop3Balance(clientId, year, localId);
+      res.json(data);
+    } catch (e: any) { res.status(500).json({ message: e.message }); }
   });
 
   app.use("/api", (req, res) => {
