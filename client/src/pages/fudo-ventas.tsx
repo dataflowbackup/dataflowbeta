@@ -8,6 +8,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Checkbox } from "@/components/ui/checkbox";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { DataEntryCombobox } from "@/components/data-entry-combobox";
 import { DateRangePicker } from "@/components/date-range-picker";
 import {
@@ -22,7 +23,7 @@ import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { formatCurrency } from "@/lib/formatters";
 import { Upload, Save, Trash2 } from "lucide-react";
-import { parseFudoReport, type ParsedFudoDay } from "@shared/fudoSalesParser";
+import { parseFudoReport, parseFudoAdiciones, type ParsedFudoDay, type ParsedFudoAdicion } from "@shared/fudoSalesParser";
 import type { Local } from "@shared/schema";
 
 const DELETE_KEYWORD = "BORRAR";
@@ -34,18 +35,32 @@ interface FudoVentaRow {
   ventaTotal: string | number;
 }
 
+interface FudoProductoRow {
+  id: number;
+  localId: number;
+  fecha: string;
+  producto: string;
+  categoria: string | null;
+  cantidad: number;
+}
+
 export default function FudoVentasPage() {
   const { toast } = useToast();
   const fileRef = useRef<HTMLInputElement>(null);
   const [localId, setLocalId] = useState("");
   const [fileName, setFileName] = useState("");
   const [parsedDays, setParsedDays] = useState<ParsedFudoDay[]>([]);
+  const [parsedAdiciones, setParsedAdiciones] = useState<ParsedFudoAdicion[]>([]);
   const [warnings, setWarnings] = useState<string[]>([]);
   const [replaceSet, setReplaceSet] = useState<Set<string>>(new Set());
 
   const [filterLocalId, setFilterLocalId] = useState("all");
   const [filterFrom, setFilterFrom] = useState("");
   const [filterTo, setFilterTo] = useState("");
+
+  const [filterProdLocalId, setFilterProdLocalId] = useState("all");
+  const [filterProdFrom, setFilterProdFrom] = useState("");
+  const [filterProdTo, setFilterProdTo] = useState("");
 
   const [deleteRow, setDeleteRow] = useState<FudoVentaRow | null>(null);
   const [deleteKeyword, setDeleteKeyword] = useState("");
@@ -56,6 +71,14 @@ export default function FudoVentasPage() {
     queryFn: async () => {
       const res = await fetch(`/api/fudo-ventas`, { credentials: "include" });
       if (!res.ok) throw new Error("Error al cargar ventas");
+      return res.json();
+    },
+  });
+  const { data: productos = [] } = useQuery<FudoProductoRow[]>({
+    queryKey: ["/api/fudo-productos"],
+    queryFn: async () => {
+      const res = await fetch(`/api/fudo-productos`, { credentials: "include" });
+      if (!res.ok) throw new Error("Error al cargar productos");
       return res.json();
     },
   });
@@ -72,11 +95,27 @@ export default function FudoVentasPage() {
     try {
       const buf = await file.arrayBuffer();
       const wb = XLSX.read(buf, { type: "array" });
-      const ws = wb.Sheets[wb.SheetNames[0]];
-      const rows = XLSX.utils.sheet_to_json(ws, { header: 1, blankrows: false, defval: null }) as any[][];
-      const res = parseFudoReport(rows);
+
+      // Hoja 1: Ventas
+      const ws0 = wb.Sheets[wb.SheetNames[0]];
+      const rows0 = XLSX.utils.sheet_to_json(ws0, { header: 1, blankrows: false, defval: null }) as any[][];
+      const res = parseFudoReport(rows0);
       setParsedDays(res.days);
-      setWarnings(res.warnings);
+
+      // Hoja 2: Adiciones
+      const adicionesWarnings: string[] = [];
+      if (wb.SheetNames.length > 1) {
+        const ws1 = wb.Sheets[wb.SheetNames[1]];
+        const rows1 = XLSX.utils.sheet_to_json(ws1, { header: 1, blankrows: false, defval: null }) as any[][];
+        const resAd = parseFudoAdiciones(rows1);
+        setParsedAdiciones(resAd.items);
+        adicionesWarnings.push(...resAd.warnings);
+      } else {
+        setParsedAdiciones([]);
+        adicionesWarnings.push("El archivo no tiene solapa Adiciones.");
+      }
+
+      setWarnings([...res.warnings, ...adicionesWarnings]);
       setFileName(file.name);
       setReplaceSet(new Set());
       if (res.days.length === 0) {
@@ -108,16 +147,27 @@ export default function FudoVentasPage() {
         sourceFile: fileName,
         days: parsedDays.map((d) => ({ fecha: d.fecha, ventaTotal: d.ventaTotal })),
         replaceFechas: Array.from(replaceSet),
+        adiciones: parsedAdiciones.map((a) => ({
+          fecha: a.fecha,
+          producto: a.producto,
+          categoria: a.categoria,
+          cantidad: a.cantidad,
+        })),
       });
       return res.json();
     },
     onSuccess: (r: any) => {
       queryClient.invalidateQueries({ queryKey: ["/api/fudo-ventas"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/fudo-productos"] });
+      const prodMsg = r.productos
+        ? ` Productos: ${r.productos.insertados} nuevo(s), ${r.productos.reemplazados} reemplazado(s).`
+        : "";
       toast({
         title: "Importación lista",
-        description: `${r.insertados} nuevo(s), ${r.reemplazados} reemplazado(s), ${r.omitidos} omitido(s).`,
+        description: `${r.insertados} nuevo(s), ${r.reemplazados} reemplazado(s), ${r.omitidos} omitido(s).${prodMsg}`,
       });
       setParsedDays([]);
+      setParsedAdiciones([]);
       setFileName("");
       setReplaceSet(new Set());
     },
@@ -136,11 +186,29 @@ export default function FudoVentasPage() {
 
   const totals = useMemo(() => {
     let total = 0;
-    for (const e of filteredExisting) {
-      total += parseFloat(String(e.ventaTotal)) || 0;
-    }
+    for (const e of filteredExisting) total += parseFloat(String(e.ventaTotal)) || 0;
     return { total, dias: filteredExisting.length };
   }, [filteredExisting]);
+
+  const filteredProductos = useMemo(() => {
+    return productos.filter((p) => {
+      if (filterProdLocalId !== "all" && String(p.localId) !== filterProdLocalId) return false;
+      const f = String(p.fecha);
+      if (filterProdFrom && f < filterProdFrom) return false;
+      if (filterProdTo && f > filterProdTo) return false;
+      return true;
+    });
+  }, [productos, filterProdLocalId, filterProdFrom, filterProdTo]);
+
+  const prodTotales = useMemo(() => {
+    const byProd = new Map<string, { producto: string; categoria: string; cantidad: number }>();
+    for (const p of filteredProductos) {
+      const key = `${p.producto}||${p.categoria ?? ""}`;
+      if (!byProd.has(key)) byProd.set(key, { producto: p.producto, categoria: p.categoria ?? "", cantidad: 0 });
+      byProd.get(key)!.cantidad += p.cantidad;
+    }
+    return Array.from(byProd.values()).sort((a, b) => b.cantidad - a.cantidad);
+  }, [filteredProductos]);
 
   const deleteMutation = useMutation({
     mutationFn: async (id: number) => {
@@ -155,10 +223,7 @@ export default function FudoVentasPage() {
     onError: (e: Error) => toast({ title: "No se pudo eliminar", description: e.message, variant: "destructive" }),
   });
 
-  const closeDeleteDialog = () => {
-    setDeleteRow(null);
-    setDeleteKeyword("");
-  };
+  const closeDeleteDialog = () => { setDeleteRow(null); setDeleteKeyword(""); };
 
   return (
     <div className="space-y-6">
@@ -167,216 +232,255 @@ export default function FudoVentasPage() {
         description="Importá el reporte diario de FUDO por local (venta bruta: tickets cerrados agrupados por día)"
       />
 
-      <Card>
-        <CardHeader className="pb-3"><CardTitle className="text-base">Importar reporte</CardTitle></CardHeader>
-        <CardContent className="space-y-4">
-          <div className="flex flex-col gap-4 sm:flex-row sm:items-end">
-            <div className="space-y-1">
-              <Label className="text-xs">Local *</Label>
-              <DataEntryCombobox
-                options={localOptions}
-                value={localId}
-                onValueChange={(v) => { setLocalId(v); setParsedDays([]); setFileName(""); setReplaceSet(new Set()); }}
-                placeholder="Elegí el local (manual)"
-                searchPlaceholder="Buscar local…"
-                triggerClassName="w-64"
-                data-testid="select-local"
-              />
-            </div>
-            <div className="space-y-1">
-              <Label className="text-xs">Reporte FUDO (.xlsx)</Label>
-              <div>
-                <input
-                  ref={fileRef}
-                  type="file"
-                  accept=".xls,.xlsx"
-                  className="hidden"
-                  onChange={(e) => {
-                    if (e.target.files?.[0]) handleFile(e.target.files[0]);
-                    e.target.value = "";
-                  }}
-                  data-testid="input-file"
-                />
-                <Button
-                  type="button"
-                  variant="outline"
-                  disabled={!localId}
-                  onClick={() => fileRef.current?.click()}
-                  data-testid="button-upload"
-                >
-                  <Upload className="h-4 w-4 mr-2" /> {fileName || "Subir archivo"}
-                </Button>
-              </div>
-            </div>
-          </div>
-          {!localId && <p className="text-xs text-muted-foreground">Primero elegí el local; el local NO se detecta del archivo.</p>}
+      <Tabs defaultValue="ventas">
+        <TabsList>
+          <TabsTrigger value="ventas">Ventas</TabsTrigger>
+          <TabsTrigger value="productos">Productos vendidos</TabsTrigger>
+        </TabsList>
 
-          {warnings.length > 0 && (
-            <div className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-400">
-              {warnings.map((w, i) => <div key={i}>• {w}</div>)}
-            </div>
-          )}
-
-          {parsedDays.length > 0 && (
-            <>
-              <div className="rounded-md border overflow-x-auto">
-                <table className="w-full text-sm">
-                  <thead>
-                    <tr className="bg-muted/50">
-                      <th className="text-left px-3 py-2 font-medium border-b">Día</th>
-                      <th className="text-right px-3 py-2 font-medium border-b">Total</th>
-                      <th className="text-right px-3 py-2 font-medium border-b">Tickets</th>
-                      <th className="text-left px-3 py-2 font-medium border-b">Estado</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {parsedDays.map((d) => {
-                      const ya = existingFechas.has(d.fecha);
-                      return (
-                        <tr key={d.fecha} className="border-b">
-                          <td className="px-3 py-2 font-mono">{d.fecha}</td>
-                          <td className="px-3 py-2 text-right font-mono">{formatCurrency(d.ventaTotal)}</td>
-                          <td className="px-3 py-2 text-right text-muted-foreground">{d.ticketCount}</td>
-                          <td className="px-3 py-2">
-                            {ya ? (
-                              <label className="flex items-center gap-2">
-                                <Badge variant="secondary">Ya importado</Badge>
-                                <Checkbox
-                                  checked={replaceSet.has(d.fecha)}
-                                  onCheckedChange={(c) =>
-                                    setReplaceSet((prev) => {
-                                      const next = new Set(prev);
-                                      c ? next.add(d.fecha) : next.delete(d.fecha);
-                                      return next;
-                                    })
-                                  }
-                                  data-testid={`replace-${d.fecha}`}
-                                />
-                                <span className="text-xs text-muted-foreground">Reemplazar</span>
-                              </label>
-                            ) : (
-                              <Badge>Nuevo</Badge>
-                            )}
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
-
-              <div className="flex items-center justify-between">
-                <div className="text-sm text-muted-foreground">
-                  {counts.nuevos} nuevo(s) · {counts.aReemplazar} a reemplazar · {counts.yaImport - counts.aReemplazar} se omiten
-                </div>
-                <Button
-                  onClick={() => importMutation.mutate()}
-                  disabled={importMutation.isPending || (counts.nuevos === 0 && counts.aReemplazar === 0)}
-                  data-testid="button-confirm-import"
-                >
-                  <Save className="h-4 w-4 mr-2" /> {importMutation.isPending ? "Importando..." : "Confirmar importación"}
-                </Button>
-              </div>
-            </>
-          )}
-        </CardContent>
-      </Card>
-
-      {existing.length > 0 && (
-        <Card>
-          <CardHeader className="pb-3"><CardTitle className="text-base">Ventas FUDO cargadas</CardTitle></CardHeader>
-          <CardContent className="space-y-4">
-            <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
-              <div className="space-y-1">
-                <Label className="text-xs">Local</Label>
-                <DataEntryCombobox
-                  options={[{ value: "all", label: "Todos los locales" }, ...localOptions]}
-                  value={filterLocalId}
-                  onValueChange={setFilterLocalId}
-                  placeholder="Todos los locales"
-                  searchPlaceholder="Buscar local…"
-                  triggerClassName="w-64"
-                  data-testid="filter-local"
-                />
-              </div>
-              <div className="space-y-1">
-                <Label className="text-xs">Fecha</Label>
-                <div>
-                  <DateRangePicker
-                    from={filterFrom}
-                    to={filterTo}
-                    onChange={(f, t) => { setFilterFrom(f); setFilterTo(t); }}
-                    placeholder="Todas las fechas"
+        {/* ── TAB VENTAS ── */}
+        <TabsContent value="ventas" className="space-y-6 mt-4">
+          <Card>
+            <CardHeader className="pb-3"><CardTitle className="text-base">Importar reporte</CardTitle></CardHeader>
+            <CardContent className="space-y-4">
+              <div className="flex flex-col gap-4 sm:flex-row sm:items-end">
+                <div className="space-y-1">
+                  <Label className="text-xs">Local *</Label>
+                  <DataEntryCombobox
+                    options={localOptions}
+                    value={localId}
+                    onValueChange={(v) => { setLocalId(v); setParsedDays([]); setParsedAdiciones([]); setFileName(""); setReplaceSet(new Set()); }}
+                    placeholder="Elegí el local (manual)"
+                    searchPlaceholder="Buscar local…"
+                    triggerClassName="w-64"
                   />
                 </div>
+                <div className="space-y-1">
+                  <Label className="text-xs">Reporte FUDO (.xlsx)</Label>
+                  <div>
+                    <input
+                      ref={fileRef}
+                      type="file"
+                      accept=".xls,.xlsx"
+                      className="hidden"
+                      onChange={(e) => { if (e.target.files?.[0]) handleFile(e.target.files[0]); e.target.value = ""; }}
+                    />
+                    <Button type="button" variant="outline" disabled={!localId} onClick={() => fileRef.current?.click()}>
+                      <Upload className="h-4 w-4 mr-2" /> {fileName || "Subir archivo"}
+                    </Button>
+                  </div>
+                </div>
               </div>
-              {(filterLocalId !== "all" || filterFrom || filterTo) && (
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => { setFilterLocalId("all"); setFilterFrom(""); setFilterTo(""); }}
-                  data-testid="filter-clear"
-                >
-                  Limpiar filtros
-                </Button>
+              {!localId && <p className="text-xs text-muted-foreground">Primero elegí el local; el local NO se detecta del archivo.</p>}
+
+              {warnings.length > 0 && (
+                <div className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-400">
+                  {warnings.map((w, i) => <div key={i}>• {w}</div>)}
+                </div>
               )}
-            </div>
 
-            <div className="grid grid-cols-2 gap-3 lg:grid-cols-2">
-              <div className="rounded-lg border bg-card p-3">
-                <p className="text-xs text-muted-foreground">Venta Total</p>
-                <p className="text-lg font-semibold font-mono" data-testid="total-venta">{formatCurrency(totals.total)}</p>
-              </div>
-              <div className="rounded-lg border bg-card p-3">
-                <p className="text-xs text-muted-foreground">Días</p>
-                <p className="text-lg font-semibold font-mono" data-testid="total-dias">{totals.dias}</p>
-              </div>
-            </div>
-
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="bg-muted/50">
-                    <th className="text-left px-3 py-2 font-medium border-b">Local</th>
-                    <th className="text-left px-3 py-2 font-medium border-b">Día</th>
-                    <th className="text-right px-3 py-2 font-medium border-b">Total</th>
-                    <th className="px-3 py-2 font-medium border-b w-12"></th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {filteredExisting.length === 0 ? (
-                    <tr>
-                      <td colSpan={4} className="px-3 py-6 text-center text-muted-foreground">
-                        No hay ventas para el filtro seleccionado.
-                      </td>
-                    </tr>
-                  ) : (
-                    filteredExisting.map((e) => (
-                      <tr key={e.id} className="border-b">
-                        <td className="px-3 py-2">{localNameById.get(e.localId) ?? `Local ${e.localId}`}</td>
-                        <td className="px-3 py-2 font-mono">{e.fecha}</td>
-                        <td className="px-3 py-2 text-right font-mono">{formatCurrency(parseFloat(String(e.ventaTotal)) || 0)}</td>
-                        <td className="px-3 py-2 text-center">
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            className="h-8 w-8"
-                            onClick={() => { setDeleteRow(e); setDeleteKeyword(""); }}
-                            data-testid={`button-delete-${e.id}`}
-                          >
-                            <Trash2 className="h-4 w-4 text-destructive" />
-                          </Button>
-                        </td>
-                      </tr>
-                    ))
+              {parsedDays.length > 0 && (
+                <>
+                  <div className="rounded-md border overflow-x-auto">
+                    <table className="w-full text-sm">
+                      <thead>
+                        <tr className="bg-muted/50">
+                          <th className="text-left px-3 py-2 font-medium border-b">Día</th>
+                          <th className="text-right px-3 py-2 font-medium border-b">Total</th>
+                          <th className="text-right px-3 py-2 font-medium border-b">Tickets</th>
+                          <th className="text-left px-3 py-2 font-medium border-b">Estado</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {parsedDays.map((d) => {
+                          const ya = existingFechas.has(d.fecha);
+                          return (
+                            <tr key={d.fecha} className="border-b">
+                              <td className="px-3 py-2 font-mono">{d.fecha}</td>
+                              <td className="px-3 py-2 text-right font-mono">{formatCurrency(d.ventaTotal)}</td>
+                              <td className="px-3 py-2 text-right text-muted-foreground">{d.ticketCount}</td>
+                              <td className="px-3 py-2">
+                                {ya ? (
+                                  <label className="flex items-center gap-2">
+                                    <Badge variant="secondary">Ya importado</Badge>
+                                    <Checkbox
+                                      checked={replaceSet.has(d.fecha)}
+                                      onCheckedChange={(c) =>
+                                        setReplaceSet((prev) => { const next = new Set(prev); c ? next.add(d.fecha) : next.delete(d.fecha); return next; })
+                                      }
+                                    />
+                                    <span className="text-xs text-muted-foreground">Reemplazar</span>
+                                  </label>
+                                ) : (
+                                  <Badge>Nuevo</Badge>
+                                )}
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                  {parsedAdiciones.length > 0 && (
+                    <p className="text-xs text-muted-foreground">
+                      Solapa Adiciones: {parsedAdiciones.length} ítem(s) de productos detectados — se importan junto con las ventas.
+                    </p>
                   )}
-                </tbody>
-              </table>
-            </div>
-          </CardContent>
-        </Card>
-      )}
+                  <div className="flex items-center justify-between">
+                    <div className="text-sm text-muted-foreground">
+                      {counts.nuevos} nuevo(s) · {counts.aReemplazar} a reemplazar · {counts.yaImport - counts.aReemplazar} se omiten
+                    </div>
+                    <Button
+                      onClick={() => importMutation.mutate()}
+                      disabled={importMutation.isPending || (counts.nuevos === 0 && counts.aReemplazar === 0)}
+                    >
+                      <Save className="h-4 w-4 mr-2" /> {importMutation.isPending ? "Importando..." : "Confirmar importación"}
+                    </Button>
+                  </div>
+                </>
+              )}
+            </CardContent>
+          </Card>
+
+          {existing.length > 0 && (
+            <Card>
+              <CardHeader className="pb-3"><CardTitle className="text-base">Ventas FUDO cargadas</CardTitle></CardHeader>
+              <CardContent className="space-y-4">
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
+                  <div className="space-y-1">
+                    <Label className="text-xs">Local</Label>
+                    <DataEntryCombobox
+                      options={[{ value: "all", label: "Todos los locales" }, ...localOptions]}
+                      value={filterLocalId}
+                      onValueChange={setFilterLocalId}
+                      placeholder="Todos los locales"
+                      searchPlaceholder="Buscar local…"
+                      triggerClassName="w-64"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <Label className="text-xs">Fecha</Label>
+                    <DateRangePicker from={filterFrom} to={filterTo} onChange={(f, t) => { setFilterFrom(f); setFilterTo(t); }} placeholder="Todas las fechas" />
+                  </div>
+                  {(filterLocalId !== "all" || filterFrom || filterTo) && (
+                    <Button type="button" variant="ghost" size="sm" onClick={() => { setFilterLocalId("all"); setFilterFrom(""); setFilterTo(""); }}>
+                      Limpiar filtros
+                    </Button>
+                  )}
+                </div>
+
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="rounded-lg border bg-card p-3">
+                    <p className="text-xs text-muted-foreground">Venta Total</p>
+                    <p className="text-lg font-semibold font-mono">{formatCurrency(totals.total)}</p>
+                  </div>
+                  <div className="rounded-lg border bg-card p-3">
+                    <p className="text-xs text-muted-foreground">Días</p>
+                    <p className="text-lg font-semibold font-mono">{totals.dias}</p>
+                  </div>
+                </div>
+
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="bg-muted/50">
+                        <th className="text-left px-3 py-2 font-medium border-b">Local</th>
+                        <th className="text-left px-3 py-2 font-medium border-b">Día</th>
+                        <th className="text-right px-3 py-2 font-medium border-b">Total</th>
+                        <th className="px-3 py-2 font-medium border-b w-12"></th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {filteredExisting.length === 0 ? (
+                        <tr><td colSpan={4} className="px-3 py-6 text-center text-muted-foreground">No hay ventas para el filtro seleccionado.</td></tr>
+                      ) : (
+                        filteredExisting.map((e) => (
+                          <tr key={e.id} className="border-b">
+                            <td className="px-3 py-2">{localNameById.get(e.localId) ?? `Local ${e.localId}`}</td>
+                            <td className="px-3 py-2 font-mono">{e.fecha}</td>
+                            <td className="px-3 py-2 text-right font-mono">{formatCurrency(parseFloat(String(e.ventaTotal)) || 0)}</td>
+                            <td className="px-3 py-2 text-center">
+                              <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => { setDeleteRow(e); setDeleteKeyword(""); }}>
+                                <Trash2 className="h-4 w-4 text-destructive" />
+                              </Button>
+                            </td>
+                          </tr>
+                        ))
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </CardContent>
+            </Card>
+          )}
+        </TabsContent>
+
+        {/* ── TAB PRODUCTOS ── */}
+        <TabsContent value="productos" className="space-y-6 mt-4">
+          <Card>
+            <CardHeader className="pb-3"><CardTitle className="text-base">Productos vendidos FUDO</CardTitle></CardHeader>
+            <CardContent className="space-y-4">
+              <p className="text-xs text-muted-foreground">
+                Los productos se importan automáticamente desde la solapa <span className="font-medium">Adiciones</span> al subir el reporte de ventas FUDO.
+              </p>
+
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
+                <div className="space-y-1">
+                  <Label className="text-xs">Local</Label>
+                  <DataEntryCombobox
+                    options={[{ value: "all", label: "Todos los locales" }, ...localOptions]}
+                    value={filterProdLocalId}
+                    onValueChange={setFilterProdLocalId}
+                    placeholder="Todos los locales"
+                    searchPlaceholder="Buscar local…"
+                    triggerClassName="w-64"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <Label className="text-xs">Fecha</Label>
+                  <DateRangePicker from={filterProdFrom} to={filterProdTo} onChange={(f, t) => { setFilterProdFrom(f); setFilterProdTo(t); }} placeholder="Todas las fechas" />
+                </div>
+                {(filterProdLocalId !== "all" || filterProdFrom || filterProdTo) && (
+                  <Button type="button" variant="ghost" size="sm" onClick={() => { setFilterProdLocalId("all"); setFilterProdFrom(""); setFilterProdTo(""); }}>
+                    Limpiar filtros
+                  </Button>
+                )}
+              </div>
+
+              {productos.length === 0 ? (
+                <p className="text-sm text-muted-foreground py-4 text-center">
+                  Aún no hay productos cargados. Importá un reporte FUDO con solapa Adiciones.
+                </p>
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="bg-muted/50">
+                        <th className="text-left px-3 py-2 font-medium border-b">Producto</th>
+                        <th className="text-left px-3 py-2 font-medium border-b">Categoría</th>
+                        <th className="text-right px-3 py-2 font-medium border-b">Cantidad total</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {prodTotales.length === 0 ? (
+                        <tr><td colSpan={3} className="px-3 py-6 text-center text-muted-foreground">No hay productos para el filtro seleccionado.</td></tr>
+                      ) : (
+                        prodTotales.map((p, i) => (
+                          <tr key={i} className="border-b">
+                            <td className="px-3 py-2">{p.producto}</td>
+                            <td className="px-3 py-2 text-muted-foreground">{p.categoria || "—"}</td>
+                            <td className="px-3 py-2 text-right font-mono font-semibold">{p.cantidad.toLocaleString("es-AR")}</td>
+                          </tr>
+                        ))
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        </TabsContent>
+      </Tabs>
 
       <Dialog open={!!deleteRow} onOpenChange={(o) => !o && closeDeleteDialog()}>
         <DialogContent>
@@ -384,36 +488,21 @@ export default function FudoVentasPage() {
             <DialogTitle>Eliminar venta</DialogTitle>
             <DialogDescription>
               {deleteRow && (
-                <>
-                  Vas a eliminar la venta de{" "}
-                  <span className="font-medium">{localNameById.get(deleteRow.localId) ?? `Local ${deleteRow.localId}`}</span>{" "}
-                  del <span className="font-mono">{deleteRow.fecha}</span>. Esta acción no se puede deshacer.
-                </>
+                <>Vas a eliminar la venta de <span className="font-medium">{localNameById.get(deleteRow.localId) ?? `Local ${deleteRow.localId}`}</span>{" "}del <span className="font-mono">{deleteRow.fecha}</span>. Esta acción no se puede deshacer.</>
               )}
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-2">
-            <Label className="text-xs">
-              Para confirmar, escribí <span className="font-mono font-semibold">{DELETE_KEYWORD}</span>
-            </Label>
-            <Input
-              value={deleteKeyword}
-              onChange={(e) => setDeleteKeyword(e.target.value)}
-              placeholder={DELETE_KEYWORD}
-              autoComplete="off"
-              data-testid="input-delete-keyword"
-            />
+            <Label className="text-xs">Para confirmar, escribí <span className="font-mono font-semibold">{DELETE_KEYWORD}</span></Label>
+            <Input value={deleteKeyword} onChange={(e) => setDeleteKeyword(e.target.value)} placeholder={DELETE_KEYWORD} autoComplete="off" />
           </div>
           <DialogFooter>
-            <Button type="button" variant="outline" onClick={closeDeleteDialog} data-testid="button-cancel-delete">
-              Cancelar
-            </Button>
+            <Button type="button" variant="outline" onClick={closeDeleteDialog}>Cancelar</Button>
             <Button
               type="button"
               variant="destructive"
               disabled={deleteKeyword.trim().toUpperCase() !== DELETE_KEYWORD || deleteMutation.isPending}
               onClick={() => deleteRow && deleteMutation.mutate(deleteRow.id)}
-              data-testid="button-confirm-delete"
             >
               {deleteMutation.isPending ? "Eliminando..." : "Eliminar"}
             </Button>

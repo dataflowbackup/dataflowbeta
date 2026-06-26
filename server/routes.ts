@@ -3601,6 +3601,17 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
             }),
           )
           .min(1, "No hay días para importar"),
+        adiciones: z
+          .array(
+            z.object({
+              fecha: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Fecha inválida"),
+              producto: z.string().max(255),
+              categoria: z.string().max(255).optional().default(""),
+              cantidad: z.coerce.number().int(),
+            }),
+          )
+          .optional()
+          .default([]),
       });
       const parsed = bodySchema.safeParse(req.body);
       if (!parsed.success) return res.status(400).json({ message: "Datos inválidos", errors: parsed.error.flatten() });
@@ -3615,6 +3626,82 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         createdBy: userId ?? null,
         replaceFechas: parsed.data.replaceFechas ?? [],
       });
+
+      let productosResult = { insertados: 0, omitidos: 0, reemplazados: 0 };
+      if (parsed.data.adiciones.length > 0) {
+        productosResult = await storage.importFudoProductos(
+          clientId,
+          parsed.data.localId,
+          parsed.data.adiciones.map((a) => ({ ...a, categoria: a.categoria ?? "" })),
+          { sourceFile: parsed.data.sourceFile ?? null, createdBy: userId ?? null, replaceFechas: parsed.data.replaceFechas ?? [] },
+        );
+      }
+
+      res.json({ ...result, productos: productosResult });
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
+  app.get("/api/fudo-productos", isAuthenticated, async (req, res) => {
+    try {
+      const clientId = await getClientId(req);
+      const localId = req.query.localId && req.query.localId !== "all" ? parseInt(req.query.localId as string, 10) : undefined;
+      const fechaDesde = req.query.fechaDesde as string | undefined;
+      const fechaHasta = req.query.fechaHasta as string | undefined;
+      res.json(await storage.listFudoProductos(clientId, { localId, fechaDesde, fechaHasta }));
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
+  app.get("/api/datalive-productos", isAuthenticated, async (req, res) => {
+    try {
+      const clientId = await getClientId(req);
+      const localId = req.query.localId && req.query.localId !== "all" ? parseInt(req.query.localId as string, 10) : undefined;
+      const fechaDesde = req.query.fechaDesde as string | undefined;
+      const fechaHasta = req.query.fechaHasta as string | undefined;
+      res.json(await storage.listDataliveProductos(clientId, { localId, fechaDesde, fechaHasta }));
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
+  app.post("/api/datalive-productos/import", isAuthenticated, async (req, res) => {
+    try {
+      const clientId = await getClientId(req);
+      const userId = await getAuthenticatedUserId(req);
+      const bodySchema = z.object({
+        localId: z.coerce.number().int().positive(),
+        fechaDesde: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Fecha inválida"),
+        fechaHasta: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Fecha inválida"),
+        sourceFile: z.string().max(255).optional().nullable(),
+        replace: z.boolean().optional().default(false),
+        items: z
+          .array(
+            z.object({
+              producto: z.string().max(255),
+              cantidad: z.coerce.number().int(),
+            }),
+          )
+          .min(1, "No hay productos para importar"),
+      });
+      const parsed = bodySchema.safeParse(req.body);
+      if (!parsed.success) return res.status(400).json({ message: "Datos inválidos", errors: parsed.error.flatten() });
+
+      const locs = await storage.getLocals(clientId);
+      if (!locs.some((l) => l.id === parsed.data.localId)) {
+        return res.status(400).json({ message: "Local inválido para esta empresa." });
+      }
+
+      const result = await storage.importDataliveProductos(
+        clientId,
+        parsed.data.localId,
+        parsed.data.fechaDesde,
+        parsed.data.fechaHasta,
+        parsed.data.items,
+        { sourceFile: parsed.data.sourceFile ?? null, createdBy: userId ?? null, replace: parsed.data.replace },
+      );
       res.json(result);
     } catch (e: any) {
       res.status(500).json({ message: e.message });

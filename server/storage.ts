@@ -51,6 +51,8 @@ import {
   cmvCalculations,
   dataliveVentas,
   fudoVentas,
+  fudoProductos,
+  dataliveProductos,
   auditLog,
   operationalAudits,
   auditTemplates,
@@ -152,6 +154,8 @@ import {
   type CmvCalculation,
   type DataliveVenta,
   type FudoVenta,
+  type FudoProducto,
+  type DataliveProducto,
   type OperationalAudit,
   type InsertOperationalAudit,
   type AuditTemplate,
@@ -524,6 +528,26 @@ export interface IStorage {
     opts: { sourceFile?: string | null; createdBy?: string | null; replaceFechas?: string[] },
   ): Promise<{ insertados: number; omitidos: number; reemplazados: number }>;
   deleteFudoVenta(clientId: number, id: number): Promise<boolean>;
+
+  // Productos FUDO (solapa Adiciones)
+  listFudoProductos(clientId: number, opts?: { localId?: number; fechaDesde?: string; fechaHasta?: string }): Promise<FudoProducto[]>;
+  importFudoProductos(
+    clientId: number,
+    localId: number,
+    items: Array<{ fecha: string; producto: string; categoria: string; cantidad: number }>,
+    opts: { sourceFile?: string | null; createdBy?: string | null; replaceFechas?: string[] },
+  ): Promise<{ insertados: number; omitidos: number; reemplazados: number }>;
+
+  // Productos Datalive (reporte de productos separado)
+  listDataliveProductos(clientId: number, opts?: { localId?: number; fechaDesde?: string; fechaHasta?: string }): Promise<DataliveProducto[]>;
+  importDataliveProductos(
+    clientId: number,
+    localId: number,
+    fechaDesde: string,
+    fechaHasta: string,
+    items: Array<{ producto: string; cantidad: number }>,
+    opts: { sourceFile?: string | null; createdBy?: string | null; replace?: boolean },
+  ): Promise<{ insertados: number; omitidos: number; reemplazados: number }>;
 
   getPermissions(): Promise<Permission[]>;
   createPermission(permission: InsertPermission): Promise<Permission>;
@@ -3466,6 +3490,127 @@ export class DatabaseStorage implements IStorage {
       .where(and(eq(fudoVentas.clientId, clientId), eq(fudoVentas.id, id)))
       .returning({ id: fudoVentas.id });
     return deleted.length > 0;
+  }
+
+  async listFudoProductos(clientId: number, opts?: { localId?: number; fechaDesde?: string; fechaHasta?: string }): Promise<FudoProducto[]> {
+    const conds: any[] = [eq(fudoProductos.clientId, clientId)];
+    if (opts?.localId != null) conds.push(eq(fudoProductos.localId, opts.localId));
+    if (opts?.fechaDesde) conds.push(gte(fudoProductos.fecha, opts.fechaDesde));
+    if (opts?.fechaHasta) conds.push(lte(fudoProductos.fecha, opts.fechaHasta));
+    return db.select().from(fudoProductos).where(and(...conds)).orderBy(desc(fudoProductos.fecha), asc(fudoProductos.producto));
+  }
+
+  async importFudoProductos(
+    clientId: number,
+    localId: number,
+    items: Array<{ fecha: string; producto: string; categoria: string; cantidad: number }>,
+    opts: { sourceFile?: string | null; createdBy?: string | null; replaceFechas?: string[] },
+  ): Promise<{ insertados: number; omitidos: number; reemplazados: number }> {
+    const replace = new Set(opts.replaceFechas ?? []);
+    const existing = await db
+      .select({ fecha: fudoProductos.fecha, producto: fudoProductos.producto })
+      .from(fudoProductos)
+      .where(and(eq(fudoProductos.clientId, clientId), eq(fudoProductos.localId, localId)));
+    const existingSet = new Set(existing.map((r) => `${r.fecha}||${r.producto}`));
+
+    let insertados = 0;
+    let omitidos = 0;
+    let reemplazados = 0;
+
+    for (const item of items) {
+      const key = `${item.fecha}||${item.producto}`;
+      const values = {
+        clientId,
+        localId,
+        fecha: item.fecha,
+        producto: item.producto,
+        categoria: item.categoria || null,
+        cantidad: item.cantidad,
+        sourceFile: opts.sourceFile ?? null,
+        createdBy: opts.createdBy ?? null,
+      };
+      if (existingSet.has(key)) {
+        if (replace.has(item.fecha)) {
+          await db.delete(fudoProductos).where(
+            and(eq(fudoProductos.clientId, clientId), eq(fudoProductos.localId, localId), eq(fudoProductos.fecha, item.fecha), eq(fudoProductos.producto, item.producto)),
+          );
+          await db.insert(fudoProductos).values(values as any);
+          reemplazados++;
+        } else {
+          omitidos++;
+        }
+      } else {
+        await db.insert(fudoProductos).values(values as any);
+        insertados++;
+      }
+    }
+    return { insertados, omitidos, reemplazados };
+  }
+
+  async listDataliveProductos(clientId: number, opts?: { localId?: number; fechaDesde?: string; fechaHasta?: string }): Promise<DataliveProducto[]> {
+    const conds: any[] = [eq(dataliveProductos.clientId, clientId)];
+    if (opts?.localId != null) conds.push(eq(dataliveProductos.localId, opts.localId));
+    if (opts?.fechaDesde) conds.push(gte(dataliveProductos.fechaDesde, opts.fechaDesde));
+    if (opts?.fechaHasta) conds.push(lte(dataliveProductos.fechaHasta, opts.fechaHasta));
+    return db.select().from(dataliveProductos).where(and(...conds)).orderBy(desc(dataliveProductos.fechaDesde), asc(dataliveProductos.producto));
+  }
+
+  async importDataliveProductos(
+    clientId: number,
+    localId: number,
+    fechaDesde: string,
+    fechaHasta: string,
+    items: Array<{ producto: string; cantidad: number }>,
+    opts: { sourceFile?: string | null; createdBy?: string | null; replace?: boolean },
+  ): Promise<{ insertados: number; omitidos: number; reemplazados: number }> {
+    const existing = await db
+      .select({ producto: dataliveProductos.producto })
+      .from(dataliveProductos)
+      .where(and(
+        eq(dataliveProductos.clientId, clientId),
+        eq(dataliveProductos.localId, localId),
+        eq(dataliveProductos.fechaDesde, fechaDesde),
+        eq(dataliveProductos.fechaHasta, fechaHasta),
+      ));
+    const existingSet = new Set(existing.map((r) => r.producto));
+
+    if (opts.replace && existingSet.size > 0) {
+      await db.delete(dataliveProductos).where(
+        and(
+          eq(dataliveProductos.clientId, clientId),
+          eq(dataliveProductos.localId, localId),
+          eq(dataliveProductos.fechaDesde, fechaDesde),
+          eq(dataliveProductos.fechaHasta, fechaHasta),
+        ),
+      );
+    }
+
+    let insertados = 0;
+    let omitidos = 0;
+    let reemplazados = 0;
+
+    for (const item of items) {
+      const values = {
+        clientId,
+        localId,
+        fechaDesde,
+        fechaHasta,
+        producto: item.producto,
+        cantidad: item.cantidad,
+        sourceFile: opts.sourceFile ?? null,
+        createdBy: opts.createdBy ?? null,
+      };
+      if (existingSet.has(item.producto) && !opts.replace) {
+        omitidos++;
+      } else if (existingSet.has(item.producto) && opts.replace) {
+        await db.insert(dataliveProductos).values(values as any);
+        reemplazados++;
+      } else {
+        await db.insert(dataliveProductos).values(values as any);
+        insertados++;
+      }
+    }
+    return { insertados, omitidos, reemplazados };
   }
 
   async getPermissions(): Promise<Permission[]> {

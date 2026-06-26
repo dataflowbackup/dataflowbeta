@@ -1239,6 +1239,56 @@ export type InsertFudoVenta = z.infer<typeof insertFudoVentaSchema>;
 export type FudoVenta = typeof fudoVentas.$inferSelect;
 
 // ==========================================
+// FUDO PRODUCTOS (Adiciones por producto/día importadas de la solapa "Adiciones" del reporte FUDO)
+// Una fila por (empresa, local, fecha, producto). Idempotente por ese cuarteto.
+// ==========================================
+export const fudoProductos = pgTable(
+  "fudo_productos",
+  {
+    id: serial("id").primaryKey(),
+    clientId: integer("client_id").notNull().references(() => clients.id, { onDelete: "cascade" }),
+    localId: integer("local_id").notNull().references(() => locals.id),
+    fecha: date("fecha").notNull(),
+    producto: varchar("producto", { length: 255 }).notNull(),
+    categoria: varchar("categoria", { length: 255 }),
+    cantidad: integer("cantidad").notNull().default(0),
+    sourceFile: varchar("source_file", { length: 255 }),
+    createdBy: varchar("created_by").references(() => users.id),
+    createdAt: timestamp("created_at").defaultNow(),
+  },
+  (table) => [uniqueIndex("fudo_productos_client_local_fecha_producto_uq").on(table.clientId, table.localId, table.fecha, table.producto)],
+);
+
+export const insertFudoProductoSchema = createInsertSchema(fudoProductos).omit({ id: true, createdAt: true });
+export type InsertFudoProducto = z.infer<typeof insertFudoProductoSchema>;
+export type FudoProducto = typeof fudoProductos.$inferSelect;
+
+// ==========================================
+// DATALIVE PRODUCTOS (Productos vendidos importados del reporte de productos de Datalive)
+// Una fila por (empresa, local, fechaDesde, fechaHasta, producto). Idempotente por ese quinteto.
+// ==========================================
+export const dataliveProductos = pgTable(
+  "datalive_productos",
+  {
+    id: serial("id").primaryKey(),
+    clientId: integer("client_id").notNull().references(() => clients.id, { onDelete: "cascade" }),
+    localId: integer("local_id").notNull().references(() => locals.id),
+    fechaDesde: date("fecha_desde").notNull(),
+    fechaHasta: date("fecha_hasta").notNull(),
+    producto: varchar("producto", { length: 255 }).notNull(),
+    cantidad: integer("cantidad").notNull().default(0),
+    sourceFile: varchar("source_file", { length: 255 }),
+    createdBy: varchar("created_by").references(() => users.id),
+    createdAt: timestamp("created_at").defaultNow(),
+  },
+  (table) => [uniqueIndex("datalive_productos_client_local_periodo_producto_uq").on(table.clientId, table.localId, table.fechaDesde, table.fechaHasta, table.producto)],
+);
+
+export const insertDataliveProductoSchema = createInsertSchema(dataliveProductos).omit({ id: true, createdAt: true });
+export type InsertDataliveProducto = z.infer<typeof insertDataliveProductoSchema>;
+export type DataliveProducto = typeof dataliveProductos.$inferSelect;
+
+// ==========================================
 // OPERATIONAL AUDITS (Auditorías Operativas)
 // ==========================================
 export const operationalAudits = pgTable("operational_audits", {

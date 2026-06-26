@@ -53,6 +53,60 @@ function excelDateToIso(raw: unknown): string | null {
   return null;
 }
 
+export interface ParsedFudoAdicion {
+  fecha: string;
+  producto: string;
+  categoria: string;
+  cantidad: number;
+}
+
+export interface FudoAdicionesParseResult {
+  items: ParsedFudoAdicion[];
+  warnings: string[];
+}
+
+/**
+ * Parsea la solapa "Adiciones" del reporte FUDO.
+ * Columnas (0-based): B(1)=Fecha, C(2)=Producto, D(3)=Categoría, E(4)=Cantidad.
+ * Busca la fila de cabecera por col[2] === "Producto" (o similar) y parsea desde ahí.
+ */
+export function parseFudoAdiciones(rows: any[][]): FudoAdicionesParseResult {
+  const warnings: string[] = [];
+  if (!rows || rows.length === 0) return { items: [], warnings: ["Solapa Adiciones vacía o no encontrada."] };
+
+  // Buscar fila de cabecera
+  let dataStart = -1;
+  for (let i = 0; i < Math.min(rows.length, 10); i++) {
+    const row = rows[i];
+    const b = String(row?.[1] ?? "").trim().toLowerCase();
+    const c = String(row?.[2] ?? "").trim().toLowerCase();
+    if (b === "fecha" || c === "producto") {
+      dataStart = i + 1;
+      break;
+    }
+  }
+  if (dataStart === -1) {
+    // Sin cabecera reconocida: asumir datos desde fila 1
+    dataStart = 1;
+    warnings.push("No se detectó cabecera en Adiciones; se asume datos desde fila 2.");
+  }
+
+  const items: ParsedFudoAdicion[] = [];
+  for (let i = dataStart; i < rows.length; i++) {
+    const row = rows[i];
+    if (!row || row.every((c: any) => c == null || c === "")) continue;
+    const fecha = excelDateToIso(row[1]);
+    if (!fecha) continue;
+    const producto = String(row[2] ?? "").trim();
+    if (!producto) continue;
+    const categoria = String(row[3] ?? "").trim();
+    const cantidad = Math.round(parseFloat(String(row[4] ?? 0)) || 0);
+    items.push({ fecha, producto, categoria, cantidad });
+  }
+
+  return { items, warnings };
+}
+
 export function parseFudoReport(rows: any[][]): FudoParseResult {
   const warnings: string[] = [];
 
