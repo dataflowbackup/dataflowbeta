@@ -3643,6 +3643,22 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
   });
 
+  app.delete("/api/fudo-productos/fecha", isAuthenticated, async (req, res) => {
+    try {
+      const clientId = await getClientId(req);
+      const bodySchema = z.object({
+        localId: z.coerce.number().int().positive(),
+        fecha: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+      });
+      const parsed = bodySchema.safeParse(req.body);
+      if (!parsed.success) return res.status(400).json({ message: "Datos inválidos" });
+      const count = await storage.deleteFudoProductosByFecha(clientId, parsed.data.localId, parsed.data.fecha);
+      res.json({ eliminados: count });
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
   app.get("/api/fudo-productos", isAuthenticated, async (req, res) => {
     try {
       const clientId = await getClientId(req);

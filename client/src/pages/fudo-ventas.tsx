@@ -65,6 +65,11 @@ export default function FudoVentasPage() {
   const [deleteRow, setDeleteRow] = useState<FudoVentaRow | null>(null);
   const [deleteKeyword, setDeleteKeyword] = useState("");
 
+  // Borrado de productos por día
+  interface ProdDiaKey { localId: number; fecha: string }
+  const [deleteProdDia, setDeleteProdDia] = useState<ProdDiaKey | null>(null);
+  const [deleteProdDiaKw, setDeleteProdDiaKw] = useState("");
+
   const { data: locals = [] } = useQuery<Local[]>({ queryKey: ["/api/locals"] });
   const { data: existing = [] } = useQuery<FudoVentaRow[]>({
     queryKey: ["/api/fudo-ventas"],
@@ -210,13 +215,38 @@ export default function FudoVentasPage() {
     return Array.from(byProd.values()).sort((a, b) => b.cantidad - a.cantidad);
   }, [filteredProductos]);
 
+  const diasCargados = useMemo(() => {
+    const seen = new Map<string, { localId: number; fecha: string; totalItems: number }>();
+    for (const p of productos) {
+      const key = `${p.localId}||${p.fecha}`;
+      if (!seen.has(key)) seen.set(key, { localId: p.localId, fecha: p.fecha, totalItems: 0 });
+      seen.get(key)!.totalItems++;
+    }
+    return Array.from(seen.values()).sort((a, b) => b.fecha.localeCompare(a.fecha) || a.localId - b.localId);
+  }, [productos]);
+
+  const deleteProdDiaMutation = useMutation({
+    mutationFn: async ({ localId, fecha }: { localId: number; fecha: string }) => {
+      const res = await apiRequest("DELETE", "/api/fudo-productos/fecha", { localId, fecha });
+      return res.json();
+    },
+    onSuccess: (r: any) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/fudo-productos"] });
+      toast({ title: `${r.eliminados ?? 0} producto(s) eliminados` });
+      setDeleteProdDia(null);
+      setDeleteProdDiaKw("");
+    },
+    onError: (e: Error) => toast({ title: "No se pudo eliminar", description: e.message, variant: "destructive" }),
+  });
+
   const deleteMutation = useMutation({
     mutationFn: async (id: number) => {
       await apiRequest("DELETE", `/api/fudo-ventas/${id}`);
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/fudo-ventas"] });
-      toast({ title: "Venta eliminada" });
+      queryClient.invalidateQueries({ queryKey: ["/api/fudo-productos"] });
+      toast({ title: "Venta eliminada (y sus productos del día)" });
       setDeleteRow(null);
       setDeleteKeyword("");
     },
@@ -417,6 +447,43 @@ export default function FudoVentasPage() {
 
         {/* ── TAB PRODUCTOS ── */}
         <TabsContent value="productos" className="space-y-6 mt-4">
+          {diasCargados.length > 0 && (
+            <Card>
+              <CardHeader className="pb-3"><CardTitle className="text-base">Días cargados</CardTitle></CardHeader>
+              <CardContent>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="bg-muted/50">
+                        <th className="text-left px-3 py-2 font-medium border-b">Local</th>
+                        <th className="text-left px-3 py-2 font-medium border-b">Fecha</th>
+                        <th className="text-right px-3 py-2 font-medium border-b">Productos</th>
+                        <th className="px-3 py-2 border-b"></th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {diasCargados.map((d) => (
+                        <tr key={`${d.localId}||${d.fecha}`} className="border-b">
+                          <td className="px-3 py-2">{localNameById.get(d.localId) ?? `Local ${d.localId}`}</td>
+                          <td className="px-3 py-2 font-mono">{d.fecha}</td>
+                          <td className="px-3 py-2 text-right font-mono">{d.totalItems}</td>
+                          <td className="px-3 py-2 text-center">
+                            <Button
+                              variant="ghost" size="icon" className="h-8 w-8"
+                              onClick={() => { setDeleteProdDia({ localId: d.localId, fecha: d.fecha }); setDeleteProdDiaKw(""); }}
+                            >
+                              <Trash2 className="h-4 w-4 text-destructive" />
+                            </Button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </CardContent>
+            </Card>
+          )}
+
           <Card>
             <CardHeader className="pb-3"><CardTitle className="text-base">Productos vendidos FUDO</CardTitle></CardHeader>
             <CardContent className="space-y-4">
@@ -481,6 +548,33 @@ export default function FudoVentasPage() {
           </Card>
         </TabsContent>
       </Tabs>
+
+      <Dialog open={!!deleteProdDia} onOpenChange={(o) => { if (!o) { setDeleteProdDia(null); setDeleteProdDiaKw(""); } }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Eliminar productos del día</DialogTitle>
+            <DialogDescription>
+              {deleteProdDia && (
+                <>Vas a eliminar todos los productos cargados de <span className="font-medium">{localNameById.get(deleteProdDia.localId) ?? `Local ${deleteProdDia.localId}`}</span>{" "}del <span className="font-mono">{deleteProdDia.fecha}</span>. Esta acción no se puede deshacer.</>
+              )}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-2">
+            <Label className="text-xs">Para confirmar, escribí <span className="font-mono font-semibold">{DELETE_KEYWORD}</span></Label>
+            <Input value={deleteProdDiaKw} onChange={(e) => setDeleteProdDiaKw(e.target.value)} placeholder={DELETE_KEYWORD} autoComplete="off" />
+          </div>
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={() => { setDeleteProdDia(null); setDeleteProdDiaKw(""); }}>Cancelar</Button>
+            <Button
+              type="button" variant="destructive"
+              disabled={deleteProdDiaKw.trim().toUpperCase() !== DELETE_KEYWORD || deleteProdDiaMutation.isPending}
+              onClick={() => deleteProdDia && deleteProdDiaMutation.mutate(deleteProdDia)}
+            >
+              {deleteProdDiaMutation.isPending ? "Eliminando..." : "Eliminar"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={!!deleteRow} onOpenChange={(o) => !o && closeDeleteDialog()}>
         <DialogContent>

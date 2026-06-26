@@ -537,6 +537,7 @@ export interface IStorage {
     items: Array<{ fecha: string; producto: string; categoria: string; cantidad: number }>,
     opts: { sourceFile?: string | null; createdBy?: string | null; replaceFechas?: string[] },
   ): Promise<{ insertados: number; omitidos: number; reemplazados: number }>;
+  deleteFudoProductosByFecha(clientId: number, localId: number, fecha: string): Promise<number>;
 
   // Productos Datalive (reporte de productos separado)
   listDataliveProductos(clientId: number, opts?: { localId?: number; fechaDesde?: string; fechaHasta?: string }): Promise<DataliveProducto[]>;
@@ -3486,11 +3487,27 @@ export class DatabaseStorage implements IStorage {
   }
 
   async deleteFudoVenta(clientId: number, id: number): Promise<boolean> {
-    const deleted = await db
-      .delete(fudoVentas)
-      .where(and(eq(fudoVentas.clientId, clientId), eq(fudoVentas.id, id)))
-      .returning({ id: fudoVentas.id });
-    return deleted.length > 0;
+    // Obtener localId y fecha antes de borrar para poder limpiar los productos del día.
+    const [venta] = await db
+      .select({ localId: fudoVentas.localId, fecha: fudoVentas.fecha })
+      .from(fudoVentas)
+      .where(and(eq(fudoVentas.clientId, clientId), eq(fudoVentas.id, id)));
+    if (!venta) return false;
+
+    await db.delete(fudoVentas).where(and(eq(fudoVentas.clientId, clientId), eq(fudoVentas.id, id)));
+
+    // Borrar productos del mismo día y local (cascade manual).
+    await db.delete(fudoProductos).where(
+      and(eq(fudoProductos.clientId, clientId), eq(fudoProductos.localId, venta.localId), eq(fudoProductos.fecha, venta.fecha)),
+    );
+    return true;
+  }
+
+  async deleteFudoProductosByFecha(clientId: number, localId: number, fecha: string): Promise<number> {
+    const deleted = await db.delete(fudoProductos).where(
+      and(eq(fudoProductos.clientId, clientId), eq(fudoProductos.localId, localId), eq(fudoProductos.fecha, fecha)),
+    ).returning({ id: fudoProductos.id });
+    return deleted.length;
   }
 
   async listFudoProductos(clientId: number, opts?: { localId?: number; fechaDesde?: string; fechaHasta?: string }): Promise<FudoProducto[]> {
