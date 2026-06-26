@@ -3508,11 +3508,30 @@ export class DatabaseStorage implements IStorage {
     opts: { sourceFile?: string | null; createdBy?: string | null; replaceFechas?: string[] },
   ): Promise<{ insertados: number; omitidos: number; reemplazados: number }> {
     const replace = new Set(opts.replaceFechas ?? []);
-    const existing = await db
+
+    // Para cada fecha marcada como "Reemplazar": borrar TODOS los productos de ese día
+    // antes de insertar los nuevos (así se limpian productos que ya no están en el Excel).
+    const fechasExistentes = await db
+      .select({ fecha: fudoProductos.fecha })
+      .from(fudoProductos)
+      .where(and(eq(fudoProductos.clientId, clientId), eq(fudoProductos.localId, localId)));
+    const existingFechasSet = new Set(fechasExistentes.map((r) => String(r.fecha)));
+
+    for (const fecha of replace) {
+      if (existingFechasSet.has(fecha)) {
+        await db.delete(fudoProductos).where(
+          and(eq(fudoProductos.clientId, clientId), eq(fudoProductos.localId, localId), eq(fudoProductos.fecha, fecha)),
+        );
+      }
+    }
+
+    // Ahora insertar todos los items. Los de fechas reemplazadas ya no tienen conflicto;
+    // los de fechas nuevas se insertan directamente; los de fechas ya cargadas sin replace se omiten.
+    const remaining = await db
       .select({ fecha: fudoProductos.fecha, producto: fudoProductos.producto })
       .from(fudoProductos)
       .where(and(eq(fudoProductos.clientId, clientId), eq(fudoProductos.localId, localId)));
-    const existingSet = new Set(existing.map((r) => `${r.fecha}||${r.producto}`));
+    const remainingSet = new Set(remaining.map((r) => `${r.fecha}||${r.producto}`));
 
     let insertados = 0;
     let omitidos = 0;
@@ -3530,19 +3549,15 @@ export class DatabaseStorage implements IStorage {
         sourceFile: opts.sourceFile ?? null,
         createdBy: opts.createdBy ?? null,
       };
-      if (existingSet.has(key)) {
-        if (replace.has(item.fecha)) {
-          await db.delete(fudoProductos).where(
-            and(eq(fudoProductos.clientId, clientId), eq(fudoProductos.localId, localId), eq(fudoProductos.fecha, item.fecha), eq(fudoProductos.producto, item.producto)),
-          );
-          await db.insert(fudoProductos).values(values as any);
-          reemplazados++;
-        } else {
-          omitidos++;
-        }
+      if (remainingSet.has(key)) {
+        omitidos++;
       } else {
         await db.insert(fudoProductos).values(values as any);
-        insertados++;
+        if (replace.has(item.fecha) && existingFechasSet.has(item.fecha)) {
+          reemplazados++;
+        } else {
+          insertados++;
+        }
       }
     }
     return { insertados, omitidos, reemplazados };
