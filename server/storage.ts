@@ -548,6 +548,7 @@ export interface IStorage {
     items: Array<{ producto: string; cantidad: number }>,
     opts: { sourceFile?: string | null; createdBy?: string | null; replace?: boolean },
   ): Promise<{ insertados: number; omitidos: number; reemplazados: number }>;
+  deleteDataliveProductosByPeriodo(clientId: number, localId: number, fechaDesde: string, fechaHasta: string): Promise<number>;
 
   getPermissions(): Promise<Permission[]>;
   createPermission(permission: InsertPermission): Promise<Permission>;
@@ -3611,6 +3612,18 @@ export class DatabaseStorage implements IStorage {
       }
     }
     return { insertados, omitidos, reemplazados };
+  }
+
+  async deleteDataliveProductosByPeriodo(clientId: number, localId: number, fechaDesde: string, fechaHasta: string): Promise<number> {
+    const deleted = await db.delete(dataliveProductos).where(
+      and(
+        eq(dataliveProductos.clientId, clientId),
+        eq(dataliveProductos.localId, localId),
+        eq(dataliveProductos.fechaDesde, fechaDesde),
+        eq(dataliveProductos.fechaHasta, fechaHasta),
+      ),
+    ).returning({ id: dataliveProductos.id });
+    return deleted.length;
   }
 
   async getPermissions(): Promise<Permission[]> {

@@ -76,6 +76,11 @@ export default function DataliveVentasPage() {
   const [filterProdFrom, setFilterProdFrom] = useState("");
   const [filterProdTo, setFilterProdTo] = useState("");
 
+  // ── estado borrado de período ──
+  interface PeriodoKey { localId: number; fechaDesde: string; fechaHasta: string }
+  const [deletePeriodo, setDeletePeriodo] = useState<PeriodoKey | null>(null);
+  const [deletePeriodoKw, setDeletePeriodoKw] = useState("");
+
   const { data: locals = [] } = useQuery<Local[]>({ queryKey: ["/api/locals"] });
   const { data: existing = [] } = useQuery<DataliveVentaRow[]>({
     queryKey: ["/api/datalive-ventas"],
@@ -236,6 +241,31 @@ export default function DataliveVentasPage() {
     }
     return Array.from(byProd.values()).sort((a, b) => b.cantidad - a.cantidad);
   }, [filteredProductos]);
+
+  // Períodos distintos cargados (para mostrar con botón de borrar)
+  const periodosDistintos = useMemo(() => {
+    const map = new Map<string, { localId: number; fechaDesde: string; fechaHasta: string; count: number }>();
+    for (const p of productos) {
+      const key = `${p.localId}||${p.fechaDesde}||${p.fechaHasta}`;
+      if (!map.has(key)) map.set(key, { localId: p.localId, fechaDesde: String(p.fechaDesde), fechaHasta: String(p.fechaHasta), count: 0 });
+      map.get(key)!.count++;
+    }
+    return Array.from(map.values()).sort((a, b) => b.fechaDesde.localeCompare(a.fechaDesde));
+  }, [productos]);
+
+  const deletePeriodoMutation = useMutation({
+    mutationFn: async (p: { localId: number; fechaDesde: string; fechaHasta: string }) => {
+      const res = await apiRequest("DELETE", "/api/datalive-productos/periodo", p);
+      return res.json();
+    },
+    onSuccess: (r: any) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/datalive-productos"] });
+      toast({ title: "Período eliminado", description: `${r.eliminados} producto(s) eliminados.` });
+      setDeletePeriodo(null);
+      setDeletePeriodoKw("");
+    },
+    onError: (e: Error) => toast({ title: "No se pudo eliminar", description: e.message, variant: "destructive" }),
+  });
 
   const deleteMutation = useMutation({
     mutationFn: async (id: number) => { await apiRequest("DELETE", `/api/datalive-ventas/${id}`); },
@@ -546,7 +576,45 @@ export default function DataliveVentasPage() {
             </CardContent>
           </Card>
 
-          {/* Tabla de productos cargados */}
+          {/* Períodos cargados con botón de borrar */}
+          {periodosDistintos.length > 0 && (
+            <Card>
+              <CardHeader className="pb-3"><CardTitle className="text-base">Períodos cargados</CardTitle></CardHeader>
+              <CardContent>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="bg-muted/50">
+                        <th className="text-left px-3 py-2 font-medium border-b">Local</th>
+                        <th className="text-left px-3 py-2 font-medium border-b">Desde</th>
+                        <th className="text-left px-3 py-2 font-medium border-b">Hasta</th>
+                        <th className="text-right px-3 py-2 font-medium border-b">Productos</th>
+                        <th className="px-3 py-2 border-b w-12"></th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {periodosDistintos.map((p, i) => (
+                        <tr key={i} className="border-b">
+                          <td className="px-3 py-2">{localNameById.get(p.localId) ?? `Local ${p.localId}`}</td>
+                          <td className="px-3 py-2 font-mono">{p.fechaDesde}</td>
+                          <td className="px-3 py-2 font-mono">{p.fechaHasta}</td>
+                          <td className="px-3 py-2 text-right font-mono">{p.count}</td>
+                          <td className="px-3 py-2 text-center">
+                            <Button variant="ghost" size="icon" className="h-8 w-8"
+                              onClick={() => { setDeletePeriodo(p); setDeletePeriodoKw(""); }}>
+                              <Trash2 className="h-4 w-4 text-destructive" />
+                            </Button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </CardContent>
+            </Card>
+          )}
+
+          {/* Tabla de productos cargados con filtros */}
           {productos.length > 0 && (
             <Card>
               <CardHeader className="pb-3"><CardTitle className="text-base">Productos Datalive cargados</CardTitle></CardHeader>
@@ -564,7 +632,7 @@ export default function DataliveVentasPage() {
                     />
                   </div>
                   <div className="space-y-1">
-                    <Label className="text-xs">Período (desde)</Label>
+                    <Label className="text-xs">Período</Label>
                     <DateRangePicker
                       from={filterProdFrom}
                       to={filterProdTo}
@@ -606,6 +674,35 @@ export default function DataliveVentasPage() {
           )}
         </TabsContent>
       </Tabs>
+
+      {/* Dialog borrar período de productos */}
+      <Dialog open={!!deletePeriodo} onOpenChange={(o) => { if (!o) { setDeletePeriodo(null); setDeletePeriodoKw(""); } }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Eliminar período de productos</DialogTitle>
+            <DialogDescription>
+              {deletePeriodo && (
+                <>Vas a eliminar todos los productos de <span className="font-medium">{localNameById.get(deletePeriodo.localId) ?? `Local ${deletePeriodo.localId}`}</span>{" "}del período <span className="font-mono">{deletePeriodo.fechaDesde}</span> al <span className="font-mono">{deletePeriodo.fechaHasta}</span>. Esta acción no se puede deshacer.</>
+              )}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-2">
+            <Label className="text-xs">Para confirmar, escribí <span className="font-mono font-semibold">{DELETE_KEYWORD}</span></Label>
+            <Input value={deletePeriodoKw} onChange={(e) => setDeletePeriodoKw(e.target.value)} placeholder={DELETE_KEYWORD} autoComplete="off" />
+          </div>
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={() => { setDeletePeriodo(null); setDeletePeriodoKw(""); }}>Cancelar</Button>
+            <Button
+              type="button"
+              variant="destructive"
+              disabled={deletePeriodoKw.trim().toUpperCase() !== DELETE_KEYWORD || deletePeriodoMutation.isPending}
+              onClick={() => deletePeriodo && deletePeriodoMutation.mutate(deletePeriodo)}
+            >
+              {deletePeriodoMutation.isPending ? "Eliminando..." : "Eliminar"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={!!deleteRow} onOpenChange={(o) => !o && closeDeleteDialog()}>
         <DialogContent>

@@ -102,12 +102,12 @@ export default function FudoVentasPage() {
       const res = parseFudoReport(rows0);
       setParsedDays(res.days);
 
-      // Hoja 2: Adiciones
+      // Hoja 2: Adiciones (se le pasa ventasRows para cruzar Id.Venta → fecha)
       const adicionesWarnings: string[] = [];
       if (wb.SheetNames.length > 1) {
         const ws1 = wb.Sheets[wb.SheetNames[1]];
         const rows1 = XLSX.utils.sheet_to_json(ws1, { header: 1, blankrows: false, defval: null }) as any[][];
-        const resAd = parseFudoAdiciones(rows1);
+        const resAd = parseFudoAdiciones(rows1, rows0);
         setParsedAdiciones(resAd.items);
         adicionesWarnings.push(...resAd.warnings);
       } else {

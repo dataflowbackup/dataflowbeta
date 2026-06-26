@@ -3708,6 +3708,23 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
   });
 
+  app.delete("/api/datalive-productos/periodo", isAuthenticated, async (req, res) => {
+    try {
+      const clientId = await getClientId(req);
+      const bodySchema = z.object({
+        localId: z.coerce.number().int().positive(),
+        fechaDesde: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+        fechaHasta: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+      });
+      const parsed = bodySchema.safeParse(req.body);
+      if (!parsed.success) return res.status(400).json({ message: "Datos inválidos" });
+      const count = await storage.deleteDataliveProductosByPeriodo(clientId, parsed.data.localId, parsed.data.fechaDesde, parsed.data.fechaHasta);
+      res.json({ eliminados: count });
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
   app.delete("/api/fudo-ventas/:id", isAuthenticated, async (req, res) => {
     try {
       const clientId = await getClientId(req);
