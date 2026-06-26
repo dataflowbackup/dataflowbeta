@@ -5183,8 +5183,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const clientId = await getClientId(req);
       const dateFrom = String(req.query.dateFrom ?? "");
       const dateTo = String(req.query.dateTo ?? "");
+      const weekStart = req.query.weekStart ? String(req.query.weekStart) : undefined;
       const localIds = String(req.query.localIds ?? "").split(",").map(Number).filter((n) => n > 0);
-      const data = await storage.getDashboardCmvPeriodo(clientId, dateFrom, dateTo, localIds);
+      const data = await storage.getDashboardCmvPeriodo(clientId, dateFrom, dateTo, localIds, weekStart);
       res.json(data);
     } catch (e: any) { res.status(500).json({ message: e.message }); }
   });

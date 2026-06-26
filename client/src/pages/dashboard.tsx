@@ -174,7 +174,7 @@ export default function DashboardPage() {
       prevEnd.setUTCDate(prevEnd.getUTCDate() + 6);
       const df = prevStart.toISOString().slice(0, 10);
       const dt = end.toISOString().slice(0, 10);
-      return apiRequest("GET", `/api/dashboard/cmv-semanal?dateFrom=${df}&dateTo=${dt}&localIds=${weekLocalParam}`).then((r) => r.json());
+      return apiRequest("GET", `/api/dashboard/cmv-semanal?dateFrom=${df}&dateTo=${dt}&weekStart=${weekStart}&localIds=${weekLocalParam}`).then((r) => r.json());
     },
     enabled: locals.length > 0 && !!weekStart,
   });
@@ -544,16 +544,48 @@ export default function DashboardPage() {
             </div>
           )}
 
-          {cmvSemanaData && cmvSemanaData.totalVentas > 0 && (
-            <div className="mt-3 rounded-lg border bg-amber-50/50 dark:bg-amber-950/20 p-3">
-              <p className="text-xs font-medium text-muted-foreground mb-2 flex items-center gap-1"><Percent className="h-3 w-3" /> CMV del período</p>
-              <div className="flex gap-6 text-sm">
-                <div><p className="text-xs text-muted-foreground">Costo</p><p className="font-semibold">{formatCurrency(cmvSemanaData.totalCosto)}</p></div>
-                <div><p className="text-xs text-muted-foreground">Ventas</p><p className="font-semibold">{formatCurrency(cmvSemanaData.totalVentas)}</p></div>
-                <div><p className="text-xs text-muted-foreground">CMV %</p><p className="font-bold text-amber-600">{cmvSemanaData.cmvPct.toFixed(1)}%</p></div>
+          {cmvSemanaData && (cmvSemanaData.current?.totalVentas > 0 || cmvSemanaData.previous?.totalVentas > 0) && (() => {
+            const curr = cmvSemanaData.current ?? { totalVentas: 0, totalCosto: 0, cmvPct: 0 };
+            const prev = cmvSemanaData.previous ?? { totalVentas: 0, totalCosto: 0, cmvPct: 0 };
+            const cmvEvol = prev.cmvPct > 0 ? curr.cmvPct - prev.cmvPct : null;
+            const startDate = new Date(weekStart + "T00:00:00Z");
+            const fmtDate = (d: Date) => d.toLocaleDateString("es-AR", { day: "2-digit", month: "2-digit", timeZone: "UTC" });
+            const currEnd = new Date(startDate); currEnd.setUTCDate(currEnd.getUTCDate() + 6);
+            const prevStart = new Date(startDate); prevStart.setUTCDate(prevStart.getUTCDate() - 7);
+            const prevEnd = new Date(startDate); prevEnd.setUTCDate(prevEnd.getUTCDate() - 1);
+            return (
+              <div className="mt-3 rounded-lg border bg-amber-50/50 dark:bg-amber-950/20 p-3">
+                <p className="text-xs font-medium text-muted-foreground mb-2 flex items-center gap-1"><Percent className="h-3 w-3" /> CMV por semana</p>
+                <div className="grid grid-cols-2 gap-3 text-sm">
+                  <div className="rounded bg-muted/40 px-3 py-2">
+                    <p className="text-xs text-muted-foreground mb-1">Semana anterior — {fmtDate(prevStart)} al {fmtDate(prevEnd)}</p>
+                    <div className="flex gap-4">
+                      <div><p className="text-xs text-muted-foreground">Facturación</p><p className="font-semibold">{formatCurrency(prev.totalVentas)}</p></div>
+                      <div><p className="text-xs text-muted-foreground">CMV</p><p className="font-semibold">{formatCurrency(prev.totalCosto)}</p></div>
+                      <div><p className="text-xs text-muted-foreground">CMV %</p><p className="font-bold text-amber-600">{prev.cmvPct.toFixed(1)}%</p></div>
+                    </div>
+                  </div>
+                  <div className="rounded bg-blue-50/60 dark:bg-blue-950/20 px-3 py-2">
+                    <p className="text-xs text-muted-foreground mb-1">Semana actual — {fmtDate(startDate)} al {fmtDate(currEnd)}</p>
+                    <div className="flex gap-4">
+                      <div><p className="text-xs text-muted-foreground">Facturación</p><p className="font-semibold">{formatCurrency(curr.totalVentas)}</p></div>
+                      <div><p className="text-xs text-muted-foreground">CMV</p><p className="font-semibold">{formatCurrency(curr.totalCosto)}</p></div>
+                      <div><p className="text-xs text-muted-foreground">CMV %</p><p className="font-bold text-amber-600">{curr.cmvPct.toFixed(1)}%</p></div>
+                    </div>
+                  </div>
+                </div>
+                {cmvEvol !== null && (
+                  <div className="mt-2 flex items-center gap-1 text-xs text-muted-foreground">
+                    <span>Evolución CMV:</span>
+                    <span className={`font-semibold ${cmvEvol > 0 ? "text-red-500" : "text-green-600"}`}>
+                      {cmvEvol > 0 ? "+" : ""}{cmvEvol.toFixed(2)} pp
+                    </span>
+                    <span className="text-muted-foreground/60">(puntos porcentuales)</span>
+                  </div>
+                )}
               </div>
-            </div>
-          )}
+            );
+          })()}
         </CardContent>
       </Card>
 

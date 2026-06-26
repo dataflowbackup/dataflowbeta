@@ -4563,14 +4563,22 @@ export class DatabaseStorage implements IStorage {
     return { current, previous, weekStart: toIso(startDate), prevWeekStart: toIso(prevStartDate) };
   }
 
-  async getDashboardCmvPeriodo(clientId: number, dateFrom: string, dateTo: string, localIds: number[]) {
+  async getDashboardCmvPeriodo(clientId: number, dateFrom: string, dateTo: string, localIds: number[], weekStart?: string) {
     const conds = [eq(cmvCalculations.clientId, clientId), gte(cmvCalculations.periodFrom, dateFrom), lte(cmvCalculations.periodTo, dateTo)];
     if (localIds.length > 0) conds.push(inArray(cmvCalculations.localId, localIds));
     const rows = await db.select().from(cmvCalculations).where(and(...conds));
-    const totalVentas = rows.reduce((s, r) => s + (parseFloat(String(r.totalSales)) || 0), 0);
-    const totalCosto = rows.reduce((s, r) => s + (parseFloat(String(r.totalCost)) || 0), 0);
-    const cmvPct = totalVentas > 0 ? (totalCosto / totalVentas) * 100 : 0;
-    return { totalVentas, totalCosto, cmvPct, rows };
+    const calcSummary = (rs: typeof rows) => {
+      const totalVentas = rs.reduce((s, r) => s + (parseFloat(String(r.ventaNeta)) || 0), 0);
+      const totalCosto = rs.reduce((s, r) => s + (parseFloat(String(r.cmv)) || 0), 0);
+      const cmvPct = totalVentas > 0 ? (totalCosto / totalVentas) * 100 : 0;
+      return { totalVentas, totalCosto, cmvPct };
+    };
+    if (weekStart) {
+      const prevRows = rows.filter((r) => r.periodTo < weekStart);
+      const currRows = rows.filter((r) => r.periodFrom >= weekStart);
+      return { current: calcSummary(currRows), previous: calcSummary(prevRows), rows };
+    }
+    return { ...calcSummary(rows), rows };
   }
 
   async getDashboardTopProductos(clientId: number, dateFrom: string, dateTo: string, localIds: number[], source: "fudo" | "datalive") {
