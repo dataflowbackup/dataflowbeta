@@ -4348,10 +4348,12 @@ export class DatabaseStorage implements IStorage {
   }
 
   async reverseMerchandiseTransfer(clientId: number, id: number): Promise<boolean> {
-    const result = await db.update(merchandiseTransfers)
+    // libSQL/Turso no expone rowCount en UPDATE; usar returning() para verificar si se afectó alguna fila
+    const rows = await db.update(merchandiseTransfers)
       .set({ status: "reversed" })
-      .where(and(eq(merchandiseTransfers.id, id), eq(merchandiseTransfers.clientId, clientId)));
-    return (result.rowCount ?? 0) > 0;
+      .where(and(eq(merchandiseTransfers.id, id), eq(merchandiseTransfers.clientId, clientId)))
+      .returning({ id: merchandiseTransfers.id });
+    return rows.length > 0;
   }
 
   /** Net transfer value for a local in a period: received − sent (positive = net inflow). */

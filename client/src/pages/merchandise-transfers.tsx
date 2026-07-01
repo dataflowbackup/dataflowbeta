@@ -42,7 +42,7 @@ import { ConfirmDialog } from "@/components/confirm-dialog";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { formatCurrency, formatDate, formatDateInput } from "@/lib/formatters";
-import { Plus, Trash2, ArrowRight, ChevronsUpDown, RotateCcw } from "lucide-react";
+import { Plus, Trash2, ArrowRight, ChevronsUpDown, RotateCcw, Eye } from "lucide-react";
 import { DataEntryCombobox } from "@/components/data-entry-combobox";
 import type { Local, Supply } from "@shared/schema";
 import { cn } from "@/lib/utils";
@@ -95,6 +95,7 @@ export default function MerchandiseTransfersPage() {
   const { toast } = useToast();
   const [showForm, setShowForm] = useState(false);
   const [reverseTarget, setReverseTarget] = useState<Transfer | null>(null);
+  const [detailTarget, setDetailTarget] = useState<Transfer | null>(null);
   const [openSupplyPicker, setOpenSupplyPicker] = useState<number | null>(null);
 
   const { data: transfers = [], isLoading } = useQuery<Transfer[]>({
@@ -219,17 +220,29 @@ export default function MerchandiseTransfersPage() {
     {
       key: "actions",
       header: "",
-      className: "w-16",
-      cell: (row) => row.status === "active" ? (
-        <Button
-          variant="ghost"
-          size="icon"
-          title="Anular traslado"
-          onClick={() => setReverseTarget(row)}
-        >
-          <RotateCcw className="h-4 w-4 text-destructive" />
-        </Button>
-      ) : null,
+      className: "w-24",
+      cell: (row) => (
+        <div className="flex items-center gap-1">
+          <Button
+            variant="ghost"
+            size="icon"
+            title="Ver detalles"
+            onClick={() => setDetailTarget(row)}
+          >
+            <Eye className="h-4 w-4 text-muted-foreground" />
+          </Button>
+          {row.status === "active" && (
+            <Button
+              variant="ghost"
+              size="icon"
+              title="Anular traslado"
+              onClick={() => setReverseTarget(row)}
+            >
+              <RotateCcw className="h-4 w-4 text-destructive" />
+            </Button>
+          )}
+        </div>
+      ),
     },
   ];
 
@@ -469,6 +482,79 @@ export default function MerchandiseTransfersPage() {
               </DialogFooter>
             </form>
           </Form>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={!!detailTarget} onOpenChange={(o) => !o && setDetailTarget(null)}>
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>Detalle del Traslado</DialogTitle>
+          </DialogHeader>
+          {detailTarget && (
+            <div className="space-y-4">
+              <div className="grid grid-cols-2 gap-4 text-sm">
+                <div>
+                  <p className="text-muted-foreground">Fecha</p>
+                  <p className="font-medium">{formatDate(detailTarget.transferDate)}</p>
+                </div>
+                <div>
+                  <p className="text-muted-foreground">Estado</p>
+                  <Badge variant={detailTarget.status === "active" ? "default" : "secondary"}>
+                    {detailTarget.status === "active" ? "Activo" : "Anulado"}
+                  </Badge>
+                </div>
+                <div>
+                  <p className="text-muted-foreground">Local Emisor</p>
+                  <p className="font-medium">{detailTarget.fromLocal?.name ?? `Local ${detailTarget.fromLocalId}`}</p>
+                </div>
+                <div>
+                  <p className="text-muted-foreground">Local Receptor</p>
+                  <p className="font-medium">{detailTarget.toLocal?.name ?? `Local ${detailTarget.toLocalId}`}</p>
+                </div>
+                {detailTarget.notes && (
+                  <div className="col-span-2">
+                    <p className="text-muted-foreground">Notas</p>
+                    <p className="font-medium">{detailTarget.notes}</p>
+                  </div>
+                )}
+              </div>
+
+              <div>
+                <p className="text-sm text-muted-foreground mb-2">Ítems</p>
+                <div className="rounded-md border overflow-hidden">
+                  <table className="w-full text-sm">
+                    <thead className="bg-muted/50">
+                      <tr>
+                        <th className="text-left px-3 py-2 font-medium">Descripción</th>
+                        <th className="text-right px-3 py-2 font-medium">Cantidad</th>
+                        <th className="text-right px-3 py-2 font-medium">Costo Unit.</th>
+                        <th className="text-right px-3 py-2 font-medium">Total</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {(detailTarget.items ?? []).map((item, i) => (
+                        <tr key={i} className="border-t">
+                          <td className="px-3 py-2">{item.description || "—"}</td>
+                          <td className="px-3 py-2 text-right font-mono">{Number(item.quantity)}</td>
+                          <td className="px-3 py-2 text-right font-mono">{formatCurrency(item.unitCost)}</td>
+                          <td className="px-3 py-2 text-right font-mono">{formatCurrency(item.lineTotal)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                    <tfoot className="bg-muted/30 border-t font-medium">
+                      <tr>
+                        <td colSpan={3} className="px-3 py-2 text-right text-muted-foreground">Total Traslado</td>
+                        <td className="px-3 py-2 text-right font-mono">{formatCurrency(detailTarget.totalValue)}</td>
+                      </tr>
+                    </tfoot>
+                  </table>
+                </div>
+              </div>
+            </div>
+          )}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setDetailTarget(null)}>Cerrar</Button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
 
