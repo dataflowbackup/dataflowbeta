@@ -3770,6 +3770,103 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
   });
 
+  // ── Decomisos (mercadería decomisada — reporte de Datalive, valorizada por local) ──
+  app.get("/api/decomisos", isAuthenticated, async (req, res) => {
+    try {
+      const clientId = await getClientId(req);
+      const localId = req.query.localId && req.query.localId !== "all" ? parseInt(req.query.localId as string, 10) : undefined;
+      const fechaDesde = req.query.fechaDesde as string | undefined;
+      const fechaHasta = req.query.fechaHasta as string | undefined;
+      const tipo = req.query.tipo && req.query.tipo !== "all" ? (req.query.tipo as string) : undefined;
+      res.json(await storage.listDecomisos(clientId, { localId, fechaDesde, fechaHasta, tipo }));
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
+  // Mapeos guardados (para pre-cargar el wizard de importación)
+  app.get("/api/decomisos/mappings", isAuthenticated, async (req, res) => {
+    try {
+      const clientId = await getClientId(req);
+      const [locales, productos] = await Promise.all([
+        storage.getDecomisoLocalMappings(clientId),
+        storage.getDecomisoProductMappings(clientId),
+      ]);
+      res.json({ locales, productos });
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
+  app.post("/api/decomisos/import", isAuthenticated, async (req, res) => {
+    try {
+      const clientId = await getClientId(req);
+      const userId = await getAuthenticatedUserId(req);
+      const bodySchema = z.object({
+        sourceFile: z.string().max(255).optional().nullable(),
+        items: z
+          .array(
+            z.object({
+              codDecomiso: z.string().max(50),
+              codProducto: z.string().max(50).default(""),
+              fecha: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Fecha inválida"),
+              descripcion: z.string().max(255),
+              sucursal: z.string().max(255).default(""),
+              tipoDecomiso: z.string().max(100).default(""),
+              cantidad: z.coerce.number(),
+              localId: z.coerce.number().int().positive(),
+              supplyId: z.coerce.number().int().positive().nullable().optional(),
+            }),
+          )
+          .min(1, "No hay decomisos para importar"),
+      });
+      const parsed = bodySchema.safeParse(req.body);
+      if (!parsed.success) return res.status(400).json({ message: "Datos inválidos", errors: parsed.error.flatten() });
+
+      // Validar que locales e insumos pertenezcan a la empresa.
+      const [locs, sups] = await Promise.all([storage.getLocals(clientId), storage.getSupplies(clientId)]);
+      const localIds = new Set(locs.map((l) => l.id));
+      const supplyIds = new Set(sups.map((s: any) => s.id));
+      for (const it of parsed.data.items) {
+        if (!localIds.has(it.localId)) return res.status(400).json({ message: `Local inválido para esta empresa (${it.sucursal}).` });
+        if (it.supplyId != null && !supplyIds.has(it.supplyId)) return res.status(400).json({ message: `Insumo inválido para esta empresa (${it.descripcion}).` });
+      }
+
+      const items = parsed.data.items.map((it) => ({ ...it, supplyId: it.supplyId ?? null }));
+      const result = await storage.importDecomisos(clientId, items, {
+        sourceFile: parsed.data.sourceFile ?? null,
+        createdBy: userId ?? null,
+      });
+
+      // Persistir mapeos para pre-cargar futuras importaciones.
+      const localMap = new Map<string, number>();
+      const prodMap = new Map<string, { descripcionOriginal: string; supplyId: number }>();
+      for (const it of items) {
+        if (it.sucursal) localMap.set(it.sucursal, it.localId);
+        if (it.codProducto && it.supplyId != null) prodMap.set(it.codProducto, { descripcionOriginal: it.descripcion, supplyId: it.supplyId });
+      }
+      await storage.saveDecomisoLocalMappings(clientId, Array.from(localMap, ([sucursalOriginal, localId]) => ({ sucursalOriginal, localId })));
+      await storage.saveDecomisoProductMappings(clientId, Array.from(prodMap, ([codProducto, v]) => ({ codProducto, descripcionOriginal: v.descripcionOriginal, supplyId: v.supplyId })));
+
+      res.json(result);
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
+  app.delete("/api/decomisos/:id", isAuthenticated, async (req, res) => {
+    try {
+      const clientId = await getClientId(req);
+      const id = parseInt(req.params.id, 10);
+      if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ message: "Id inválido" });
+      const ok = await storage.deleteDecomiso(clientId, id);
+      if (!ok) return res.status(404).json({ message: "Decomiso no encontrado" });
+      res.json({ ok: true });
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
   app.delete("/api/fudo-ventas/:id", isAuthenticated, async (req, res) => {
     try {
       const clientId = await getClientId(req);

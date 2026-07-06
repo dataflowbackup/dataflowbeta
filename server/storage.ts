@@ -55,6 +55,9 @@ import {
   fudoProductos,
   dataliveProductos,
   monthlyGoals,
+  decomisos,
+  decomisoProductMappings,
+  decomisoLocalMappings,
   auditLog,
   operationalAudits,
   auditTemplates,
@@ -158,6 +161,9 @@ import {
   type FudoVenta,
   type FudoProducto,
   type DataliveProducto,
+  type Decomiso,
+  type DecomisoProductMapping,
+  type DecomisoLocalMapping,
   type OperationalAudit,
   type InsertOperationalAudit,
   type AuditTemplate,
@@ -552,6 +558,29 @@ export interface IStorage {
     opts: { sourceFile?: string | null; createdBy?: string | null; replace?: boolean },
   ): Promise<{ insertados: number; omitidos: number; reemplazados: number }>;
   deleteDataliveProductosByPeriodo(clientId: number, localId: number, fechaDesde: string, fechaHasta: string): Promise<number>;
+
+  // Decomisos (mercadería decomisada — reporte de Datalive, valorizada por local)
+  listDecomisos(clientId: number, opts?: { localId?: number; fechaDesde?: string; fechaHasta?: string; tipo?: string }): Promise<Decomiso[]>;
+  getDecomisoProductMappings(clientId: number): Promise<DecomisoProductMapping[]>;
+  getDecomisoLocalMappings(clientId: number): Promise<DecomisoLocalMapping[]>;
+  importDecomisos(
+    clientId: number,
+    items: Array<{
+      codDecomiso: string;
+      codProducto: string;
+      fecha: string;
+      descripcion: string;
+      sucursal: string;
+      tipoDecomiso: string;
+      cantidad: number;
+      localId: number;
+      supplyId: number | null;
+    }>,
+    opts: { sourceFile?: string | null; createdBy?: string | null },
+  ): Promise<{ insertados: number; omitidos: number }>;
+  saveDecomisoLocalMappings(clientId: number, maps: Array<{ sucursalOriginal: string; localId: number }>): Promise<void>;
+  saveDecomisoProductMappings(clientId: number, maps: Array<{ codProducto: string; descripcionOriginal?: string | null; supplyId: number }>): Promise<void>;
+  deleteDecomiso(clientId: number, id: number): Promise<boolean>;
 
   getPermissions(): Promise<Permission[]>;
   createPermission(permission: InsertPermission): Promise<Permission>;
@@ -3681,6 +3710,138 @@ export class DatabaseStorage implements IStorage {
       ),
     ).returning({ id: dataliveProductos.id });
     return deleted.length;
+  }
+
+  // ── Decomisos ──
+  async listDecomisos(clientId: number, opts?: { localId?: number; fechaDesde?: string; fechaHasta?: string; tipo?: string }): Promise<Decomiso[]> {
+    const conds: any[] = [eq(decomisos.clientId, clientId)];
+    if (opts?.localId != null) conds.push(eq(decomisos.localId, opts.localId));
+    if (opts?.fechaDesde) conds.push(gte(decomisos.fecha, opts.fechaDesde));
+    if (opts?.fechaHasta) conds.push(lte(decomisos.fecha, opts.fechaHasta));
+    if (opts?.tipo) conds.push(eq(decomisos.tipoDecomiso, opts.tipo));
+    return db.select().from(decomisos).where(and(...conds)).orderBy(desc(decomisos.fecha), asc(decomisos.descripcionOriginal));
+  }
+
+  async getDecomisoProductMappings(clientId: number): Promise<DecomisoProductMapping[]> {
+    return db.select().from(decomisoProductMappings).where(eq(decomisoProductMappings.clientId, clientId));
+  }
+
+  async getDecomisoLocalMappings(clientId: number): Promise<DecomisoLocalMapping[]> {
+    return db.select().from(decomisoLocalMappings).where(eq(decomisoLocalMappings.clientId, clientId));
+  }
+
+  async importDecomisos(
+    clientId: number,
+    items: Array<{
+      codDecomiso: string;
+      codProducto: string;
+      fecha: string;
+      descripcion: string;
+      sucursal: string;
+      tipoDecomiso: string;
+      cantidad: number;
+      localId: number;
+      supplyId: number | null;
+    }>,
+    opts: { sourceFile?: string | null; createdBy?: string | null },
+  ): Promise<{ insertados: number; omitidos: number }> {
+    // Idempotencia por (clientId, codDecomiso): omitimos los ya cargados.
+    const existing = await db
+      .select({ codDecomiso: decomisos.codDecomiso })
+      .from(decomisos)
+      .where(eq(decomisos.clientId, clientId));
+    const existingSet = new Set(existing.map((r) => r.codDecomiso));
+
+    // Costo unitario de cada insumo (para valorizar). unitCost, fallback lastCost.
+    const supplyRows = await db
+      .select({ id: supplies.id, unitCost: supplies.unitCost, lastCost: supplies.lastCost })
+      .from(supplies)
+      .where(eq(supplies.clientId, clientId));
+    const costBySupply = new Map<number, number>();
+    for (const s of supplyRows) {
+      const uc = parseFloat(String(s.unitCost ?? 0)) || 0;
+      const lc = parseFloat(String(s.lastCost ?? 0)) || 0;
+      costBySupply.set(s.id, uc > 0 ? uc : lc);
+    }
+
+    let insertados = 0;
+    let omitidos = 0;
+
+    // Todo-o-nada: si falla una inserción se revierte la importación completa.
+    // Como es idempotente por codDecomiso, reintentar completa sin duplicar.
+    await db.transaction(async (tx) => {
+      for (const item of items) {
+        if (item.codDecomiso && existingSet.has(item.codDecomiso)) {
+          omitidos++;
+          continue;
+        }
+        const unitCost = item.supplyId != null ? (costBySupply.get(item.supplyId) ?? 0) : 0;
+        const valorizado = Math.round(unitCost * item.cantidad * 100) / 100;
+        await tx.insert(decomisos).values({
+          clientId,
+          localId: item.localId,
+          supplyId: item.supplyId ?? null,
+          fecha: item.fecha,
+          codDecomiso: item.codDecomiso || null,
+          codProducto: item.codProducto || null,
+          descripcionOriginal: item.descripcion,
+          sucursalOriginal: item.sucursal || null,
+          tipoDecomiso: item.tipoDecomiso || null,
+          cantidad: String(item.cantidad),
+          unitCost: String(unitCost),
+          valorizado: String(valorizado),
+          sourceFile: opts.sourceFile ?? null,
+          createdBy: opts.createdBy ?? null,
+        } as any);
+        if (item.codDecomiso) existingSet.add(item.codDecomiso);
+        insertados++;
+      }
+    });
+    return { insertados, omitidos };
+  }
+
+  async saveDecomisoLocalMappings(clientId: number, maps: Array<{ sucursalOriginal: string; localId: number }>): Promise<void> {
+    for (const m of maps) {
+      if (!m.sucursalOriginal) continue;
+      const [existing] = await db
+        .select({ id: decomisoLocalMappings.id })
+        .from(decomisoLocalMappings)
+        .where(and(eq(decomisoLocalMappings.clientId, clientId), eq(decomisoLocalMappings.sucursalOriginal, m.sucursalOriginal)));
+      if (existing) {
+        await db
+          .update(decomisoLocalMappings)
+          .set({ localId: m.localId, updatedAt: new Date() })
+          .where(eq(decomisoLocalMappings.id, existing.id));
+      } else {
+        await db.insert(decomisoLocalMappings).values({ clientId, sucursalOriginal: m.sucursalOriginal, localId: m.localId } as any);
+      }
+    }
+  }
+
+  async saveDecomisoProductMappings(clientId: number, maps: Array<{ codProducto: string; descripcionOriginal?: string | null; supplyId: number }>): Promise<void> {
+    for (const m of maps) {
+      if (!m.codProducto) continue;
+      const [existing] = await db
+        .select({ id: decomisoProductMappings.id })
+        .from(decomisoProductMappings)
+        .where(and(eq(decomisoProductMappings.clientId, clientId), eq(decomisoProductMappings.codProducto, m.codProducto)));
+      if (existing) {
+        await db
+          .update(decomisoProductMappings)
+          .set({ supplyId: m.supplyId, descripcionOriginal: m.descripcionOriginal ?? null, updatedAt: new Date() })
+          .where(eq(decomisoProductMappings.id, existing.id));
+      } else {
+        await db.insert(decomisoProductMappings).values({ clientId, codProducto: m.codProducto, descripcionOriginal: m.descripcionOriginal ?? null, supplyId: m.supplyId } as any);
+      }
+    }
+  }
+
+  async deleteDecomiso(clientId: number, id: number): Promise<boolean> {
+    const deleted = await db
+      .delete(decomisos)
+      .where(and(eq(decomisos.clientId, clientId), eq(decomisos.id, id)))
+      .returning({ id: decomisos.id });
+    return deleted.length > 0;
   }
 
   async getPermissions(): Promise<Permission[]> {

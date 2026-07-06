@@ -1504,6 +1504,85 @@ export type InsertMonthlyGoal = z.infer<typeof insertMonthlyGoalSchema>;
 export type MonthlyGoal = typeof monthlyGoals.$inferSelect;
 
 // ==========================================
+// DECOMISOS (Mercadería decomisada — importada del reporte de Datalive)
+// Una fila por línea de decomiso del Excel. Idempotente por (empresa, codDecomiso).
+// El producto se asocia MANUALMENTE a un insumo (supplyId) y la sucursal a un local.
+// La valorización (cantidad × unitCost) se calcula al importar y queda como snapshot.
+// ==========================================
+export const decomisos = pgTable(
+  "decomisos",
+  {
+    id: serial("id").primaryKey(),
+    clientId: integer("client_id").notNull().references(() => clients.id, { onDelete: "cascade" }),
+    localId: integer("local_id").notNull().references(() => locals.id, { onDelete: "cascade" }),
+    supplyId: integer("supply_id").references(() => supplies.id),
+    fecha: date("fecha").notNull(),
+    /** Cód. Decomiso del Excel (col A) — clave de idempotencia. */
+    codDecomiso: varchar("cod_decomiso", { length: 50 }),
+    /** Cód. Producto del Excel (col B) — clave de mapeo a insumo. */
+    codProducto: varchar("cod_producto", { length: 50 }),
+    /** Descripción del producto tal como vino en el Excel (col E). */
+    descripcionOriginal: varchar("descripcion_original", { length: 255 }).notNull(),
+    /** Nombre de la sucursal tal como vino en el Excel (col F). */
+    sucursalOriginal: varchar("sucursal_original", { length: 255 }),
+    /** Tipo de decomiso (MALA ROTACION, EXPLOTADO, etc.). */
+    tipoDecomiso: varchar("tipo_decomiso", { length: 100 }),
+    cantidad: decimal("cantidad", { precision: 12, scale: 2 }).notNull().default("0"),
+    /** Costo unitario del insumo al momento de importar (snapshot). */
+    unitCost: decimal("unit_cost", { precision: 12, scale: 4 }).default("0"),
+    /** cantidad × unitCost (snapshot). */
+    valorizado: decimal("valorizado", { precision: 14, scale: 2 }).default("0"),
+    sourceFile: varchar("source_file", { length: 255 }),
+    createdBy: varchar("created_by").references(() => users.id),
+    createdAt: timestamp("created_at").defaultNow(),
+  },
+  (table) => [uniqueIndex("decomisos_client_cod_uq").on(table.clientId, table.codDecomiso)],
+);
+
+export const insertDecomisoSchema = createInsertSchema(decomisos).omit({ id: true, createdAt: true });
+export type InsertDecomiso = z.infer<typeof insertDecomisoSchema>;
+export type Decomiso = typeof decomisos.$inferSelect;
+
+// Mapeo guardado Producto (Excel) → Insumo (Data Flow). Pre-carga futuras importaciones.
+export const decomisoProductMappings = pgTable(
+  "decomiso_product_mappings",
+  {
+    id: serial("id").primaryKey(),
+    clientId: integer("client_id").notNull().references(() => clients.id, { onDelete: "cascade" }),
+    /** Clave de match: Cód. Producto del Excel (col B). */
+    codProducto: varchar("cod_producto", { length: 50 }).notNull(),
+    descripcionOriginal: varchar("descripcion_original", { length: 255 }),
+    supplyId: integer("supply_id").notNull().references(() => supplies.id, { onDelete: "cascade" }),
+    createdAt: timestamp("created_at").defaultNow(),
+    updatedAt: timestamp("updated_at").defaultNow(),
+  },
+  (table) => [uniqueIndex("decomiso_product_map_uq").on(table.clientId, table.codProducto)],
+);
+
+export const insertDecomisoProductMappingSchema = createInsertSchema(decomisoProductMappings).omit({ id: true, createdAt: true, updatedAt: true });
+export type InsertDecomisoProductMapping = z.infer<typeof insertDecomisoProductMappingSchema>;
+export type DecomisoProductMapping = typeof decomisoProductMappings.$inferSelect;
+
+// Mapeo guardado Sucursal (Excel) → Local (Data Flow). Pre-carga futuras importaciones.
+export const decomisoLocalMappings = pgTable(
+  "decomiso_local_mappings",
+  {
+    id: serial("id").primaryKey(),
+    clientId: integer("client_id").notNull().references(() => clients.id, { onDelete: "cascade" }),
+    /** Clave de match: nombre de la sucursal del Excel (col F). */
+    sucursalOriginal: varchar("sucursal_original", { length: 255 }).notNull(),
+    localId: integer("local_id").notNull().references(() => locals.id, { onDelete: "cascade" }),
+    createdAt: timestamp("created_at").defaultNow(),
+    updatedAt: timestamp("updated_at").defaultNow(),
+  },
+  (table) => [uniqueIndex("decomiso_local_map_uq").on(table.clientId, table.sucursalOriginal)],
+);
+
+export const insertDecomisoLocalMappingSchema = createInsertSchema(decomisoLocalMappings).omit({ id: true, createdAt: true, updatedAt: true });
+export type InsertDecomisoLocalMapping = z.infer<typeof insertDecomisoLocalMappingSchema>;
+export type DecomisoLocalMapping = typeof decomisoLocalMappings.$inferSelect;
+
+// ==========================================
 // AUDIT LOG
 // ==========================================
 export const auditLog = pgTable("audit_log", {

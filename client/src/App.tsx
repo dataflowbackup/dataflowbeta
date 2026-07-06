@@ -44,6 +44,7 @@ import StockValuationPage from "@/pages/stock-valuation";
 import CmvPage from "@/pages/cmv";
 import BreakevenPage from "@/pages/breakeven";
 import DataliveVentasPage from "@/pages/datalive-ventas";
+import DecomisosPage from "@/pages/decomisos";
 import FudoVentasPage from "@/pages/fudo-ventas";
 import DashboardPage from "@/pages/dashboard";
 import ObjetivosMensualesPage from "@/pages/objetivos-mensuales";
@@ -96,6 +97,7 @@ function AppRouter() {
       <Route path="/cmv" component={CmvPage} />
       <Route path="/punto-equilibrio" component={BreakevenPage} />
       <Route path="/ventas-datalive" component={DataliveVentasPage} />
+      <Route path="/decomisos" component={DecomisosPage} />
       <Route path="/ventas-fudo" component={FudoVentasPage} />
       <Route path="/dashboard" component={DashboardPage} />
       <Route path="/objetivos-mensuales" component={ObjetivosMensualesPage} />
