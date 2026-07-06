@@ -1,5 +1,7 @@
-import { useState, useMemo, useCallback } from "react";
+import { useState, useMemo, useCallback, useRef } from "react";
 import { useQuery } from "@tanstack/react-query";
+import html2canvas from "html2canvas";
+import { jsPDF } from "jspdf";
 import { apiRequest } from "@/lib/queryClient";
 import { formatCurrency } from "@/lib/formatters";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -16,7 +18,7 @@ import {
 import {
   TrendingUp, TrendingDown, Minus, Target, Ticket, DollarSign, Building2,
   CreditCard, BarChart3, ShoppingCart, ChefHat, Trophy, PiggyBank, Percent,
-  AlertCircle, CheckCircle2,
+  AlertCircle, CheckCircle2, Trash2, FileDown,
 } from "lucide-react";
 import type { Local, CmvCalculation } from "@shared/schema";
 
@@ -110,8 +112,61 @@ function currentWeekMonday() {
   return d.toISOString().slice(0, 10);
 }
 
+// Captura un nodo del DOM y lo baja como PDF (multi-página si es alto). "Foto" del análisis.
+async function downloadNodeAsPdf(el: HTMLElement, filename: string) {
+  const isDark = document.documentElement.classList.contains("dark");
+  const canvas = await html2canvas(el, {
+    scale: 2,
+    useCORS: true,
+    backgroundColor: isDark ? "#0b1220" : "#ffffff",
+    windowWidth: el.scrollWidth,
+  });
+  const pdf = new jsPDF({ orientation: "p", unit: "pt", format: "a4" });
+  const pageW = pdf.internal.pageSize.getWidth();
+  const pageH = pdf.internal.pageSize.getHeight();
+  const imgW = pageW;
+  const imgH = (canvas.height * imgW) / canvas.width;
+  const img = canvas.toDataURL("image/png");
+  let heightLeft = imgH;
+  let position = 0;
+  pdf.addImage(img, "PNG", 0, position, imgW, imgH);
+  heightLeft -= pageH;
+  while (heightLeft > 0) {
+    position -= pageH;
+    pdf.addPage();
+    pdf.addImage(img, "PNG", 0, position, imgW, imgH);
+    heightLeft -= pageH;
+  }
+  const d = new Date();
+  const ts = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  pdf.save(`${filename}_${ts}.pdf`);
+}
+
+// Botón "PDF" por análisis: exporta la card más cercana marcada con [data-pdf-card].
+function AnalysisPdfButton({ name }: { name: string }) {
+  const [busy, setBusy] = useState(false);
+  return (
+    <Button
+      variant="ghost"
+      size="sm"
+      disabled={busy}
+      data-html2canvas-ignore="true"
+      onClick={async (e) => {
+        const el = (e.currentTarget as HTMLElement).closest("[data-pdf-card]") as HTMLElement | null;
+        if (!el) return;
+        setBusy(true);
+        try { await downloadNodeAsPdf(el, name); } finally { setBusy(false); }
+      }}
+    >
+      <FileDown className="h-4 w-4 mr-1" /> {busy ? "..." : "PDF"}
+    </Button>
+  );
+}
+
 export default function DashboardPage() {
   const now = new Date();
+  const dashboardRef = useRef<HTMLDivElement>(null);
+  const [pdfBusy, setPdfBusy] = useState(false);
   const [year, setYear] = useState(now.getFullYear());
   const [month, setMonth] = useState(now.getMonth() + 1);
   const [globalLocalIds, setGlobalLocalIds] = useState<number[]>([]);
@@ -260,12 +315,27 @@ export default function DashboardPage() {
   const yearOptions = Array.from({ length: 5 }, (_, i) => now.getFullYear() - 2 + i);
 
   return (
-    <div className="flex flex-col gap-5 p-5 min-h-screen bg-muted/20">
+    <div ref={dashboardRef} className="flex flex-col gap-5 p-5 min-h-screen bg-muted/20">
       {/* ── HEADER ── */}
       <div className="flex flex-col gap-3">
-        <div className="flex items-center gap-3">
-          <BarChart3 className="h-7 w-7 text-primary" />
-          <h1 className="text-2xl font-bold tracking-tight">Dashboard</h1>
+        <div className="flex items-center justify-between gap-3">
+          <div className="flex items-center gap-3">
+            <BarChart3 className="h-7 w-7 text-primary" />
+            <h1 className="text-2xl font-bold tracking-tight">Dashboard</h1>
+          </div>
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={pdfBusy}
+            data-html2canvas-ignore="true"
+            onClick={async () => {
+              if (!dashboardRef.current) return;
+              setPdfBusy(true);
+              try { await downloadNodeAsPdf(dashboardRef.current, "dashboard_completo"); } finally { setPdfBusy(false); }
+            }}
+          >
+            <FileDown className="h-4 w-4 mr-2" /> {pdfBusy ? "Generando..." : "Descargar PDF"}
+          </Button>
         </div>
 
         {/* Global filters */}
@@ -486,12 +556,13 @@ export default function DashboardPage() {
       </div>
 
       {/* ── ROW 3: Ventas semanales (Widget 8) ── */}
-      <Card>
+      <Card data-pdf-card>
         <CardHeader className="pb-2">
           <div className="flex flex-wrap items-center justify-between gap-4">
             <CardTitle className="text-sm font-semibold flex items-center gap-2">
               <BarChart3 className="h-4 w-4 text-blue-500" />
               Facturación Semanal
+              <AnalysisPdfButton name="facturacion_semanal" />
             </CardTitle>
             <div className="flex flex-wrap gap-3 items-end">
               <div className="space-y-1">
@@ -527,53 +598,73 @@ export default function DashboardPage() {
             </ResponsiveContainer>
           </div>
 
-          {weekSummary && (
-            <div className="mt-3 grid grid-cols-3 gap-3 text-sm">
-              <div className="rounded-lg bg-blue-50 dark:bg-blue-950/30 p-3">
-                <p className="text-xs text-muted-foreground">Semana actual</p>
-                <p className="font-bold text-blue-600">{formatCurrency(weekSummary.curr)}</p>
+          {weekSummary && (() => {
+            const factDiff = weekSummary.curr - weekSummary.prev;
+            const pos = weekSummary.pct >= 0;
+            return (
+              <div className="mt-3 grid grid-cols-3 gap-3 text-sm">
+                <div className="rounded-lg bg-blue-50 dark:bg-blue-950/30 p-3">
+                  <p className="text-xs text-muted-foreground">Semana actual</p>
+                  <p className="text-lg font-bold text-blue-600">{formatCurrency(weekSummary.curr)}</p>
+                </div>
+                <div className="rounded-lg bg-muted/50 p-3">
+                  <p className="text-xs text-muted-foreground">Semana anterior</p>
+                  <p className="text-lg font-bold">{formatCurrency(weekSummary.prev)}</p>
+                </div>
+                <div className="rounded-lg bg-muted/50 p-3">
+                  <p className="text-xs text-muted-foreground">Desfasaje facturación</p>
+                  <p className={`text-2xl font-extrabold leading-tight ${pos ? "text-green-600" : "text-red-500"}`}>
+                    {pos ? "+" : ""}{weekSummary.pct.toFixed(1)}%
+                  </p>
+                  <p className={`text-xs font-mono ${factDiff >= 0 ? "text-green-600" : "text-red-500"}`}>
+                    {factDiff >= 0 ? "+" : "−"}{formatCurrency(Math.abs(factDiff))}
+                  </p>
+                </div>
               </div>
-              <div className="rounded-lg bg-muted/50 p-3">
-                <p className="text-xs text-muted-foreground">Semana anterior</p>
-                <p className="font-bold">{formatCurrency(weekSummary.prev)}</p>
-              </div>
-              <div className="rounded-lg bg-muted/50 p-3">
-                <p className="text-xs text-muted-foreground">Evolución</p>
-                <div className="mt-0.5"><TrendBadge value={weekSummary.pct} /></div>
-              </div>
-            </div>
-          )}
+            );
+          })()}
 
           {cmvSemanaData && (cmvSemanaData.current?.totalVentas > 0 || cmvSemanaData.previous?.totalVentas > 0) && (() => {
-            const curr = cmvSemanaData.current ?? { totalVentas: 0, totalCosto: 0, cmvPct: 0 };
-            const prev = cmvSemanaData.previous ?? { totalVentas: 0, totalCosto: 0, cmvPct: 0 };
+            const curr = cmvSemanaData.current ?? { totalVentas: 0, totalCosto: 0, cmvPct: 0, cmvObjetivo: null, decomisos: 0 };
+            const prev = cmvSemanaData.previous ?? { totalVentas: 0, totalCosto: 0, cmvPct: 0, cmvObjetivo: null, decomisos: 0 };
             const cmvEvol = prev.cmvPct > 0 ? curr.cmvPct - prev.cmvPct : null;
             const startDate = new Date(weekStart + "T00:00:00Z");
             const fmtDate = (d: Date) => d.toLocaleDateString("es-AR", { day: "2-digit", month: "2-digit", timeZone: "UTC" });
             const currEnd = new Date(startDate); currEnd.setUTCDate(currEnd.getUTCDate() + 6);
             const prevStart = new Date(startDate); prevStart.setUTCDate(prevStart.getUTCDate() - 7);
             const prevEnd = new Date(startDate); prevEnd.setUTCDate(prevEnd.getUTCDate() - 1);
+
+            // CMV real vs objetivo (del módulo Objetivos, ponderado por facturación).
+            const objetivo: number | null = curr.cmvObjetivo ?? null;
+            const cmvDiffPp = objetivo != null ? curr.cmvPct - objetivo : null;      // + = por encima del objetivo (en contra)
+            const cmvDiffMoney = objetivo != null ? ((curr.cmvPct - objetivo) / 100) * curr.totalVentas : null;
+            const enContra = (cmvDiffPp ?? 0) > 0; // real > objetivo ⇒ gastaste de más
+            // Decomiso del período (sobre facturación).
+            const decoMoney: number = curr.decomisos ?? 0;
+            const decoPct = curr.totalVentas > 0 ? (decoMoney / curr.totalVentas) * 100 : null;
+
             return (
               <div className="mt-3 rounded-lg border bg-amber-50/50 dark:bg-amber-950/20 p-3">
                 <p className="text-xs font-medium text-muted-foreground mb-2 flex items-center gap-1"><Percent className="h-3 w-3" /> CMV por semana</p>
                 <div className="grid grid-cols-2 gap-3 text-sm">
                   <div className="rounded bg-muted/40 px-3 py-2">
                     <p className="text-xs text-muted-foreground mb-1">Semana anterior — {fmtDate(prevStart)} al {fmtDate(prevEnd)}</p>
-                    <div className="flex gap-4">
+                    <div className="flex gap-4 items-end">
                       <div><p className="text-xs text-muted-foreground">Facturación</p><p className="font-semibold">{formatCurrency(prev.totalVentas)}</p></div>
                       <div><p className="text-xs text-muted-foreground">CMV</p><p className="font-semibold">{formatCurrency(prev.totalCosto)}</p></div>
-                      <div><p className="text-xs text-muted-foreground">CMV %</p><p className="font-bold text-amber-600">{prev.cmvPct.toFixed(1)}%</p></div>
+                      <div><p className="text-xs text-muted-foreground">CMV %</p><p className="text-2xl font-extrabold leading-tight text-amber-600">{prev.cmvPct.toFixed(1)}%</p></div>
                     </div>
                   </div>
                   <div className="rounded bg-blue-50/60 dark:bg-blue-950/20 px-3 py-2">
                     <p className="text-xs text-muted-foreground mb-1">Semana actual — {fmtDate(startDate)} al {fmtDate(currEnd)}</p>
-                    <div className="flex gap-4">
+                    <div className="flex gap-4 items-end">
                       <div><p className="text-xs text-muted-foreground">Facturación</p><p className="font-semibold">{formatCurrency(curr.totalVentas)}</p></div>
                       <div><p className="text-xs text-muted-foreground">CMV</p><p className="font-semibold">{formatCurrency(curr.totalCosto)}</p></div>
-                      <div><p className="text-xs text-muted-foreground">CMV %</p><p className="font-bold text-amber-600">{curr.cmvPct.toFixed(1)}%</p></div>
+                      <div><p className="text-xs text-muted-foreground">CMV %</p><p className="text-2xl font-extrabold leading-tight text-amber-600">{curr.cmvPct.toFixed(1)}%</p></div>
                     </div>
                   </div>
                 </div>
+
                 {cmvEvol !== null && (
                   <div className="mt-2 flex items-center gap-1 text-xs text-muted-foreground">
                     <span>Evolución CMV:</span>
@@ -583,6 +674,41 @@ export default function DashboardPage() {
                     <span className="text-muted-foreground/60">(puntos porcentuales)</span>
                   </div>
                 )}
+
+                {/* Análisis ampliado: CMV vs Objetivo + Decomiso (semana actual) */}
+                <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div className="rounded-lg border bg-background/70 p-3">
+                    <p className="text-xs font-medium text-muted-foreground flex items-center gap-1"><Target className="h-3.5 w-3.5" /> CMV vs Objetivo</p>
+                    {objetivo == null ? (
+                      <p className="text-sm text-muted-foreground mt-2">Sin objetivo de CMV cargado para este mes/local.</p>
+                    ) : (
+                      <div className="mt-1">
+                        <div className="flex items-baseline gap-2">
+                          <span className={`text-2xl font-extrabold leading-tight ${enContra ? "text-red-500" : "text-green-600"}`}>
+                            {cmvDiffPp! > 0 ? "+" : ""}{cmvDiffPp!.toFixed(1)} pp
+                          </span>
+                          <span className={`text-xs font-semibold ${enContra ? "text-red-500" : "text-green-600"}`}>
+                            {enContra ? "EN CONTRA" : "A FAVOR"}
+                          </span>
+                        </div>
+                        <p className="text-xs text-muted-foreground mt-0.5">
+                          Objetivo <span className="font-semibold text-foreground">{objetivo.toFixed(1)}%</span> · Real <span className="font-semibold text-foreground">{curr.cmvPct.toFixed(1)}%</span>
+                        </p>
+                        <p className={`text-sm font-mono font-semibold mt-1 ${enContra ? "text-red-500" : "text-green-600"}`}>
+                          {enContra ? "+" : "−"}{formatCurrency(Math.abs(cmvDiffMoney!))} <span className="text-xs font-normal text-muted-foreground">vs objetivo</span>
+                        </p>
+                      </div>
+                    )}
+                  </div>
+                  <div className="rounded-lg border bg-background/70 p-3">
+                    <p className="text-xs font-medium text-muted-foreground flex items-center gap-1"><Trash2 className="h-3.5 w-3.5" /> Decomiso de la semana</p>
+                    <div className="mt-1 flex items-baseline gap-3">
+                      <span className="text-2xl font-extrabold leading-tight text-orange-600">{decoPct == null ? "—" : `${decoPct.toFixed(1)}%`}</span>
+                      <span className="text-sm font-mono font-semibold text-orange-600">{formatCurrency(decoMoney)}</span>
+                    </div>
+                    <p className="text-xs text-muted-foreground mt-0.5">sobre facturación de la semana</p>
+                  </div>
+                </div>
               </div>
             );
           })()}
@@ -592,12 +718,13 @@ export default function DashboardPage() {
       {/* ── ROW 4: Top 10 productos + categorías ── */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         {/* 9. Top 10 Productos */}
-        <Card>
+        <Card data-pdf-card>
           <CardHeader className="pb-2">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <CardTitle className="text-sm font-semibold flex items-center gap-2">
                 <ChefHat className="h-4 w-4 text-emerald-500" />
                 Top Productos más vendidos
+                <AnalysisPdfButton name="top_productos" />
               </CardTitle>
               <div className="flex flex-wrap gap-2 items-end text-xs">
                 <Input type="date" value={topDateFrom} onChange={(e) => setTopDateFrom(e.target.value)} className="h-7 w-36 text-xs" />
@@ -652,11 +779,12 @@ export default function DashboardPage() {
         </Card>
 
         {/* 10. Top 10 Categorías */}
-        <Card>
+        <Card data-pdf-card>
           <CardHeader className="pb-2">
             <CardTitle className="text-sm font-semibold flex items-center gap-2">
               <ShoppingCart className="h-4 w-4 text-violet-500" />
               Top Categorías más vendidas
+              <AnalysisPdfButton name="top_categorias" />
             </CardTitle>
             <p className="text-xs text-muted-foreground">Mismo período y fuente que productos</p>
           </CardHeader>
@@ -700,11 +828,12 @@ export default function DashboardPage() {
       {/* ── ROW 5: Composición pagos + Evolución mensual ── */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         {/* 11. Composición de ventas */}
-        <Card>
+        <Card data-pdf-card>
           <CardHeader className="pb-2">
             <CardTitle className="text-sm font-semibold flex items-center gap-2">
               <CreditCard className="h-4 w-4 text-pink-500" />
               Composición de Ventas — Medios de Pago
+              <AnalysisPdfButton name="composicion_ventas" />
             </CardTitle>
             <p className="text-xs text-muted-foreground">{MONTH_NAMES_FULL[month - 1]} {year} · {source === "fudo" ? "FUDO" : "DATALIVE"}</p>
           </CardHeader>
@@ -740,11 +869,12 @@ export default function DashboardPage() {
         </Card>
 
         {/* 12. Evolución mensual */}
-        <Card>
+        <Card data-pdf-card>
           <CardHeader className="pb-2">
             <CardTitle className="text-sm font-semibold flex items-center gap-2">
               <TrendingUp className="h-4 w-4 text-blue-500" />
               Evolución de Ventas {year}
+              <AnalysisPdfButton name="evolucion_ventas" />
             </CardTitle>
             <p className="text-xs text-muted-foreground">Mes a mes · {source === "fudo" ? "FUDO" : "DATALIVE"}</p>
           </CardHeader>

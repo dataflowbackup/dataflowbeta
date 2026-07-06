@@ -4777,7 +4777,56 @@ export class DatabaseStorage implements IStorage {
     if (weekStart) {
       const prevRows = rows.filter((r) => r.periodTo < weekStart);
       const currRows = rows.filter((r) => r.periodFrom >= weekStart);
-      return { current: calcSummary(currRows), previous: calcSummary(prevRows), rows };
+
+      // Rango de fechas de cada semana (para decomisos).
+      const addDays = (iso: string, n: number) => {
+        const d = new Date(iso + "T00:00:00Z");
+        d.setUTCDate(d.getUTCDate() + n);
+        return d.toISOString().slice(0, 10);
+      };
+      const currFrom = weekStart, currTo = addDays(weekStart, 6);
+      const prevFrom = addDays(weekStart, -7), prevTo = addDays(weekStart, -1);
+
+      // CMV objetivo del mes del inicio de semana, por local (módulo Objetivos).
+      const ws = new Date(weekStart + "T00:00:00Z");
+      const goals = await db.select().from(monthlyGoals).where(and(
+        eq(monthlyGoals.clientId, clientId),
+        eq(monthlyGoals.year, ws.getUTCFullYear()),
+        eq(monthlyGoals.month, ws.getUTCMonth() + 1),
+      ));
+      const objByLocal = new Map<number, number>();
+      for (const g of goals) {
+        const v = parseFloat(String(g.cmvObjetivo ?? ""));
+        if (isFinite(v)) objByLocal.set(g.localId, v);
+      }
+      // Objetivo ponderado por facturación (ventaNeta) de cada local presente en la semana.
+      const weightedObjetivo = (rs: typeof rows): number | null => {
+        const ventaByLocal = new Map<number, number>();
+        for (const r of rs) {
+          if (r.localId == null) continue;
+          ventaByLocal.set(r.localId, (ventaByLocal.get(r.localId) ?? 0) + (parseFloat(String(r.ventaNeta)) || 0));
+        }
+        let num = 0, den = 0;
+        for (const [lid, venta] of ventaByLocal) {
+          const obj = objByLocal.get(lid);
+          if (obj != null && venta > 0) { num += obj * venta; den += venta; }
+        }
+        return den > 0 ? num / den : null;
+      };
+
+      const decomisosSum = async (from: string, to: string): Promise<number> => {
+        const dConds: any[] = [eq(decomisos.clientId, clientId), gte(decomisos.fecha, from), lte(decomisos.fecha, to)];
+        if (localIds.length > 0) dConds.push(inArray(decomisos.localId, localIds));
+        const dRows = await db.select({ v: decomisos.valorizado }).from(decomisos).where(and(...dConds));
+        return dRows.reduce((s, r) => s + (parseFloat(String(r.v ?? 0)) || 0), 0);
+      };
+      const [currDec, prevDec] = await Promise.all([decomisosSum(currFrom, currTo), decomisosSum(prevFrom, prevTo)]);
+
+      return {
+        current: { ...calcSummary(currRows), cmvObjetivo: weightedObjetivo(currRows), decomisos: currDec },
+        previous: { ...calcSummary(prevRows), cmvObjetivo: weightedObjetivo(prevRows), decomisos: prevDec },
+        rows,
+      };
     }
     return { ...calcSummary(rows), rows };
   }
