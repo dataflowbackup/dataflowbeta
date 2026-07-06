@@ -175,7 +175,18 @@ export default function DecomisosPage() {
       setProdMap(pMap);
 
       if (res.items.length === 0) {
-        toast({ title: "No se leyeron decomisos del archivo", description: res.warnings.join(" ") || undefined, variant: "destructive" });
+        // Detectar el formato "Página Web" de Excel (frameset multi-archivo): el .xls es solo
+        // un cascarón HTML y los datos viven en una carpeta aparte (_archivos/sheet001.htm),
+        // por lo que no hay nada para leer. Damos un mensaje accionable en vez del genérico.
+        const head = new TextDecoder("utf-8", { fatal: false }).decode(new Uint8Array(buf).slice(0, 8192));
+        const esFrameset = /Excel Workbook Frameset/i.test(head) || /_archivos\/|filelist\.xml|sheet001\.htm/i.test(head);
+        if (esFrameset) {
+          const msg = 'Este archivo es una "Página Web" de Excel: los datos están en una carpeta aparte, no dentro del archivo. Abrilo en Excel y usá Archivo → Guardar como → "Libro de Excel (.xlsx)", y subí ese .xlsx.';
+          setWarnings([msg]);
+          toast({ title: "Formato de archivo no válido", description: msg, variant: "destructive" });
+        } else {
+          toast({ title: "No se leyeron decomisos del archivo", description: res.warnings.join(" ") || undefined, variant: "destructive" });
+        }
       }
     } catch (e: any) {
       toast({ title: "No se pudo leer el archivo", description: e?.message, variant: "destructive" });
