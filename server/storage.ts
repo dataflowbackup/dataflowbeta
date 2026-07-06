@@ -581,6 +581,7 @@ export interface IStorage {
   saveDecomisoLocalMappings(clientId: number, maps: Array<{ sucursalOriginal: string; localId: number }>): Promise<void>;
   saveDecomisoProductMappings(clientId: number, maps: Array<{ codProducto: string; descripcionOriginal?: string | null; supplyId: number }>): Promise<void>;
   deleteDecomiso(clientId: number, id: number): Promise<boolean>;
+  deleteDecomisosBySource(clientId: number, sourceFile: string): Promise<number>;
 
   getPermissions(): Promise<Permission[]>;
   createPermission(permission: InsertPermission): Promise<Permission>;
@@ -3842,6 +3843,14 @@ export class DatabaseStorage implements IStorage {
       .where(and(eq(decomisos.clientId, clientId), eq(decomisos.id, id)))
       .returning({ id: decomisos.id });
     return deleted.length > 0;
+  }
+
+  async deleteDecomisosBySource(clientId: number, sourceFile: string): Promise<number> {
+    const deleted = await db
+      .delete(decomisos)
+      .where(and(eq(decomisos.clientId, clientId), eq(decomisos.sourceFile, sourceFile)))
+      .returning({ id: decomisos.id });
+    return deleted.length;
   }
 
   async getPermissions(): Promise<Permission[]> {

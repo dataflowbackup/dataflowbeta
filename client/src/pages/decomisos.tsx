@@ -9,6 +9,7 @@ import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { DataEntryCombobox } from "@/components/data-entry-combobox";
 import { DateRangePicker } from "@/components/date-range-picker";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   Dialog,
   DialogContent,
@@ -20,7 +21,7 @@ import {
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { formatCurrency } from "@/lib/formatters";
-import { Upload, Save, Trash2 } from "lucide-react";
+import { Upload, Save, Trash2, FileSpreadsheet } from "lucide-react";
 import { parseDecomisosReport, type ParsedDecomiso } from "@shared/decomisosParser";
 import type { Local } from "@shared/schema";
 
@@ -40,6 +41,7 @@ interface DecomisoRow {
   cantidad: string | number;
   unitCost: string | number;
   valorizado: string | number;
+  sourceFile: string | null;
 }
 
 interface SupplyLite {
@@ -72,9 +74,18 @@ export default function DecomisosPage() {
   const [filterTo, setFilterTo] = useState("");
   const [filterTipo, setFilterTipo] = useState("all");
 
+  // ── filtros del Dashboard ──
+  const [dashLocalId, setDashLocalId] = useState("all");
+  const [dashFrom, setDashFrom] = useState("");
+  const [dashTo, setDashTo] = useState("");
+  const [dashSupplyId, setDashSupplyId] = useState("all");
+  const [dashDesc, setDashDesc] = useState("");
+
   // ── borrado ──
   const [deleteRow, setDeleteRow] = useState<DecomisoRow | null>(null);
   const [deleteKeyword, setDeleteKeyword] = useState("");
+  const [deleteSource, setDeleteSource] = useState<string | null>(null);
+  const [deleteSourceKw, setDeleteSourceKw] = useState("");
 
   const { data: locals = [] } = useQuery<Local[]>({ queryKey: ["/api/locals"] });
   const { data: supplies = [] } = useQuery<SupplyLite[]>({ queryKey: ["/api/supplies"] });
@@ -236,7 +247,34 @@ export default function DecomisosPage() {
     onError: (e: Error) => toast({ title: "No se pudo eliminar", description: e.message, variant: "destructive" }),
   });
 
+  const deleteSourceMutation = useMutation({
+    mutationFn: async (sourceFile: string) => {
+      const res = await apiRequest("DELETE", "/api/decomisos/by-source", { sourceFile });
+      return res.json();
+    },
+    onSuccess: (r: any) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/decomisos"] });
+      toast({ title: "Archivo eliminado", description: `${r.eliminados} decomiso(s) eliminados.` });
+      setDeleteSource(null); setDeleteSourceKw("");
+    },
+    onError: (e: Error) => toast({ title: "No se pudo eliminar", description: e.message, variant: "destructive" }),
+  });
+
   const closeDeleteDialog = () => { setDeleteRow(null); setDeleteKeyword(""); };
+
+  // Archivos importados (agrupados por sourceFile) para poder borrar un Excel completo
+  const archivos = useMemo(() => {
+    const map = new Map<string, { sourceFile: string; lineas: number; cantidad: number; valorizado: number }>();
+    for (const e of existing) {
+      const sf = e.sourceFile || "(sin nombre)";
+      if (!map.has(sf)) map.set(sf, { sourceFile: sf, lineas: 0, cantidad: 0, valorizado: 0 });
+      const g = map.get(sf)!;
+      g.lineas++;
+      g.cantidad += parseFloat(String(e.cantidad)) || 0;
+      g.valorizado += parseFloat(String(e.valorizado)) || 0;
+    }
+    return Array.from(map.values()).sort((a, b) => b.valorizado - a.valorizado);
+  }, [existing]);
 
   // tipos distintos para el filtro
   const tipos = useMemo(() => {
@@ -265,12 +303,78 @@ export default function DecomisosPage() {
     return { cantidad, valorizado, lineas: filtered.length };
   }, [filtered]);
 
+  // ── Dashboard ──
+  // insumos presentes en los decomisos cargados (para el filtro "Producto = insumo")
+  const dashSupplyOptions = useMemo(() => {
+    const ids = new Set<number>();
+    for (const e of existing) if (e.supplyId != null) ids.add(e.supplyId);
+    const opts = Array.from(ids).map((id) => ({ value: String(id), label: supplyNameById.get(id) ?? `Insumo ${id}` }));
+    opts.sort((a, b) => a.label.localeCompare(b.label));
+    return [{ value: "all", label: "Todos los insumos" }, ...opts];
+  }, [existing, supplyNameById]);
+
+  const dashFiltered = useMemo(() => {
+    const q = dashDesc.trim().toLowerCase();
+    return existing.filter((e) => {
+      if (dashLocalId !== "all" && String(e.localId) !== dashLocalId) return false;
+      if (dashSupplyId !== "all" && String(e.supplyId ?? "") !== dashSupplyId) return false;
+      const f = String(e.fecha);
+      if (dashFrom && f < dashFrom) return false;
+      if (dashTo && f > dashTo) return false;
+      if (q && !e.descripcionOriginal.toLowerCase().includes(q)) return false;
+      return true;
+    });
+  }, [existing, dashLocalId, dashSupplyId, dashFrom, dashTo, dashDesc]);
+
+  const dashTotals = useMemo(() => {
+    let cantidad = 0; let valorizado = 0;
+    for (const e of dashFiltered) {
+      cantidad += parseFloat(String(e.cantidad)) || 0;
+      valorizado += parseFloat(String(e.valorizado)) || 0;
+    }
+    return { cantidad, valorizado, lineas: dashFiltered.length };
+  }, [dashFiltered]);
+
+  // agrupación por producto (identidad del Excel: codProducto, fallback descripción)
+  const dashByProducto = useMemo(() => {
+    const map = new Map<string, { producto: string; cantidad: number; valorizado: number }>();
+    for (const e of dashFiltered) {
+      const key = e.codProducto || `__${e.descripcionOriginal}`;
+      if (!map.has(key)) map.set(key, { producto: e.descripcionOriginal, cantidad: 0, valorizado: 0 });
+      const g = map.get(key)!;
+      g.cantidad += parseFloat(String(e.cantidad)) || 0;
+      g.valorizado += parseFloat(String(e.valorizado)) || 0;
+    }
+    return Array.from(map.values());
+  }, [dashFiltered]);
+
+  const topByCost = useMemo(
+    () => [...dashByProducto].sort((a, b) => b.valorizado - a.valorizado).slice(0, 10),
+    [dashByProducto],
+  );
+  const topByQty = useMemo(
+    () => [...dashByProducto].sort((a, b) => b.cantidad - a.cantidad).slice(0, 10),
+    [dashByProducto],
+  );
+  const maxCost = topByCost[0]?.valorizado || 1;
+  const maxQty = topByQty[0]?.cantidad || 1;
+  const dashHasFilters = dashLocalId !== "all" || dashSupplyId !== "all" || !!dashFrom || !!dashTo || !!dashDesc.trim();
+
   return (
     <div className="space-y-6">
       <PageHeader
         title="Decomisos"
         description="Importá el reporte de decomisos de Datalive, asigná cada producto a un insumo y cada sucursal a un local para valorizar la mercadería decomisada"
       />
+
+      <Tabs defaultValue="carga">
+        <TabsList>
+          <TabsTrigger value="carga">Carga y listado</TabsTrigger>
+          <TabsTrigger value="dashboard">Dashboard</TabsTrigger>
+        </TabsList>
+
+        {/* ── TAB CARGA Y LISTADO ── */}
+        <TabsContent value="carga" className="space-y-6 mt-4">
       <Card>
         <CardHeader className="pb-3"><CardTitle className="text-base">Importar reporte de decomisos</CardTitle></CardHeader>
         <CardContent className="space-y-4">
@@ -321,11 +425,21 @@ export default function DecomisosPage() {
               <div className="space-y-2">
                 <Label className="text-sm font-medium">Productos → Insumos <span className="text-xs text-muted-foreground font-normal">(opcional: sin insumo, el valorizado queda en $0)</span></Label>
                 <div className="rounded-md border divide-y max-h-80 overflow-y-auto">
+                  <div className="hidden sm:flex items-center gap-3 px-3 py-2 bg-muted/50 text-xs font-medium text-muted-foreground">
+                    <span className="flex-1">Producto</span>
+                    <span className="w-64">Insumo asignado</span>
+                    <span className="w-28 text-right">Costo u.</span>
+                    <span className="w-32 text-right">Total decomiso</span>
+                  </div>
                   {productos.map((p) => {
                     const key = p.codProducto || `__${p.descripcion}`;
+                    const sel = prodMap[key];
+                    const supId = sel && sel !== SIN_ASIGNAR ? parseInt(sel, 10) : null;
+                    const cost = supId != null ? (costBySupply.get(supId) ?? 0) : 0;
+                    const lineTotal = cost * p.cantidad;
                     return (
-                      <div key={key} className="flex items-center justify-between gap-3 px-3 py-2">
-                        <div className="min-w-0">
+                      <div key={key} className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-3 px-3 py-2">
+                        <div className="min-w-0 flex-1">
                           <p className="text-sm truncate">{p.descripcion}</p>
                           <p className="text-xs text-muted-foreground">Cód. {p.codProducto || "—"} · {p.cantidad.toLocaleString("es-AR")} u.</p>
                         </div>
@@ -337,6 +451,12 @@ export default function DecomisosPage() {
                           searchPlaceholder="Buscar insumo…"
                           triggerClassName="w-64"
                         />
+                        <div className="w-28 text-right shrink-0">
+                          <span className="font-mono text-sm">{supId != null ? formatCurrency(cost) : <span className="text-muted-foreground">—</span>}</span>
+                        </div>
+                        <div className="w-32 text-right shrink-0">
+                          <span className={`font-mono text-sm ${supId != null ? "font-semibold" : "text-muted-foreground"}`}>{supId != null ? formatCurrency(lineTotal) : "—"}</span>
+                        </div>
                       </div>
                     );
                   })}
@@ -358,6 +478,46 @@ export default function DecomisosPage() {
           )}
         </CardContent>
       </Card>
+
+      {archivos.length > 0 && (
+        <Card>
+          <CardHeader className="pb-3"><CardTitle className="text-base">Archivos importados</CardTitle></CardHeader>
+          <CardContent>
+            <p className="text-xs text-muted-foreground mb-3">Borrá un Excel completo y se eliminan todos los decomisos que trajo ese archivo.</p>
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="bg-muted/50">
+                    <th className="text-left px-3 py-2 font-medium border-b">Archivo</th>
+                    <th className="text-right px-3 py-2 font-medium border-b">Líneas</th>
+                    <th className="text-right px-3 py-2 font-medium border-b">Cantidad</th>
+                    <th className="text-right px-3 py-2 font-medium border-b">Valorizado</th>
+                    <th className="px-3 py-2 font-medium border-b w-12"></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {archivos.map((a) => (
+                    <tr key={a.sourceFile} className="border-b">
+                      <td className="px-3 py-2">
+                        <span className="inline-flex items-center gap-2"><FileSpreadsheet className="h-4 w-4 text-muted-foreground shrink-0" />{a.sourceFile}</span>
+                      </td>
+                      <td className="px-3 py-2 text-right font-mono">{a.lineas}</td>
+                      <td className="px-3 py-2 text-right font-mono">{a.cantidad.toLocaleString("es-AR")}</td>
+                      <td className="px-3 py-2 text-right font-mono">{formatCurrency(a.valorizado)}</td>
+                      <td className="px-3 py-2 text-center">
+                        <Button variant="ghost" size="icon" className="h-8 w-8"
+                          onClick={() => { setDeleteSource(a.sourceFile); setDeleteSourceKw(""); }}>
+                          <Trash2 className="h-4 w-4 text-destructive" />
+                        </Button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       {existing.length > 0 && (
         <Card>
@@ -454,6 +614,116 @@ export default function DecomisosPage() {
           </CardContent>
         </Card>
       )}
+        </TabsContent>
+
+        {/* ── TAB DASHBOARD ── */}
+        <TabsContent value="dashboard" className="space-y-6 mt-4">
+          <Card>
+            <CardHeader className="pb-3"><CardTitle className="text-base">Filtros</CardTitle></CardHeader>
+            <CardContent>
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:flex-wrap">
+                <div className="space-y-1">
+                  <Label className="text-xs">Local</Label>
+                  <DataEntryCombobox
+                    options={[{ value: "all", label: "Todos los locales" }, ...localOptions]}
+                    value={dashLocalId}
+                    onValueChange={setDashLocalId}
+                    placeholder="Todos los locales"
+                    searchPlaceholder="Buscar local…"
+                    triggerClassName="w-52"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <Label className="text-xs">Producto (insumo)</Label>
+                  <DataEntryCombobox
+                    options={dashSupplyOptions}
+                    value={dashSupplyId}
+                    onValueChange={setDashSupplyId}
+                    placeholder="Todos los insumos"
+                    searchPlaceholder="Buscar insumo…"
+                    triggerClassName="w-56"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <Label className="text-xs">Período</Label>
+                  <DateRangePicker from={dashFrom} to={dashTo} onChange={(f, t) => { setDashFrom(f); setDashTo(t); }} placeholder="Todo el período" />
+                </div>
+                <div className="space-y-1">
+                  <Label className="text-xs">Descripción</Label>
+                  <Input value={dashDesc} onChange={(e) => setDashDesc(e.target.value)} placeholder="Buscar en descripción…" className="w-56" />
+                </div>
+                {dashHasFilters && (
+                  <Button type="button" variant="ghost" size="sm" onClick={() => { setDashLocalId("all"); setDashSupplyId("all"); setDashFrom(""); setDashTo(""); setDashDesc(""); }}>
+                    Limpiar filtros
+                  </Button>
+                )}
+              </div>
+              {!dashHasFilters && <p className="text-xs text-muted-foreground mt-3">Sin filtros: se muestra el total de todos los decomisos cargados.</p>}
+            </CardContent>
+          </Card>
+
+          {/* KPIs */}
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+            <div className="rounded-xl border bg-gradient-to-br from-primary/10 to-transparent p-5">
+              <p className="text-xs text-muted-foreground uppercase tracking-wide">Costo total decomisado</p>
+              <p className="text-3xl font-bold font-mono mt-1">{formatCurrency(dashTotals.valorizado)}</p>
+            </div>
+            <div className="rounded-xl border bg-card p-5">
+              <p className="text-xs text-muted-foreground uppercase tracking-wide">Cantidad total decomisada</p>
+              <p className="text-3xl font-bold font-mono mt-1">{dashTotals.cantidad.toLocaleString("es-AR")}</p>
+              <p className="text-xs text-muted-foreground mt-1">unidades</p>
+            </div>
+            <div className="rounded-xl border bg-card p-5">
+              <p className="text-xs text-muted-foreground uppercase tracking-wide">Líneas de decomiso</p>
+              <p className="text-3xl font-bold font-mono mt-1">{dashTotals.lineas.toLocaleString("es-AR")}</p>
+            </div>
+          </div>
+
+          {dashFiltered.length === 0 ? (
+            <Card><CardContent className="py-10 text-center text-muted-foreground">No hay decomisos para los filtros seleccionados.</CardContent></Card>
+          ) : (
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+              {/* Top 10 por costo */}
+              <Card>
+                <CardHeader className="pb-3"><CardTitle className="text-base">Top 10 productos por costo</CardTitle></CardHeader>
+                <CardContent className="space-y-3">
+                  {topByCost.map((p, i) => (
+                    <div key={p.producto} className="space-y-1">
+                      <div className="flex items-center justify-between gap-2 text-sm">
+                        <span className="truncate"><span className="text-muted-foreground mr-2">{i + 1}.</span>{p.producto}</span>
+                        <span className="font-mono font-semibold shrink-0">{formatCurrency(p.valorizado)}</span>
+                      </div>
+                      <div className="h-2 rounded-full bg-muted overflow-hidden">
+                        <div className="h-full rounded-full bg-primary" style={{ width: `${Math.max(2, (p.valorizado / maxCost) * 100)}%` }} />
+                      </div>
+                      <p className="text-xs text-muted-foreground">{p.cantidad.toLocaleString("es-AR")} u.</p>
+                    </div>
+                  ))}
+                </CardContent>
+              </Card>
+
+              {/* Top 10 por cantidad */}
+              <Card>
+                <CardHeader className="pb-3"><CardTitle className="text-base">Top 10 productos por cantidad</CardTitle></CardHeader>
+                <CardContent className="space-y-3">
+                  {topByQty.map((p, i) => (
+                    <div key={p.producto} className="space-y-1">
+                      <div className="flex items-center justify-between gap-2 text-sm">
+                        <span className="truncate"><span className="text-muted-foreground mr-2">{i + 1}.</span>{p.producto}</span>
+                        <span className="font-mono font-semibold shrink-0">{p.cantidad.toLocaleString("es-AR")} u.</span>
+                      </div>
+                      <div className="h-2 rounded-full bg-muted overflow-hidden">
+                        <div className="h-full rounded-full bg-amber-500" style={{ width: `${Math.max(2, (p.cantidad / maxQty) * 100)}%` }} />
+                      </div>
+                      <p className="text-xs text-muted-foreground">{formatCurrency(p.valorizado)}</p>
+                    </div>
+                  ))}
+                </CardContent>
+              </Card>
+            </div>
+          )}
+        </TabsContent>
+      </Tabs>
 
       <Dialog open={!!deleteRow} onOpenChange={(o) => !o && closeDeleteDialog()}>
         <DialogContent>
@@ -478,6 +748,34 @@ export default function DecomisosPage() {
               onClick={() => deleteRow && deleteMutation.mutate(deleteRow.id)}
             >
               {deleteMutation.isPending ? "Eliminando..." : "Eliminar"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={!!deleteSource} onOpenChange={(o) => { if (!o) { setDeleteSource(null); setDeleteSourceKw(""); } }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Eliminar archivo completo</DialogTitle>
+            <DialogDescription>
+              {deleteSource && (
+                <>Vas a eliminar <span className="font-medium">todos</span> los decomisos importados del archivo <span className="font-medium">{deleteSource}</span>. Esta acción no se puede deshacer.</>
+              )}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-2">
+            <Label className="text-xs">Para confirmar, escribí <span className="font-mono font-semibold">{DELETE_KEYWORD}</span></Label>
+            <Input value={deleteSourceKw} onChange={(e) => setDeleteSourceKw(e.target.value)} placeholder={DELETE_KEYWORD} autoComplete="off" />
+          </div>
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={() => { setDeleteSource(null); setDeleteSourceKw(""); }}>Cancelar</Button>
+            <Button
+              type="button"
+              variant="destructive"
+              disabled={deleteSourceKw.trim().toUpperCase() !== DELETE_KEYWORD || deleteSourceMutation.isPending}
+              onClick={() => deleteSource && deleteSourceMutation.mutate(deleteSource)}
+            >
+              {deleteSourceMutation.isPending ? "Eliminando..." : "Eliminar todo"}
             </Button>
           </DialogFooter>
         </DialogContent>

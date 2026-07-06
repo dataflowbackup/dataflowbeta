@@ -3854,6 +3854,20 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
   });
 
+  // Borrar todos los decomisos de un archivo importado (por sourceFile).
+  // IMPORTANTE: debe ir ANTES de "/api/decomisos/:id" para no colisionar con :id.
+  app.delete("/api/decomisos/by-source", isAuthenticated, async (req, res) => {
+    try {
+      const clientId = await getClientId(req);
+      const sourceFile = (req.body?.sourceFile ?? req.query.sourceFile) as string | undefined;
+      if (!sourceFile || !sourceFile.trim()) return res.status(400).json({ message: "Falta el nombre del archivo" });
+      const eliminados = await storage.deleteDecomisosBySource(clientId, sourceFile);
+      res.json({ eliminados });
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
   app.delete("/api/decomisos/:id", isAuthenticated, async (req, res) => {
     try {
       const clientId = await getClientId(req);
