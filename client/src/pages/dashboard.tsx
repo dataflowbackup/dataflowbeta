@@ -600,7 +600,8 @@ export default function DashboardPage() {
 
           {weekSummary && (() => {
             const factDiff = weekSummary.curr - weekSummary.prev;
-            const pos = weekSummary.pct >= 0;
+            const hasPct = weekSummary.pct !== null && weekSummary.pct !== undefined;
+            const pos = (weekSummary.pct ?? 0) >= 0;
             return (
               <div className="mt-3 grid grid-cols-3 gap-3 text-sm">
                 <div className="rounded-lg bg-blue-50 dark:bg-blue-950/30 p-3">
@@ -614,7 +615,7 @@ export default function DashboardPage() {
                 <div className="rounded-lg bg-muted/50 p-3">
                   <p className="text-xs text-muted-foreground">Desfasaje facturación</p>
                   <p className={`text-2xl font-extrabold leading-tight ${pos ? "text-green-600" : "text-red-500"}`}>
-                    {pos ? "+" : ""}{weekSummary.pct.toFixed(1)}%
+                    {hasPct ? `${pos ? "+" : ""}${weekSummary.pct!.toFixed(1)}%` : "—"}
                   </p>
                   <p className={`text-xs font-mono ${factDiff >= 0 ? "text-green-600" : "text-red-500"}`}>
                     {factDiff >= 0 ? "+" : "−"}{formatCurrency(Math.abs(factDiff))}
