@@ -21,7 +21,7 @@ import {
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { formatCurrency } from "@/lib/formatters";
-import { Upload, Save, Trash2, FileSpreadsheet } from "lucide-react";
+import { Upload, Save, Trash2, FileSpreadsheet, Download } from "lucide-react";
 import { parseDecomisosReport, type ParsedDecomiso } from "@shared/decomisosParser";
 import type { Local } from "@shared/schema";
 
@@ -360,6 +360,45 @@ export default function DecomisosPage() {
   const maxQty = topByQty[0]?.cantidad || 1;
   const dashHasFilters = dashLocalId !== "all" || dashSupplyId !== "all" || !!dashFrom || !!dashTo || !!dashDesc.trim();
 
+  // ── Export a Excel ──
+  const todayStr = () => {
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  };
+  // Filtros aplicados como texto, para dejar constancia en el Excel exportado.
+  const filtrosTexto = () => {
+    const parts: string[] = [];
+    parts.push(`Local: ${dashLocalId === "all" ? "Todos" : (localNameById.get(parseInt(dashLocalId, 10)) ?? dashLocalId)}`);
+    parts.push(`Insumo: ${dashSupplyId === "all" ? "Todos" : (supplyNameById.get(parseInt(dashSupplyId, 10)) ?? dashSupplyId)}`);
+    parts.push(`Período: ${dashFrom || "inicio"} → ${dashTo || "hoy"}`);
+    if (dashDesc.trim()) parts.push(`Descripción: "${dashDesc.trim()}"`);
+    return parts.join(" · ");
+  };
+  const topCostRows = () => topByCost.map((p, i) => ({ "#": i + 1, Producto: p.producto, "Costo $": Math.round(p.valorizado * 100) / 100, Cantidad: p.cantidad }));
+  const topQtyRows = () => topByQty.map((p, i) => ({ "#": i + 1, Producto: p.producto, Cantidad: p.cantidad, "Costo $": Math.round(p.valorizado * 100) / 100 }));
+  const kpiRows = () => [
+    { Métrica: "Costo total decomisado", Valor: Math.round(dashTotals.valorizado * 100) / 100 },
+    { Métrica: "Cantidad total decomisada", Valor: dashTotals.cantidad },
+    { Métrica: "Líneas de decomiso", Valor: dashTotals.lineas },
+    { Métrica: "Filtros aplicados", Valor: filtrosTexto() },
+  ];
+  const exportOne = (rows: any[], sheet: string, file: string) => {
+    const ws = XLSX.utils.json_to_sheet(rows);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, sheet);
+    XLSX.writeFile(wb, `${file}_${todayStr()}.xlsx`);
+  };
+  const exportTopCost = () => exportOne(topCostRows(), "Top10 Costo", "decomisos_top10_costo");
+  const exportTopQty = () => exportOne(topQtyRows(), "Top10 Cantidad", "decomisos_top10_cantidad");
+  const exportKpis = () => exportOne(kpiRows(), "Resumen", "decomisos_resumen");
+  const exportAll = () => {
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(kpiRows()), "Resumen");
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(topCostRows()), "Top10 Costo");
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(topQtyRows()), "Top10 Cantidad");
+    XLSX.writeFile(wb, `decomisos_dashboard_${todayStr()}.xlsx`);
+  };
+
   return (
     <div className="space-y-6">
       <PageHeader
@@ -619,7 +658,12 @@ export default function DecomisosPage() {
         {/* ── TAB DASHBOARD ── */}
         <TabsContent value="dashboard" className="space-y-6 mt-4">
           <Card>
-            <CardHeader className="pb-3"><CardTitle className="text-base">Filtros</CardTitle></CardHeader>
+            <CardHeader className="pb-3 flex flex-row items-center justify-between space-y-0">
+              <CardTitle className="text-base">Filtros</CardTitle>
+              <Button type="button" variant="outline" size="sm" disabled={dashFiltered.length === 0} onClick={exportAll}>
+                <Download className="h-4 w-4 mr-2" /> Exportar todo
+              </Button>
+            </CardHeader>
             <CardContent>
               <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:flex-wrap">
                 <div className="space-y-1">
@@ -663,6 +707,12 @@ export default function DecomisosPage() {
           </Card>
 
           {/* KPIs */}
+          <div className="flex items-center justify-between">
+            <h3 className="text-sm font-medium text-muted-foreground">Resumen general</h3>
+            <Button type="button" variant="ghost" size="sm" disabled={dashFiltered.length === 0} onClick={exportKpis}>
+              <Download className="h-4 w-4 mr-2" /> Excel
+            </Button>
+          </div>
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
             <div className="rounded-xl border bg-gradient-to-br from-primary/10 to-transparent p-5">
               <p className="text-xs text-muted-foreground uppercase tracking-wide">Costo total decomisado</p>
@@ -685,7 +735,12 @@ export default function DecomisosPage() {
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
               {/* Top 10 por costo */}
               <Card>
-                <CardHeader className="pb-3"><CardTitle className="text-base">Top 10 productos por costo</CardTitle></CardHeader>
+                <CardHeader className="pb-3 flex flex-row items-center justify-between space-y-0">
+                  <CardTitle className="text-base">Top 10 productos por costo</CardTitle>
+                  <Button type="button" variant="ghost" size="sm" onClick={exportTopCost}>
+                    <Download className="h-4 w-4 mr-2" /> Excel
+                  </Button>
+                </CardHeader>
                 <CardContent className="space-y-3">
                   {topByCost.map((p, i) => (
                     <div key={p.producto} className="space-y-1">
@@ -704,7 +759,12 @@ export default function DecomisosPage() {
 
               {/* Top 10 por cantidad */}
               <Card>
-                <CardHeader className="pb-3"><CardTitle className="text-base">Top 10 productos por cantidad</CardTitle></CardHeader>
+                <CardHeader className="pb-3 flex flex-row items-center justify-between space-y-0">
+                  <CardTitle className="text-base">Top 10 productos por cantidad</CardTitle>
+                  <Button type="button" variant="ghost" size="sm" onClick={exportTopQty}>
+                    <Download className="h-4 w-4 mr-2" /> Excel
+                  </Button>
+                </CardHeader>
                 <CardContent className="space-y-3">
                   {topByQty.map((p, i) => (
                     <div key={p.producto} className="space-y-1">

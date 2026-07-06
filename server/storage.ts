@@ -509,9 +509,13 @@ export interface IStorage {
     salesGross: number;
     ventaNeta: number;
     cmvPct: number | null;
+    decomisos: number;
+    decomisoPct: number | null;
   }>;
   /** Total de compras (CMC sin IVA) para un período — usado para preview en vivo. */
   getCmcTotal(clientId: number, opts: { localId?: number; dateFrom?: string; dateTo?: string }): Promise<number>;
+  /** Total de decomisos valorizados para un período/local — usado en el CMV y preview. */
+  getDecomisosTotal(clientId: number, opts: { localId?: number; dateFrom?: string; dateTo?: string }): Promise<number>;
   /** Guarda un cálculo de CMV como registro (recalcula server-side para integridad). */
   saveCmvCalculation(clientId: number, opts: { localId?: number; stockInicialId: number; stockFinalId: number; dateFrom?: string; dateTo?: string; salesSource?: "extractos" | "datalive" | "fudo"; ivaIncluded?: boolean; createdBy?: string | null }): Promise<CmvCalculation>;
   listCmvCalculations(clientId: number): Promise<CmvCalculation[]>;
@@ -3311,6 +3315,14 @@ export class DatabaseStorage implements IStorage {
     const cmv = stockInicial + compras - stockFinal;
     const cmvPct = ventaNeta > 0 ? (cmv / ventaNeta) * 100 : null;
 
+    // Decomisos del local + período (desglose informativo, NO altera el CMV).
+    const decomisosTotal = await this.getDecomisosTotal(clientId, {
+      localId: opts.localId,
+      dateFrom: opts.dateFrom,
+      dateTo: opts.dateTo,
+    });
+    const decomisoPct = ventaNeta > 0 ? (decomisosTotal / ventaNeta) * 100 : null;
+
     return {
       stockInicial,
       stockInicialDate: String(ini.valuationDate),
@@ -3321,7 +3333,22 @@ export class DatabaseStorage implements IStorage {
       salesGross,
       ventaNeta,
       cmvPct,
+      decomisos: decomisosTotal,
+      decomisoPct,
     };
+  }
+
+  /** Suma de decomisos valorizados por (empresa, local, período). */
+  async getDecomisosTotal(
+    clientId: number,
+    opts: { localId?: number; dateFrom?: string; dateTo?: string },
+  ): Promise<number> {
+    const conds: any[] = [eq(decomisos.clientId, clientId)];
+    if (opts.localId != null) conds.push(eq(decomisos.localId, opts.localId));
+    if (opts.dateFrom) conds.push(gte(decomisos.fecha, opts.dateFrom));
+    if (opts.dateTo) conds.push(lte(decomisos.fecha, opts.dateTo));
+    const rows = await db.select({ valorizado: decomisos.valorizado }).from(decomisos).where(and(...conds));
+    return rows.reduce((s, r) => s + (parseFloat(String(r.valorizado ?? 0)) || 0), 0);
   }
 
   async getCmcTotal(
@@ -3363,6 +3390,8 @@ export class DatabaseStorage implements IStorage {
       cmv: String(r.cmv),
       ventaNeta: String(r.ventaNeta),
       cmvPct: r.cmvPct != null ? String(r.cmvPct) : null,
+      decomisos: String(r.decomisos),
+      decomisoPct: r.decomisoPct != null ? String(r.decomisoPct) : null,
       salesSource: opts.salesSource ?? "extractos",
       ivaIncluded: opts.ivaIncluded ?? false,
       createdBy: opts.createdBy ?? null,

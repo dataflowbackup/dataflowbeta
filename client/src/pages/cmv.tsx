@@ -48,6 +48,8 @@ interface CmvSaved {
   stockInicial: string | number;
   compras: string | number;
   stockFinal: string | number;
+  decomisos: string | number | null;
+  decomisoPct: string | number | null;
   salesSource: string | null;
   ivaIncluded: boolean | null;
 }
@@ -70,6 +72,8 @@ interface CmvResult {
   salesGross: number;
   ventaNeta: number;
   cmvPct: number | null;
+  decomisos: number;
+  decomisoPct: number | null;
 }
 
 function firstDayOfYear(): string {
@@ -366,6 +370,21 @@ export default function CmvPage() {
     },
   });
 
+  // Preview decomisos en vivo — se activa apenas hay fechas
+  const { data: decomisosPreview } = useQuery<{ decomisos: number }>({
+    queryKey: ["/api/finance/cmv-decomisos", localId, dateFrom, dateTo],
+    enabled: !!(dateFrom && dateTo),
+    queryFn: async () => {
+      const p = new URLSearchParams();
+      if (localId !== "all") p.set("localId", localId);
+      if (dateFrom) p.set("dateFrom", dateFrom);
+      if (dateTo) p.set("dateTo", dateTo);
+      const res = await fetch(`/api/finance/cmv-decomisos?${p.toString()}`, { credentials: "include" });
+      if (!res.ok) return { decomisos: 0 };
+      return res.json();
+    },
+  });
+
   const ready = stockInicialId && stockFinalId;
   const { data, isLoading, isError, error } = useQuery<CmvResult>({
     queryKey: ["/api/finance/cmv", stockInicialId, stockFinalId, localId, dateFrom, dateTo, salesSource, ivaIncluded],
@@ -474,6 +493,11 @@ export default function CmvPage() {
                   Compras en el período: <span className="font-semibold font-mono text-foreground">{formatCurrency(comprasPreview.compras)}</span>
                 </p>
               )}
+              {decomisosPreview != null && (
+                <p className="text-xs text-muted-foreground pt-0.5">
+                  Decomisos en el período: <span className="font-semibold font-mono text-foreground">{formatCurrency(decomisosPreview.decomisos)}</span>
+                </p>
+              )}
             </div>
 
             {/* Fuente de facturación */}
@@ -551,6 +575,22 @@ export default function CmvPage() {
                     {data.cmvPct == null ? "—" : `${data.cmvPct.toFixed(2)}%`}
                   </span>
                 </div>
+
+                {/* Desglose de decomisos (informativo, no altera el CMV) */}
+                <div className="mt-3 rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 space-y-1.5">
+                  <div className="grid grid-cols-[auto_1fr_auto] items-center gap-2">
+                    <Trash2 className="h-4 w-4 text-amber-600 dark:text-amber-500" />
+                    <span className="text-sm text-amber-700 dark:text-amber-400">Decomisos del período</span>
+                    <span className="font-mono text-right font-semibold text-amber-700 dark:text-amber-400">{formatCurrency(data.decomisos)}</span>
+                  </div>
+                  <div className="grid grid-cols-[auto_1fr_auto] items-center gap-2">
+                    <span className="w-4" />
+                    <span className="text-xs text-muted-foreground">Decomiso % sobre venta neta</span>
+                    <span className="font-mono text-right text-sm text-amber-700 dark:text-amber-400">
+                      {data.decomisoPct == null ? "—" : `${data.decomisoPct.toFixed(2)}%`}
+                    </span>
+                  </div>
+                </div>
               </div>
             ) : null}
           </CardContent>
@@ -576,6 +616,8 @@ export default function CmvPage() {
                     <th className="text-right px-3 py-2 font-medium border-b whitespace-nowrap">Venta base</th>
                     <th className="text-left px-3 py-2 font-medium border-b whitespace-nowrap">Local</th>
                     <th className="text-right px-3 py-2 font-medium border-b whitespace-nowrap">CMV %</th>
+                    <th className="text-right px-3 py-2 font-medium border-b whitespace-nowrap">Decomiso $</th>
+                    <th className="text-right px-3 py-2 font-medium border-b whitespace-nowrap">Decomiso %</th>
                     <th className="px-3 py-2 border-b" />
                   </tr>
                 </thead>
@@ -601,6 +643,10 @@ export default function CmvPage() {
                       </td>
                       <td className="px-3 py-2 text-right font-mono font-semibold">
                         {c.cmvPct == null ? "—" : `${pct(c.cmvPct).toFixed(2)}%`}
+                      </td>
+                      <td className="px-3 py-2 text-right font-mono text-amber-700 dark:text-amber-500">{formatCurrency(money(c.decomisos))}</td>
+                      <td className="px-3 py-2 text-right font-mono text-amber-700 dark:text-amber-500">
+                        {c.decomisoPct == null ? "—" : `${pct(c.decomisoPct).toFixed(2)}%`}
                       </td>
                       <td className="px-3 py-2">
                         <Button

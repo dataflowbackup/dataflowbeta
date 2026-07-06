@@ -3397,6 +3397,20 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
   });
 
+  // CMV — preview de decomisos del período/local en vivo (desglose informativo).
+  app.get("/api/finance/cmv-decomisos", isAuthenticated, requirePermission("cmv.view", "view"), async (req, res) => {
+    try {
+      const { clientId } = (req as any).rbac;
+      const localId = req.query.localId && req.query.localId !== "all" ? parseInt(req.query.localId as string, 10) : undefined;
+      const dateFrom = typeof req.query.dateFrom === "string" && req.query.dateFrom ? req.query.dateFrom : undefined;
+      const dateTo = typeof req.query.dateTo === "string" && req.query.dateTo ? req.query.dateTo : undefined;
+      const decomisos = await storage.getDecomisosTotal(clientId, { localId, dateFrom, dateTo });
+      res.json({ decomisos });
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
   // CMV (Costo de Mercadería Vendida) — Fase 7. Reporte gateado por RBAC granular.
   app.get("/api/finance/cmv", isAuthenticated, requirePermission("cmv.view", "view"), async (req, res) => {
     try {
