@@ -64,11 +64,45 @@ function toIsoDate(value: any): string | null {
   return null;
 }
 
-/** Normaliza la cantidad (col K) a número (soporta coma decimal es-AR). */
+/**
+ * Normaliza la cantidad (col K) a número, soportando dos formatos que aparecen en la práctica:
+ *   - Número real del .xls original de Datalive (ej. 4.0)              → se usa tal cual.
+ *   - Texto cuando el Excel fue manipulado/re-guardado:
+ *       · "4.00", "84.00"  (punto = separador DECIMAL, estilo Datalive) → 4, 84
+ *       · "1.234,56"       (es-AR: punto miles, coma decimal)          → 1234.56
+ *       · "1.000"          (es-AR: solo miles, grupos de 3)            → 1000
+ *
+ * Regla clave: un punto se trata como separador de MILES solo si el texto es una agrupación
+ * estricta de a 3 dígitos (p. ej. "1.000", "12.345.678"). En cualquier otro caso el punto es
+ * separador DECIMAL — así "4.00" vale 4 y no 400 (bug que multiplicaba por 100).
+ */
 function toNumber(value: any): number {
   if (value == null || value === "") return 0;
-  if (typeof value === "number") return value;
-  const s = String(value).trim().replace(/\./g, "").replace(/,/g, ".");
+  if (typeof value === "number") return isFinite(value) ? value : 0;
+
+  let s = String(value).trim();
+  if (!s) return 0;
+
+  const hasDot = s.includes(".");
+  const hasComma = s.includes(",");
+
+  if (hasDot && hasComma) {
+    // El último separador que aparece es el decimal; el otro es de miles.
+    if (s.lastIndexOf(",") > s.lastIndexOf(".")) {
+      s = s.replace(/\./g, "").replace(",", "."); // es-AR: "1.234,56" → "1234.56"
+    } else {
+      s = s.replace(/,/g, ""); // US: "1,234.56" → "1234.56"
+    }
+  } else if (hasComma) {
+    s = s.replace(",", "."); // "4,5" → "4.5" (coma decimal)
+  } else if (hasDot) {
+    // Solo punto: ¿miles (grupos de 3) o decimal?
+    if (/^-?\d{1,3}(\.\d{3})+$/.test(s)) {
+      s = s.replace(/\./g, ""); // "1.000" / "12.345" → miles
+    }
+    // else: punto decimal → se deja igual ("4.00" → 4)
+  }
+
   const n = parseFloat(s);
   return isFinite(n) ? n : 0;
 }
