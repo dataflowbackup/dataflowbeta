@@ -1,8 +1,8 @@
 import { useState, useMemo, useCallback, useRef } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useMutation } from "@tanstack/react-query";
 import html2canvas from "html2canvas";
 import { jsPDF } from "jspdf";
-import { apiRequest } from "@/lib/queryClient";
+import { apiRequest, queryClient } from "@/lib/queryClient";
 import { formatCurrency } from "@/lib/formatters";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -246,6 +246,15 @@ export default function DashboardPage() {
     enabled: locals.length > 0,
   });
 
+  // Punto 18: recetas + mapeo producto vendido → receta (para margen de los más vendidos).
+  const { data: recipes = [] } = useQuery<any[]>({ queryKey: ["/api/recipes"] });
+  const { data: prodMappings = [] } = useQuery<any[]>({ queryKey: ["/api/product-recipe-mappings"] });
+  const mapMutation = useMutation({
+    mutationFn: (body: { source: string; productName: string; recipeId: number }) =>
+      apiRequest("POST", "/api/product-recipe-mappings", body).then((r) => r.json()),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["/api/product-recipe-mappings"] }),
+  });
+
   const { data: composicionData = [] } = useQuery<any[]>({
     queryKey: ["/api/dashboard/composicion-pagos", year, month, localIdsParam, source],
     queryFn: () => apiRequest("GET", `/api/dashboard/composicion-pagos?year=${year}&month=${month}&localIds=${localIdsParam}&source=${source}`).then((r) => r.json()),
@@ -302,6 +311,33 @@ export default function DashboardPage() {
     const all = topCategorias.filter((c) => !excludedCategorias.has(c.categoria));
     return all.slice(0, 10);
   }, [topCategorias, excludedCategorias]);
+
+  // Punto 18: margen de los más vendidos según la receta mapeada (precio − costo, sin IVA).
+  const recipeById = useMemo(() => new Map(recipes.map((r: any) => [r.id, r])), [recipes]);
+  const mappingByName = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const mp of prodMappings) if (mp.source === topSource) m.set(mp.productName, mp.recipeId);
+    return m;
+  }, [prodMappings, topSource]);
+  const marginProducts = useMemo(() => {
+    return visibleProducts.map((p: any) => {
+      const recipeId = mappingByName.get(p.producto);
+      const recipe = recipeId != null ? recipeById.get(recipeId) : null;
+      const price = recipe ? parseFloat(String(recipe.salePrice ?? "0")) || 0 : null;
+      const cost = recipe ? parseFloat(String(recipe.totalCost ?? "0")) || 0 : null;
+      const unitMargin = price != null && cost != null ? price - cost : null;
+      const totalMargin = unitMargin != null ? unitMargin * (p.cantidad ?? 0) : null;
+      return { ...p, recipeId, recipeName: recipe?.name ?? null, unitMargin, totalMargin };
+    });
+  }, [visibleProducts, mappingByName, recipeById]);
+  const totalMargin = useMemo(
+    () => marginProducts.reduce((s: number, p: any) => s + (p.totalMargin ?? 0), 0),
+    [marginProducts],
+  );
+  const recipeSelectOptions = useMemo(
+    () => [...recipes].sort((a: any, b: any) => String(a.name).localeCompare(String(b.name), "es")),
+    [recipes],
+  );
 
   // Evolution chart
   const evolucionChartData = useMemo(() =>
@@ -774,6 +810,66 @@ export default function DashboardPage() {
                     Restablecer ({excludedProducts.size} excluido{excludedProducts.size > 1 ? "s" : ""})
                   </button>
                 )}
+              </div>
+            )}
+          </CardContent>
+        </Card>
+
+        {/* Punto 18: Margen de los más vendidos (mapeo manual producto → receta) */}
+        <Card data-pdf-card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm font-semibold flex items-center gap-2">
+              <PiggyBank className="h-4 w-4 text-emerald-500" />
+              Margen de los más vendidos
+              <span className="text-xs font-normal text-muted-foreground">(asigná la receta de carta)</span>
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            {marginProducts.length === 0 ? (
+              <p className="text-center py-6 text-sm text-muted-foreground">Sin datos de productos</p>
+            ) : (
+              <div className="space-y-2">
+                {marginProducts.map((p: any) => (
+                  <div key={p.producto} className="flex items-center gap-2 border-b pb-2 last:border-0">
+                    <div className="flex-1 min-w-0">
+                      <p className="text-xs truncate font-medium">{p.producto}</p>
+                      <div className="mt-1">
+                        <Select
+                          value={p.recipeId != null ? String(p.recipeId) : ""}
+                          onValueChange={(v) =>
+                            mapMutation.mutate({ source: topSource, productName: p.producto, recipeId: parseInt(v, 10) })
+                          }
+                        >
+                          <SelectTrigger className="h-7 text-xs">
+                            <SelectValue placeholder="Asignar receta…" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {recipeSelectOptions.map((r: any) => (
+                              <SelectItem key={r.id} value={String(r.id)} className="text-xs">
+                                {r.name}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                    </div>
+                    <div className="text-right shrink-0 w-28">
+                      <p className="text-[11px] text-muted-foreground">{(p.cantidad ?? 0).toLocaleString()} u.</p>
+                      {p.unitMargin != null ? (
+                        <>
+                          <p className="text-xs font-semibold text-emerald-600">{formatCurrency(p.totalMargin ?? 0)}</p>
+                          <p className="text-[10px] text-muted-foreground">{formatCurrency(p.unitMargin)}/u</p>
+                        </>
+                      ) : (
+                        <p className="text-[11px] text-muted-foreground">Sin receta</p>
+                      )}
+                    </div>
+                  </div>
+                ))}
+                <div className="flex items-center justify-between pt-1">
+                  <span className="text-xs font-semibold">Margen total (mapeados)</span>
+                  <span className="text-sm font-bold text-emerald-600">{formatCurrency(totalMargin)}</span>
+                </div>
               </div>
             )}
           </CardContent>

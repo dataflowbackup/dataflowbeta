@@ -55,6 +55,7 @@ import {
   fudoPagos,
   fudoProductos,
   dataliveProductos,
+  productRecipeMappings,
   monthlyGoals,
   decomisos,
   decomisoProductMappings,
@@ -119,6 +120,7 @@ import {
   type InsertBankAccount,
   type BankAccount,
   type CashRegister,
+  type ProductRecipeMapping,
   type InsertFinancialImportBatch,
   type FinancialImportBatch,
   type InsertFinancialImportJob,
@@ -2572,6 +2574,49 @@ export class DatabaseStorage implements IStorage {
     return true;
   }
 
+  // ---- Mapeo producto vendido → receta (punto 18) ----
+  async listProductRecipeMappings(clientId: number): Promise<ProductRecipeMapping[]> {
+    return await db.select().from(productRecipeMappings).where(eq(productRecipeMappings.clientId, clientId));
+  }
+
+  async upsertProductRecipeMapping(
+    clientId: number,
+    source: string,
+    productName: string,
+    recipeId: number,
+  ): Promise<ProductRecipeMapping> {
+    const [existing] = await db
+      .select()
+      .from(productRecipeMappings)
+      .where(
+        and(
+          eq(productRecipeMappings.clientId, clientId),
+          eq(productRecipeMappings.source, source),
+          eq(productRecipeMappings.productName, productName),
+        ),
+      );
+    if (existing) {
+      const [row] = await db
+        .update(productRecipeMappings)
+        .set({ recipeId })
+        .where(eq(productRecipeMappings.id, existing.id))
+        .returning();
+      return row;
+    }
+    const [row] = await db
+      .insert(productRecipeMappings)
+      .values({ clientId, source, productName, recipeId })
+      .returning();
+    return row;
+  }
+
+  async deleteProductRecipeMapping(clientId: number, id: number): Promise<boolean> {
+    await db
+      .delete(productRecipeMappings)
+      .where(and(eq(productRecipeMappings.clientId, clientId), eq(productRecipeMappings.id, id)));
+    return true;
+  }
+
   async createTransaction(transaction: InsertTransaction): Promise<Transaction> {
     const [newTransaction] = await db.insert(transactions).values(transaction).returning();
     return newTransaction;
@@ -4687,6 +4732,10 @@ export class DatabaseStorage implements IStorage {
       .select()
       .from(monthlyGoals)
       .where(and(eq(monthlyGoals.clientId, clientId), eq(monthlyGoals.year, year), eq(monthlyGoals.month, month)));
+  }
+
+  async listAllMonthlyGoals(clientId: number) {
+    return db.select().from(monthlyGoals).where(eq(monthlyGoals.clientId, clientId));
   }
 
   async upsertMonthlyGoal(clientId: number, data: {

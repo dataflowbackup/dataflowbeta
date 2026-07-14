@@ -1334,6 +1334,27 @@ export type InsertDataliveProducto = z.infer<typeof insertDataliveProductoSchema
 export type DataliveProducto = typeof dataliveProductos.$inferSelect;
 
 // ==========================================
+// MAPEO producto vendido (FUDO/Datalive, por nombre) → receta de DataFlow (punto 18)
+// Asignación MANUAL: los nombres importados no coinciden con las recetas.
+// ==========================================
+export const productRecipeMappings = pgTable(
+  "product_recipe_mappings",
+  {
+    id: serial("id").primaryKey(),
+    clientId: integer("client_id").notNull().references(() => clients.id, { onDelete: "cascade" }),
+    source: varchar("source", { length: 20 }).notNull(), // "fudo" | "datalive"
+    productName: varchar("product_name", { length: 255 }).notNull(),
+    recipeId: integer("recipe_id").notNull().references(() => recipes.id, { onDelete: "cascade" }),
+    createdAt: timestamp("created_at").defaultNow(),
+  },
+  (table) => [uniqueIndex("product_recipe_mappings_client_source_name_uq").on(table.clientId, table.source, table.productName)],
+);
+
+export const insertProductRecipeMappingSchema = createInsertSchema(productRecipeMappings).omit({ id: true, createdAt: true });
+export type InsertProductRecipeMapping = z.infer<typeof insertProductRecipeMappingSchema>;
+export type ProductRecipeMapping = typeof productRecipeMappings.$inferSelect;
+
+// ==========================================
 // OPERATIONAL AUDITS (Auditorías Operativas)
 // ==========================================
 export const operationalAudits = pgTable("operational_audits", {

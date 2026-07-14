@@ -5393,6 +5393,44 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     } catch (e: any) { res.status(500).json({ message: e.message }); }
   });
 
+  app.get("/api/monthly-goals/all", isAuthenticated, async (req, res) => {
+    try {
+      const clientId = await getClientId(req);
+      res.json(await storage.listAllMonthlyGoals(clientId));
+    } catch (e: any) { res.status(500).json({ message: e.message }); }
+  });
+
+  // Mapeo producto vendido → receta (punto 18)
+  app.get("/api/product-recipe-mappings", isAuthenticated, async (req, res) => {
+    try {
+      const clientId = await getClientId(req);
+      res.json(await storage.listProductRecipeMappings(clientId));
+    } catch (e: any) { res.status(500).json({ message: e.message }); }
+  });
+
+  app.post("/api/product-recipe-mappings", isAuthenticated, async (req, res) => {
+    try {
+      const clientId = await getClientId(req);
+      const source = String(req.body?.source ?? "").trim();
+      const productName = String(req.body?.productName ?? "").trim();
+      const recipeId = parseInt(String(req.body?.recipeId), 10);
+      if (!source || !productName || !Number.isFinite(recipeId)) {
+        return res.status(400).json({ message: "source, productName y recipeId son obligatorios" });
+      }
+      res.json(await storage.upsertProductRecipeMapping(clientId, source, productName, recipeId));
+    } catch (e: any) { res.status(500).json({ message: e.message }); }
+  });
+
+  app.delete("/api/product-recipe-mappings/:id", isAuthenticated, async (req, res) => {
+    try {
+      const clientId = await getClientId(req);
+      const id = parseInt(req.params.id, 10);
+      if (!Number.isFinite(id)) return res.status(400).json({ message: "ID inválido" });
+      await storage.deleteProductRecipeMapping(clientId, id);
+      res.json({ success: true });
+    } catch (e: any) { res.status(500).json({ message: e.message }); }
+  });
+
   app.put("/api/monthly-goals", isAuthenticated, async (req, res) => {
     try {
       const clientId = await getClientId(req);

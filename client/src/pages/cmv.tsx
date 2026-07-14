@@ -54,6 +54,13 @@ interface CmvSaved {
   ivaIncluded: boolean | null;
 }
 
+interface MonthlyGoalRow {
+  localId: number;
+  year: number;
+  month: number;
+  cmvObjetivo: string | number | null;
+}
+
 interface ValuationRow {
   id: number;
   localId: number | null;
@@ -93,7 +100,7 @@ function money(v: string | number | null): number {
 
 // ─── Dashboard ───────────────────────────────────────────────────────────────
 
-function Dashboard({ records, locals }: { records: CmvSaved[]; locals: Local[] }) {
+function Dashboard({ records, locals, goals }: { records: CmvSaved[]; locals: Local[]; goals: MonthlyGoalRow[] }) {
   const [filterFrom, setFilterFrom] = useState("");
   const [filterTo, setFilterTo] = useState("");
   const [filterSource, setFilterSource] = useState("all");
@@ -127,6 +134,32 @@ function Dashboard({ records, locals }: { records: CmvSaved[]; locals: Local[] }
   const lastPct = sorted.length > 0 ? pct(sorted[sorted.length - 1].cmvPct) : null;
   const totalCmv = sorted.reduce((s, r) => s + money(r.cmv), 0);
   const totalVenta = sorted.reduce((s, r) => s + money(r.ventaNeta), 0);
+
+  // Punto 20: análisis tipo dashboard — decomisos valorizados + desfasaje vs objetivo (%, $).
+  const totalDecomisos = sorted.reduce((s, r) => s + money(r.decomisos), 0);
+  const goalFor = (localId: number | null, period: string | null): number | null => {
+    if (localId == null || !period) return null;
+    const y = parseInt(period.slice(0, 4), 10);
+    const m = parseInt(period.slice(5, 7), 10);
+    const g = goals.find((x) => x.localId === localId && x.year === y && x.month === m);
+    if (!g) return null;
+    const v = parseFloat(String(g.cmvObjetivo ?? ""));
+    return Number.isFinite(v) && v > 0 ? v : null;
+  };
+  let objWeightSum = 0;
+  let objVentaSum = 0;
+  for (const r of sorted) {
+    const obj = goalFor(r.localId, r.periodTo ?? r.periodFrom);
+    const venta = money(r.ventaNeta);
+    if (obj != null && venta > 0) {
+      objWeightSum += obj * venta;
+      objVentaSum += venta;
+    }
+  }
+  const objetivoPct = objVentaSum > 0 ? objWeightSum / objVentaSum : null;
+  const actualPctWeighted = totalVenta > 0 ? (totalCmv / totalVenta) * 100 : null;
+  const desfasajePp = objetivoPct != null && actualPctWeighted != null ? actualPctWeighted - objetivoPct : null;
+  const desfasajeMoney = desfasajePp != null ? (desfasajePp / 100) * totalVenta : null;
 
   const trend = sorted.length >= 2
     ? pct(sorted[sorted.length - 1].cmvPct) - pct(sorted[sorted.length - 2].cmvPct)
@@ -242,6 +275,45 @@ function Dashboard({ records, locals }: { records: CmvSaved[]; locals: Local[] }
           )}
         </div>
 
+        {/* Punto 20: análisis superior — decomisos + desfasaje vs objetivo */}
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+          <div className="rounded-lg border p-3 space-y-1 bg-muted/30">
+            <p className="text-xs text-muted-foreground">Decomisos valorizados</p>
+            <p className="text-xl font-bold font-mono text-amber-600">{formatCurrency(totalDecomisos)}</p>
+            <p className="text-xs text-muted-foreground">
+              {totalVenta > 0 ? `${((totalDecomisos / totalVenta) * 100).toFixed(2)}% sobre venta` : "—"}
+            </p>
+          </div>
+          <div className="rounded-lg border p-3 space-y-1 bg-muted/30">
+            <p className="text-xs text-muted-foreground">Desfasaje vs objetivo (%)</p>
+            {desfasajePp != null ? (
+              <>
+                <p className={`text-xl font-bold ${desfasajePp > 0 ? "text-destructive" : "text-green-600"}`}>
+                  {desfasajePp > 0 ? "+" : ""}{desfasajePp.toFixed(2)} pp
+                </p>
+                <p className="text-xs text-muted-foreground">
+                  Real {actualPctWeighted?.toFixed(2)}% vs objetivo {objetivoPct?.toFixed(2)}%
+                </p>
+              </>
+            ) : (
+              <p className="text-sm text-muted-foreground">Sin objetivo CMV cargado para estos períodos.</p>
+            )}
+          </div>
+          <div className="rounded-lg border p-3 space-y-1 bg-muted/30">
+            <p className="text-xs text-muted-foreground">Desfasaje vs objetivo ($)</p>
+            {desfasajeMoney != null ? (
+              <>
+                <p className={`text-xl font-bold font-mono ${desfasajeMoney > 0 ? "text-destructive" : "text-green-600"}`}>
+                  {desfasajeMoney > 0 ? "+" : ""}{formatCurrency(desfasajeMoney)}
+                </p>
+                <p className="text-xs text-muted-foreground">{desfasajeMoney > 0 ? "De más sobre objetivo" : "Ahorro vs objetivo"}</p>
+              </>
+            ) : (
+              <p className="text-sm text-muted-foreground">—</p>
+            )}
+          </div>
+        </div>
+
         {/* KPI cards */}
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
           <div className="rounded-lg border p-3 space-y-1">
@@ -327,6 +399,7 @@ export default function CmvPage() {
   const { data: locals = [] } = useQuery<Local[]>({ queryKey: ["/api/locals"] });
   const { data: valuations = [] } = useQuery<ValuationRow[]>({ queryKey: ["/api/finance/stock-valuations"] });
   const { data: saved = [] } = useQuery<CmvSaved[]>({ queryKey: ["/api/finance/cmv-calculations"] });
+  const { data: monthlyGoals = [] } = useQuery<MonthlyGoalRow[]>({ queryKey: ["/api/monthly-goals/all"] });
 
   const localOptions = useMemo(
     () => [{ value: "all", label: "Todos los locales" }, ...locals.map((l) => ({ value: String(l.id), label: l.name }))],
@@ -464,7 +537,7 @@ export default function CmvPage() {
       />
 
       {/* Dashboard (solo si hay guardados) */}
-      {saved.length > 0 && <Dashboard records={saved} locals={locals} />}
+      {saved.length > 0 && <Dashboard records={saved} locals={locals} goals={monthlyGoals} />}
 
       {/* Parámetros */}
       <Card>
