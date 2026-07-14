@@ -3420,10 +3420,21 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     try {
       const clientId = await getClientId(req);
       const year = parseInt(req.query.year as string) || new Date().getFullYear();
-      const localId = req.query.localId && req.query.localId !== "all" 
-        ? parseInt(req.query.localId as string) 
-        : undefined;
-      const data = await storage.getBalanceSpreadsheet(clientId, year, localId);
+      // Punto 19: acepta un local, varios (localIds=1,2,3) o "all".
+      const parseLocals = (): number | number[] | undefined => {
+        const multi = req.query.localIds as string | undefined;
+        if (multi && multi !== "all") {
+          const ids = multi.split(",").map((s) => parseInt(s, 10)).filter((n) => Number.isFinite(n));
+          return ids.length > 0 ? ids : undefined;
+        }
+        const single = req.query.localId as string | undefined;
+        if (single && single !== "all") {
+          const n = parseInt(single, 10);
+          return Number.isFinite(n) ? n : undefined;
+        }
+        return undefined;
+      };
+      const data = await storage.getBalanceSpreadsheet(clientId, year, parseLocals());
       res.json(data);
     } catch (e: any) {
       res.status(500).json({ message: e.message });

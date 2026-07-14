@@ -503,10 +503,12 @@ export async function restructureSpecialParentGroupsForClient(
     return (created as any).id;
   }
 
-  // Los 3 grupos nuevos se crean directamente como "Movimientos Financieros".
+  // Los grupos nuevos se crean directamente como "Movimientos Financieros" (fuera de la rentabilidad).
   const prestamosGroupId = await ensureGroup("Préstamos", MOV_FIN_TYPE, 90);
   await ensureGroup("Alivios", MOV_FIN_TYPE, 91);
   const aporteGroupId = await ensureGroup("Aporte de Capital", MOV_FIN_TYPE, 92);
+  // Punto 6: grupo para movimientos entre cuentas propias (no es ingreso ni gasto).
+  await ensureGroup("Movimientos entre Cuentas", MOV_FIN_TYPE, 93);
 
   // Mover categorías a sus nuevos grupos padre (las que aún no estén ahí):
   // - "Préstamos": SOLO el capital del préstamo (ingreso). NO el "interés sobre cuota de préstamo"

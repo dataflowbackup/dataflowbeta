@@ -422,7 +422,7 @@ export interface IStorage {
   createMonthlyBalance(balance: InsertMonthlyBalance): Promise<MonthlyBalance>;
   updateMonthlyBalance(clientId: number, id: number, balance: Partial<InsertMonthlyBalance>): Promise<MonthlyBalance | undefined>;
   
-  getBalanceSpreadsheet(clientId: number, year: number, localId?: number): Promise<{
+  getBalanceSpreadsheet(clientId: number, year: number, localId?: number | number[]): Promise<{
     groups: Array<{
       id: number;
       name: string;
@@ -1988,19 +1988,15 @@ export class DatabaseStorage implements IStorage {
   }
 
   async updateFinancialGroup(clientId: number, id: number, group: Partial<InsertFinancialGroup>): Promise<FinancialGroup | undefined> {
-    // Salvaguarda Fase 3: los grupos de sistema se pueden RENOMBRAR (y reordenar/activar),
-    // pero NO se les puede cambiar `type` ni `isSystem` (rompería el balance y los parsers).
+    // Se permite editar nombre, orden, activo Y tipo (el cambio de tipo se confirma en el frontend,
+    // punto 1). Lo único que nunca se toca es `isSystem` (marca interna que protege el borrado y el seed).
     const [existing] = await db.select().from(financialGroups)
       .where(and(eq(financialGroups.id, id), eq(financialGroups.clientId, clientId)));
     if (!existing) return undefined;
 
-    let patch: Partial<InsertFinancialGroup> = group;
-    if (existing.isSystem) {
-      patch = {};
-      if (group.name !== undefined) patch.name = group.name;
-      if (group.displayOrder !== undefined) patch.displayOrder = group.displayOrder;
-      if (group.active !== undefined) patch.active = group.active;
-    }
+    const patch: Partial<InsertFinancialGroup> = { ...group };
+    delete (patch as any).isSystem;
+    delete (patch as any).clientId;
 
     const [updated] = await db.update(financialGroups)
       .set(patch)
@@ -2142,9 +2138,9 @@ export class DatabaseStorage implements IStorage {
   }
 
   async updateTransactionCategory(clientId: number, id: number, category: Partial<InsertTransactionCategory>): Promise<TransactionCategory | undefined> {
-    // Salvaguarda Fase 3: las categorías de sistema se pueden RENOMBRAR (y activar/desactivar),
-    // pero NO se les puede cambiar type / isSpecial / specialType / financialGroupId / isSystem
-    // (eso preservaría la lógica del balance y de "Otros Movimientos").
+    // Punto 1: las categorías de sistema se pueden RENOMBRAR, activar/desactivar y MOVER de grupo
+    // (financialGroupId). Se mantienen bloqueados type / isSpecial / specialType / isSystem, que
+    // preservan la lógica del balance y de "Otros Movimientos".
     const [existing] = await db.select().from(transactionCategories)
       .where(and(eq(transactionCategories.id, id), eq(transactionCategories.clientId, clientId)));
     if (!existing) return undefined;
@@ -2154,6 +2150,7 @@ export class DatabaseStorage implements IStorage {
       patch = {};
       if (category.name !== undefined) patch.name = category.name;
       if (category.active !== undefined) patch.active = category.active;
+      if (category.financialGroupId !== undefined) patch.financialGroupId = category.financialGroupId;
     }
 
     const [updated] = await db.update(transactionCategories)
@@ -2765,7 +2762,7 @@ export class DatabaseStorage implements IStorage {
     return updated;
   }
 
-  async getBalanceSpreadsheet(clientId: number, year: number, localId?: number) {
+  async getBalanceSpreadsheet(clientId: number, year: number, localId?: number | number[]) {
     const startDate = `${year}-01-01`;
     const endDate = `${year}-12-31`;
     
@@ -2817,8 +2814,13 @@ export class DatabaseStorage implements IStorage {
         .map((t) => t.parentTransactionId as number),
     );
 
-    const filteredTransactions = localId
-      ? allTransactions.filter(t => t.localId === localId)
+    // Punto 19: localId puede ser un id, una lista de ids, o nada (todos).
+    const localIdSet =
+      localId == null
+        ? null
+        : new Set(Array.isArray(localId) ? localId : [localId]);
+    const filteredTransactions = localIdSet
+      ? allTransactions.filter(t => t.localId != null && localIdSet.has(t.localId))
       : allTransactions;
     
     // Categorías "Otros Movimientos": quedan asentadas y se muestran, pero NO afectan

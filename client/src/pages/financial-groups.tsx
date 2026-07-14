@@ -28,7 +28,7 @@ import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
-import { Edit, Trash2, FolderTree, Plus, Download, Lock } from "lucide-react";
+import { Edit, Trash2, FolderTree, Plus, Download, Lock, Eye, EyeOff } from "lucide-react";
 import type { FinancialGroup, TransactionCategory } from "@shared/schema";
 
 const groupTypes = [
@@ -53,6 +53,7 @@ export default function FinancialGroupsPage() {
   const [isDialogOpen, setIsDialogOpen] = useState(false);
   const [editingGroup, setEditingGroup] = useState<FinancialGroup | null>(null);
   const [deleteGroup, setDeleteGroup] = useState<FinancialGroup | null>(null);
+  const [pendingTypeChange, setPendingTypeChange] = useState<FormData | null>(null);
 
   const { data: groups = [], isLoading } = useQuery<FinancialGroup[]>({
     queryKey: ["/api/financial-groups"],
@@ -115,6 +116,20 @@ export default function FinancialGroupsPage() {
     },
   });
 
+  const toggleActiveMutation = useMutation({
+    mutationFn: async ({ id, active }: { id: number; active: boolean }) => {
+      const res = await apiRequest("PATCH", `/api/financial-groups/${id}`, { active });
+      return res.json();
+    },
+    onSuccess: (_data, vars) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/financial-groups"] });
+      toast({ title: vars.active ? "Grupo visible" : "Grupo oculto" });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Error", description: error.message, variant: "destructive" });
+    },
+  });
+
   const seedMutation = useMutation({
     mutationFn: async () => {
       const res = await apiRequest("POST", "/api/financial-groups/seed", {});
@@ -156,6 +171,13 @@ export default function FinancialGroupsPage() {
 
   const onSubmit = (data: FormData) => {
     if (editingGroup) {
+      const typeChanged = data.type !== editingGroup.type;
+      // Punto 1: cambiar el TIPO de un grupo de sistema requiere confirmación explícita
+      // (afecta de qué lado suma en el balance).
+      if (editingGroup.isSystem && typeChanged) {
+        setPendingTypeChange(data);
+        return;
+      }
       updateMutation.mutate({ id: editingGroup.id, data });
     } else {
       createMutation.mutate(data);
@@ -231,29 +253,63 @@ export default function FinancialGroupsPage() {
       ),
     },
     {
+      key: "estado",
+      header: "Estado",
+      cell: (row) =>
+        row.active === false ? (
+          <Badge variant="outline" className="text-muted-foreground border-muted-foreground/40">Oculto</Badge>
+        ) : (
+          <Badge variant="default" className="bg-emerald-600">Activo</Badge>
+        ),
+    },
+    {
       key: "actions",
       header: "Acciones",
-      cell: (row) => (
-        <div className="flex gap-1">
-          <Button
-            variant="ghost"
-            size="icon"
-            onClick={() => openEdit(row)}
-            data-testid={`button-edit-${row.id}`}
-          >
-            <Edit className="h-4 w-4" />
-          </Button>
-          <Button
-            variant="ghost"
-            size="icon"
-            onClick={() => handleDelete(row)}
-            disabled={row.isSystem ?? false}
-            data-testid={`button-delete-${row.id}`}
-          >
-            <Trash2 className="h-4 w-4" />
-          </Button>
-        </div>
-      ),
+      cell: (row) => {
+        const catCount = getCategoryCount(row.id);
+        const isHidden = row.active === false;
+        return (
+          <div className="flex gap-1">
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={() => openEdit(row)}
+              data-testid={`button-edit-${row.id}`}
+              title="Editar"
+            >
+              <Edit className="h-4 w-4" />
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={() => {
+                if (!isHidden && catCount > 0) {
+                  toast({
+                    title: "Ocultar grupo",
+                    description: `Tiene ${catCount} categoría(s). Se ocultará del balance y de los selectores; los movimientos históricos quedan intactos.`,
+                  });
+                }
+                toggleActiveMutation.mutate({ id: row.id, active: isHidden });
+              }}
+              disabled={toggleActiveMutation.isPending}
+              data-testid={`button-toggle-${row.id}`}
+              title={isHidden ? "Mostrar grupo" : "Ocultar grupo"}
+            >
+              {isHidden ? <EyeOff className="h-4 w-4 text-muted-foreground" /> : <Eye className="h-4 w-4" />}
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={() => handleDelete(row)}
+              disabled={row.isSystem ?? false}
+              data-testid={`button-delete-${row.id}`}
+              title="Eliminar"
+            >
+              <Trash2 className="h-4 w-4" />
+            </Button>
+          </div>
+        );
+      },
     },
   ];
 
@@ -322,8 +378,8 @@ export default function FinancialGroupsPage() {
             <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
               {editingGroup?.isSystem && (
                 <div className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-400">
-                  Grupo del sistema: solo podés editar el <strong>nombre</strong> y el orden. El tipo
-                  queda bloqueado para no afectar el balance.
+                  Grupo del sistema. Podés editar nombre, orden y también el <strong>tipo</strong>, pero
+                  cambiar el tipo afecta de qué lado suma en el balance: te vamos a pedir confirmación.
                 </div>
               )}
               <FormField
@@ -352,7 +408,6 @@ export default function FinancialGroupsPage() {
                         onValueChange={field.onChange}
                         placeholder="Seleccionar tipo"
                         searchPlaceholder="Buscar tipo…"
-                        disabled={editingGroup?.isSystem === true}
                         data-testid="select-type"
                       />
                     </FormControl>
@@ -402,6 +457,20 @@ export default function FinancialGroupsPage() {
         description={`¿Está seguro que desea eliminar el grupo "${deleteGroup?.name}"? Esta acción no se puede deshacer.`}
         onConfirm={() => deleteGroup && deleteMutation.mutate(deleteGroup.id)}
         isLoading={deleteMutation.isPending}
+      />
+
+      <ConfirmDialog
+        open={!!pendingTypeChange}
+        onOpenChange={(o) => { if (!o) setPendingTypeChange(null); }}
+        title="Cambiar tipo de un grupo del sistema"
+        description={`Vas a cambiar el tipo del grupo "${editingGroup?.name}" a "${groupTypes.find((t) => t.value === pendingTypeChange?.type)?.label ?? pendingTypeChange?.type}". Esto cambia de qué lado suma en el balance (ingreso, gasto o movimiento financiero). ¿Confirmás?`}
+        onConfirm={() => {
+          if (editingGroup && pendingTypeChange) {
+            updateMutation.mutate({ id: editingGroup.id, data: pendingTypeChange });
+          }
+          setPendingTypeChange(null);
+        }}
+        isLoading={updateMutation.isPending}
       />
     </div>
   );

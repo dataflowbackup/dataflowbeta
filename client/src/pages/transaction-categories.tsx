@@ -354,8 +354,8 @@ export default function TransactionCategoriesPage() {
             <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
               {editingCategory?.isSystem && (
                 <div className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-400">
-                  Categoría del sistema: solo podés editar el <strong>nombre</strong>. El tipo, el grupo y la
-                  clasificación especial quedan bloqueados para no afectar el balance.
+                  Categoría del sistema: podés editar el <strong>nombre</strong> y <strong>moverla de grupo</strong>.
+                  El tipo y la clasificación especial quedan bloqueados para no afectar el balance.
                 </div>
               )}
               <FormField
@@ -409,7 +409,6 @@ export default function TransactionCategoriesPage() {
                           placeholder="Seleccionar grupo"
                           searchPlaceholder="Buscar grupo…"
                           emptyOptionLabel="Sin grupo"
-                          disabled={editingCategory?.isSystem === true}
                           data-testid="select-group"
                         />
                       </FormControl>

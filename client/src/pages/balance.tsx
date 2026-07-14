@@ -6,9 +6,14 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { DataEntryCombobox } from "@/components/data-entry-combobox";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Skeleton } from "@/components/ui/skeleton";
 import { formatCurrency } from "@/lib/formatters";
+import { toISODate } from "@/lib/dateHelpers";
+import * as XLSX from "xlsx";
+import jsPDF from "jspdf";
 import {
   TrendingUp,
   TrendingDown,
@@ -16,12 +21,13 @@ import {
   Download,
   ChevronRight,
   ChevronDown,
+  ChevronsUpDown,
   BarChart3,
   ArrowUpRight,
   ArrowDownRight,
   Minus,
 } from "lucide-react";
-import type { Local } from "@shared/schema";
+import type { Local, CmvCalculation } from "@shared/schema";
 
 const fullMonths = [
   "Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio",
@@ -77,23 +83,37 @@ export default function BalancePage() {
 
   const [selectedYear, setSelectedYear] = useState(currentYear.toString());
   const [selectedMonth, setSelectedMonth] = useState(currentMonth.toString());
-  const [selectedLocalId, setSelectedLocalId] = useState<string>("all");
+  // Punto 19: selección libre de uno o varios locales. [] = todos.
+  const [selectedLocalIds, setSelectedLocalIds] = useState<number[]>([]);
   const [viewMode, setViewMode] = useState<string>("monthly");
   const [expandedExpenseGroupIds, setExpandedExpenseGroupIds] = useState<number[]>([]);
+  const [expandedVentaGroupIds, setExpandedVentaGroupIds] = useState<number[]>([]);
+  const [expandedMovFinGroupIds, setExpandedMovFinGroupIds] = useState<number[]>([]);
 
   const { data: locals = [] } = useQuery<Local[]>({
     queryKey: ["/api/locals"],
   });
 
-  const spreadsheetUrl = selectedLocalId === "all"
-    ? `/api/balance-spreadsheet?year=${selectedYear}`
-    : `/api/balance-spreadsheet?year=${selectedYear}&localId=${selectedLocalId}`;
+  const localIdsParam = selectedLocalIds.length > 0 ? selectedLocalIds.join(",") : "";
+  const spreadsheetUrl = localIdsParam
+    ? `/api/balance-spreadsheet?year=${selectedYear}&localIds=${localIdsParam}`
+    : `/api/balance-spreadsheet?year=${selectedYear}`;
 
   const { data: spreadsheet, isLoading } = useQuery<SpreadsheetData>({
-    queryKey: ["/api/balance-spreadsheet", selectedYear, selectedLocalId],
+    queryKey: ["/api/balance-spreadsheet", selectedYear, localIdsParam],
     queryFn: async () => {
       const res = await fetch(spreadsheetUrl, { credentials: "include" });
       if (!res.ok) throw new Error("Error al cargar datos");
+      return res.json();
+    },
+  });
+
+  // Punto 12: CMV guardados, para asentar uno en el balance cuando coincide mes completo + local.
+  const { data: cmvList = [] } = useQuery<CmvCalculation[]>({
+    queryKey: ["/api/finance/cmv-calculations"],
+    queryFn: async () => {
+      const res = await fetch("/api/finance/cmv-calculations", { credentials: "include" });
+      if (!res.ok) return [];
       return res.json();
     },
   });
@@ -141,26 +161,131 @@ export default function BalancePage() {
     return spreadsheet.groups.filter(g => g.isSpecial);
   }, [spreadsheet]);
 
+  // Punto 4: grupos de Ventas (ingresos no especiales) para desglosar.
+  const ventaGroups = useMemo(() => {
+    if (!spreadsheet) return [];
+    return spreadsheet.groups.filter(g => g.type === "income" && !g.isSpecial);
+  }, [spreadsheet]);
+
+  // Punto 12: CMV que coincide con mes COMPLETO + un único local seleccionado.
+  const matchedCmv = useMemo<CmvCalculation | null>(() => {
+    if (selectedLocalIds.length !== 1) return null;
+    const localId = selectedLocalIds[0];
+    const y = parseInt(selectedYear, 10);
+    const m = parseInt(selectedMonth, 10);
+    if (!Number.isFinite(y) || !Number.isFinite(m)) return null;
+    const first = `${y}-${String(m).padStart(2, "0")}-01`;
+    const lastDay = new Date(y, m, 0).getDate();
+    const last = `${y}-${String(m).padStart(2, "0")}-${String(lastDay).padStart(2, "0")}`;
+    const matches = cmvList.filter(
+      (c) =>
+        c.localId === localId &&
+        String(c.periodFrom).slice(0, 10) === first &&
+        String(c.periodTo).slice(0, 10) === last,
+    );
+    if (matches.length === 0) return null;
+    return matches.sort((a, b) => (b.id ?? 0) - (a.id ?? 0))[0];
+  }, [cmvList, selectedLocalIds, selectedYear, selectedMonth]);
+
   const totalGastosPercent = monthlyVentas > 0 ? (monthlyGastos / monthlyVentas) * 100 : 0;
   const utilidadPercent = monthlyVentas > 0 ? (monthlyUtilidad / monthlyVentas) * 100 : 0;
 
-  const handleExport = async () => {
-    const localParam = selectedLocalId === "all" ? "all" : selectedLocalId;
-    const url = `/api/balance-report/export?year=${selectedYear}&month=${selectedMonth}&localId=${localParam}&format=pdf`;
-    try {
-      const res = await fetch(url, { credentials: "include" });
-      if (!res.ok) throw new Error(await res.text());
-      const blob = await res.blob();
-      const a = document.createElement("a");
-      a.href = URL.createObjectURL(blob);
-      a.download = `balance_${selectedYear}_${String(selectedMonth).padStart(2, "0")}.pdf`;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(a.href);
-    } catch (e: any) {
-      toast({ title: "No se pudo exportar el PDF", description: String(e?.message ?? e), variant: "destructive" });
+  // Líneas agrupadas (grupo → categorías) reutilizables por el render y por la exportación.
+  const buildGroupedLines = (groups: GroupData[]) =>
+    groups.map((group) => {
+      const categories = group.categories.map((cat) => {
+        const amount = cat.monthlyTotals[month] ?? 0;
+        const percent = monthlyVentas > 0 ? (amount / monthlyVentas) * 100 : 0;
+        return { name: cat.name, amount, percent };
+      });
+      const amountFromCategories = categories.reduce((sum, cat) => sum + cat.amount, 0);
+      const amountFromGroup = group.monthlyTotals[month] ?? 0;
+      const groupAmount = group.categories.length > 0 ? amountFromCategories : amountFromGroup;
+      const groupPercent = monthlyVentas > 0 ? (groupAmount / monthlyVentas) * 100 : 0;
+      return { groupId: group.id, groupName: group.name, groupAmount, groupPercent, categories };
+    });
+
+  const groupedExpenseLines = useMemo(() => buildGroupedLines(expenseGroups), [expenseGroups, month, monthlyVentas]);
+  const groupedVentaLines = useMemo(() => buildGroupedLines(ventaGroups), [ventaGroups, month, monthlyVentas]);
+
+  const localsLabel = selectedLocalIds.length === 0
+    ? "Todos los locales"
+    : selectedLocalIds.map((id) => locals.find((l) => l.id === id)?.name ?? `#${id}`).join(", ");
+
+  const num = (n: number) => new Intl.NumberFormat("es-AR", { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(n);
+
+  // Filas del reporte (para PDF y Excel), reflejando la pantalla + el CMV asentado (punto 12).
+  const buildReportRows = () => {
+    const rows: Array<{ label: string; value: string; indent?: boolean; bold?: boolean }> = [];
+    rows.push({ label: "Local(es)", value: localsLabel, bold: true });
+    rows.push({ label: "Período", value: `${fullMonths[month - 1]} ${selectedYear}`, bold: true });
+    rows.push({ label: "Ventas", value: formatCurrency(monthlyVentas), bold: true });
+    for (const g of groupedVentaLines) {
+      rows.push({ label: g.groupName, value: formatCurrency(g.groupAmount), indent: true });
     }
+    rows.push({ label: "GASTOS", value: "" , bold: true });
+    for (const g of groupedExpenseLines) {
+      rows.push({ label: g.groupName, value: formatCurrency(g.groupAmount), indent: true, bold: true });
+      for (const c of g.categories) rows.push({ label: `   ${c.name}`, value: formatCurrency(c.amount), indent: true });
+    }
+    rows.push({ label: "Gastos Totales", value: formatCurrency(monthlyGastos), bold: true });
+    rows.push({ label: "Utilidad", value: formatCurrency(monthlyUtilidad), bold: true });
+    rows.push({ label: "Utilidad %", value: `${utilidadPercent.toFixed(2)}%`, bold: true });
+    if (otrosMovGroups.length > 0) {
+      rows.push({ label: "MOVIMIENTOS FINANCIEROS (no afectan rentabilidad)", value: "", bold: true });
+      for (const g of otrosMovGroups) {
+        const signed = g.signedMonthlyTotals?.[month] ?? g.monthlyTotals[month] ?? 0;
+        rows.push({ label: g.name, value: formatCurrency(signed), indent: true });
+      }
+      rows.push({ label: "Total Movimientos Financieros", value: formatCurrency(spreadsheet?.summary.otrosMovimientos?.[month] ?? 0), bold: true });
+      rows.push({ label: "Movimiento neto del período (caja)", value: formatCurrency(monthlyUtilidad + (spreadsheet?.summary.otrosMovimientos?.[month] ?? 0)), bold: true });
+    }
+    if (matchedCmv) {
+      rows.push({ label: "CMV DEL PERÍODO (dato asentado)", value: "", bold: true });
+      rows.push({ label: "Stock inicial", value: formatCurrency(parseFloat(String(matchedCmv.stockInicial)) || 0), indent: true });
+      rows.push({ label: "+ Compras", value: formatCurrency(parseFloat(String(matchedCmv.compras)) || 0), indent: true });
+      rows.push({ label: "− Stock final", value: formatCurrency(parseFloat(String(matchedCmv.stockFinal)) || 0), indent: true });
+      rows.push({ label: "CMV", value: formatCurrency(parseFloat(String(matchedCmv.cmv)) || 0), bold: true, indent: true });
+      rows.push({ label: "Venta base CMV", value: formatCurrency(parseFloat(String(matchedCmv.ventaNeta)) || 0), indent: true });
+      rows.push({ label: "CMV %", value: `${(parseFloat(String(matchedCmv.cmvPct)) || 0).toFixed(2)}%`, bold: true, indent: true });
+    }
+    return rows;
+  };
+
+  const exportExcel = () => {
+    if (!spreadsheet) return;
+    const rows = buildReportRows().map((r) => ({ Concepto: (r.indent ? "  " : "") + r.label, Valor: r.value }));
+    const ws = XLSX.utils.json_to_sheet(rows);
+    ws["!cols"] = [{ wch: 48 }, { wch: 22 }];
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Balance");
+    XLSX.writeFile(wb, `balance_${selectedYear}_${String(selectedMonth).padStart(2, "0")}.xlsx`);
+  };
+
+  const exportPdf = () => {
+    if (!spreadsheet) return;
+    const doc = new jsPDF({ unit: "pt", format: "a4" });
+    const marginX = 40;
+    const rightX = 555;
+    let y = 50;
+    doc.setFontSize(14);
+    doc.setFont("helvetica", "bold");
+    doc.text("Balance Financiero", marginX, y);
+    doc.text(`${fullMonths[month - 1]} ${selectedYear}`, rightX, y, { align: "right" });
+    y += 18;
+    doc.setFontSize(9);
+    doc.setFont("helvetica", "normal");
+    doc.text(localsLabel, marginX, y);
+    y += 16;
+    doc.setFontSize(10);
+    for (const r of buildReportRows()) {
+      if (y > 800) { doc.addPage(); y = 50; }
+      doc.setFont("helvetica", r.bold ? "bold" : "normal");
+      doc.text((r.indent ? "    " : "") + r.label, marginX, y);
+      if (r.value) doc.text(r.value, rightX, y, { align: "right" });
+      y += 15;
+    }
+    doc.save(`balance_${selectedYear}_${String(selectedMonth).padStart(2, "0")}.pdf`);
   };
 
   const renderMonthlyView = () => {
@@ -184,27 +309,6 @@ export default function BalancePage() {
       );
     }
 
-    const groupedExpenseLines = expenseGroups.map((group) => {
-      const categories = group.categories.map((cat) => {
-        const amount = cat.monthlyTotals[month] ?? 0;
-        const percent = monthlyVentas > 0 ? (amount / monthlyVentas) * 100 : 0;
-        return { name: cat.name, amount, percent };
-      });
-
-      const amountFromCategories = categories.reduce((sum, cat) => sum + cat.amount, 0);
-      const amountFromGroup = group.monthlyTotals[month] ?? 0;
-      const groupAmount = group.categories.length > 0 ? amountFromCategories : amountFromGroup;
-      const groupPercent = monthlyVentas > 0 ? (groupAmount / monthlyVentas) * 100 : 0;
-
-      return {
-        groupId: group.id,
-        groupName: group.name,
-        groupAmount,
-        groupPercent,
-        categories,
-      };
-    });
-
     return (
       <Card>
         <CardContent className="pt-6">
@@ -227,6 +331,44 @@ export default function BalancePage() {
                 {formatCurrency(monthlyVentas)}
               </span>
             </div>
+
+            {/* Punto 4: desglose de Ventas por grupo → categoría */}
+            {groupedVentaLines.length > 0 && (
+              <div className="space-y-1">
+                {groupedVentaLines.map((group, idx) => (
+                  <div key={`venta-${group.groupId}-${idx}`} className="space-y-1">
+                    <div className="grid grid-cols-1 gap-2 sm:grid-cols-[1fr_auto] text-sm">
+                      <button
+                        type="button"
+                        className="inline-flex items-center gap-1 text-left"
+                        onClick={() =>
+                          setExpandedVentaGroupIds((prev) =>
+                            prev.includes(group.groupId)
+                              ? prev.filter((id) => id !== group.groupId)
+                              : [...prev, group.groupId],
+                          )
+                        }
+                      >
+                        {expandedVentaGroupIds.includes(group.groupId) ? (
+                          <ChevronDown className="h-4 w-4 text-muted-foreground" />
+                        ) : (
+                          <ChevronRight className="h-4 w-4 text-muted-foreground" />
+                        )}
+                        <span className="text-muted-foreground">{group.groupName}</span>
+                      </button>
+                      <span className="font-mono text-right text-muted-foreground">{formatCurrency(group.groupAmount)}</span>
+                    </div>
+                    {expandedVentaGroupIds.includes(group.groupId) &&
+                      group.categories.map((cat, catIdx) => (
+                        <div key={`venta-${group.groupId}-${cat.name}-${catIdx}`} className="grid grid-cols-1 gap-2 sm:grid-cols-[1fr_auto] text-sm">
+                          <span className="pl-6 text-muted-foreground">{cat.name}</span>
+                          <span className="font-mono text-right text-muted-foreground">{formatCurrency(cat.amount)}</span>
+                        </div>
+                      ))}
+                  </div>
+                ))}
+              </div>
+            )}
 
             <div className="grid grid-cols-1 gap-2 sm:grid-cols-[1fr_auto]">
               <span className="font-bold uppercase">Gastos</span>
@@ -343,15 +485,42 @@ export default function BalancePage() {
                 </div>
                 {otrosMovGroups.map((group, idx) => {
                   const signed = group.signedMonthlyTotals?.[month] ?? group.monthlyTotals[month] ?? 0;
+                  const expanded = expandedMovFinGroupIds.includes(group.id);
+                  const hasCats = group.categories.length > 0;
                   return (
-                    <div
-                      key={`movfin-${group.id}-${idx}`}
-                      className="grid grid-cols-1 gap-2 sm:grid-cols-[1fr_auto] text-sm"
-                    >
-                      <span className="text-muted-foreground">{group.name}</span>
-                      <span className="font-mono text-right text-muted-foreground">
-                        {formatCurrency(signed)}
-                      </span>
+                    <div key={`movfin-${group.id}-${idx}`} className="space-y-1">
+                      <div className="grid grid-cols-1 gap-2 sm:grid-cols-[1fr_auto] text-sm">
+                        {hasCats ? (
+                          <button
+                            type="button"
+                            className="inline-flex items-center gap-1 text-left"
+                            onClick={() =>
+                              setExpandedMovFinGroupIds((prev) =>
+                                prev.includes(group.id) ? prev.filter((id) => id !== group.id) : [...prev, group.id],
+                              )
+                            }
+                          >
+                            {expanded ? (
+                              <ChevronDown className="h-4 w-4 text-muted-foreground" />
+                            ) : (
+                              <ChevronRight className="h-4 w-4 text-muted-foreground" />
+                            )}
+                            <span className="text-muted-foreground">{group.name}</span>
+                          </button>
+                        ) : (
+                          <span className="text-muted-foreground">{group.name}</span>
+                        )}
+                        <span className="font-mono text-right text-muted-foreground">{formatCurrency(signed)}</span>
+                      </div>
+                      {expanded &&
+                        group.categories.map((cat, catIdx) => (
+                          <div key={`movfin-${group.id}-${cat.name}-${catIdx}`} className="grid grid-cols-1 gap-2 sm:grid-cols-[1fr_auto] text-sm">
+                            <span className="pl-6 text-muted-foreground">{cat.name}</span>
+                            <span className="font-mono text-right text-muted-foreground">
+                              {formatCurrency(cat.monthlyTotals[month] ?? 0)}
+                            </span>
+                          </div>
+                        ))}
                     </div>
                   );
                 })}
@@ -376,6 +545,49 @@ export default function BalancePage() {
                   saldos de caja/cuentas — por eso los Movimientos Financieros quedan asentados aunque
                   no afecten la rentabilidad.
                 </p>
+              </div>
+            )}
+
+            {/* Punto 12: CMV asentado (dato informativo, no pisa el balance) */}
+            {selectedLocalIds.length === 1 && (
+              <div className="space-y-2 border-t-2 pt-4" data-testid="section-cmv-balance">
+                <div className="grid grid-cols-1 gap-2 sm:grid-cols-[1fr_auto]">
+                  <span className="font-bold uppercase">CMV del período</span>
+                  <span className="text-xs text-muted-foreground self-center sm:text-right">Dato asentado (no afecta el balance)</span>
+                </div>
+                {matchedCmv ? (
+                  <>
+                    <div className="grid grid-cols-1 gap-2 sm:grid-cols-[1fr_auto] text-sm">
+                      <span className="text-muted-foreground">Stock inicial</span>
+                      <span className="font-mono text-right text-muted-foreground">{formatCurrency(parseFloat(String(matchedCmv.stockInicial)) || 0)}</span>
+                    </div>
+                    <div className="grid grid-cols-1 gap-2 sm:grid-cols-[1fr_auto] text-sm">
+                      <span className="text-muted-foreground">+ Compras</span>
+                      <span className="font-mono text-right text-muted-foreground">{formatCurrency(parseFloat(String(matchedCmv.compras)) || 0)}</span>
+                    </div>
+                    <div className="grid grid-cols-1 gap-2 sm:grid-cols-[1fr_auto] text-sm">
+                      <span className="text-muted-foreground">− Stock final</span>
+                      <span className="font-mono text-right text-muted-foreground">{formatCurrency(parseFloat(String(matchedCmv.stockFinal)) || 0)}</span>
+                    </div>
+                    <div className="grid grid-cols-1 gap-2 sm:grid-cols-[1fr_auto] border-t pt-2 text-sm">
+                      <span className="font-semibold">CMV</span>
+                      <span className="font-mono text-right font-semibold" data-testid="text-cmv-balance">{formatCurrency(parseFloat(String(matchedCmv.cmv)) || 0)}</span>
+                    </div>
+                    <div className="grid grid-cols-1 gap-2 sm:grid-cols-[1fr_auto] text-sm">
+                      <span className="text-muted-foreground">Venta base CMV</span>
+                      <span className="font-mono text-right text-muted-foreground">{formatCurrency(parseFloat(String(matchedCmv.ventaNeta)) || 0)}</span>
+                    </div>
+                    <div className="grid grid-cols-1 gap-2 sm:grid-cols-[1fr_auto] text-sm">
+                      <span className="font-semibold">CMV %</span>
+                      <span className="font-mono text-right font-semibold">{(parseFloat(String(matchedCmv.cmvPct)) || 0).toFixed(2)}%</span>
+                    </div>
+                  </>
+                ) : (
+                  <p className="text-sm text-muted-foreground">
+                    No hay un CMV calculado para {fullMonths[month - 1]} {selectedYear} (mes completo) de este local.
+                    Calculalo y guardalo desde el módulo CMV para que aparezca acá.
+                  </p>
+                )}
               </div>
             )}
           </div>
@@ -526,10 +738,16 @@ export default function BalancePage() {
         title="Balances Financieros"
         description="Estado de resultados mensual y anual"
         actions={
-          <Button variant="outline" data-testid="button-export" onClick={handleExport}>
-            <Download className="h-4 w-4 mr-2" />
-            Exportar PDF
-          </Button>
+          <div className="flex gap-2">
+            <Button variant="outline" data-testid="button-export-pdf" onClick={exportPdf} disabled={!spreadsheet}>
+              <Download className="h-4 w-4 mr-2" />
+              Exportar PDF
+            </Button>
+            <Button variant="outline" data-testid="button-export-excel" onClick={exportExcel} disabled={!spreadsheet}>
+              <Download className="h-4 w-4 mr-2" />
+              Exportar Excel
+            </Button>
+          </div>
         }
       />
 
@@ -556,15 +774,44 @@ export default function BalancePage() {
           />
         )}
 
-        <DataEntryCombobox
-          options={balanceLocalComboOptions}
-          value={selectedLocalId}
-          onValueChange={setSelectedLocalId}
-          placeholder="Local"
-          searchPlaceholder="Buscar local…"
-          triggerClassName="w-48"
-          data-testid="select-local"
-        />
+        <Popover>
+          <PopoverTrigger asChild>
+            <Button variant="outline" role="combobox" className="w-56 justify-between font-normal" data-testid="select-local">
+              <span className="truncate text-left">{localsLabel}</span>
+              <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+            </Button>
+          </PopoverTrigger>
+          <PopoverContent className="w-64 p-2" align="start">
+            <div className="space-y-1 max-h-72 overflow-y-auto">
+              <button
+                type="button"
+                className="flex items-center gap-2 w-full rounded px-2 py-1.5 text-sm hover:bg-muted text-left"
+                onClick={() => setSelectedLocalIds([])}
+              >
+                <Checkbox checked={selectedLocalIds.length === 0} />
+                <span>Todos los locales</span>
+              </button>
+              {locals.map((l) => {
+                const checked = selectedLocalIds.includes(l.id);
+                return (
+                  <button
+                    key={l.id}
+                    type="button"
+                    className="flex items-center gap-2 w-full rounded px-2 py-1.5 text-sm hover:bg-muted text-left"
+                    onClick={() =>
+                      setSelectedLocalIds((prev) =>
+                        prev.includes(l.id) ? prev.filter((id) => id !== l.id) : [...prev, l.id],
+                      )
+                    }
+                  >
+                    <Checkbox checked={checked} />
+                    <span className="truncate">{l.name}</span>
+                  </button>
+                );
+              })}
+            </div>
+          </PopoverContent>
+        </Popover>
       </div>
 
       <Tabs value={viewMode} onValueChange={setViewMode}>
