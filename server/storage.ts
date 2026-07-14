@@ -2735,8 +2735,16 @@ export class DatabaseStorage implements IStorage {
       ));
     
     const allTransactions = await transactionsQuery;
-    
-    const filteredTransactions = localId 
+
+    // Movimientos "originales" que fueron divididos: quedan asentados pero NO deben incidir
+    // (sus partes hijas ya suman). Se excluyen del balance para no duplicar.
+    const splitParentIds = new Set(
+      allTransactions
+        .filter((t) => t.parentTransactionId != null)
+        .map((t) => t.parentTransactionId as number),
+    );
+
+    const filteredTransactions = localId
       ? allTransactions.filter(t => t.localId === localId)
       : allTransactions;
     
@@ -2772,6 +2780,7 @@ export class DatabaseStorage implements IStorage {
 
     for (const tx of filteredTransactions) {
       if (!tx.categoryId) continue;
+      if (splitParentIds.has(tx.id)) continue; // original dividido: no computa
 
       const txDate = new Date(tx.transactionDate);
       const month = txDate.getMonth() + 1;
@@ -2926,12 +2935,23 @@ export class DatabaseStorage implements IStorage {
     if (opts.dateTo) conds.push(sql`${transactions.transactionDate} <= ${opts.dateTo}`);
     if (opts.localIds && opts.localIds.length > 0) conds.push(inArray(transactions.localId, opts.localIds));
     const rows = await db
-      .select({ amount: transactions.amount, categoryId: transactions.categoryId })
+      .select({
+        id: transactions.id,
+        amount: transactions.amount,
+        categoryId: transactions.categoryId,
+        parentTransactionId: transactions.parentTransactionId,
+      })
       .from(transactions)
       .where(and(...conds));
 
+    // Originales divididos: no computan (sus partes hijas ya suman).
+    const splitParentIds = new Set(
+      rows.filter((r) => r.parentTransactionId != null).map((r) => r.parentTransactionId as number),
+    );
+
     return rows.reduce((acc, r) => {
       if (r.categoryId == null || !salesCatIds.has(r.categoryId)) return acc;
+      if (splitParentIds.has(r.id)) return acc;
       return acc + (parseFloat(String(r.amount)) || 0);
     }, 0);
   }

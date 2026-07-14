@@ -50,6 +50,10 @@ interface DataTableProps<T> {
   searchKeys?: (keyof T)[];
   /** Si es false, no se muestra la barra de busqueda (el padre filtra `data`). */
   showSearch?: boolean;
+  /** Valor de búsqueda controlado por el padre. Si se provee, el padre es dueño del término. */
+  search?: string;
+  /** Callback cuando cambia el término (modo controlado). */
+  onSearchChange?: (value: string) => void;
   filters?: FilterConfig<T>[];
   onAdd?: () => void;
   addLabel?: string;
@@ -66,6 +70,8 @@ export function DataTable<T extends { id: number | string }>({
   searchPlaceholder = "Buscar...",
   searchKeys = [],
   showSearch = true,
+  search: controlledSearch,
+  onSearchChange,
   filters = [],
   onAdd,
   addLabel = "Agregar",
@@ -73,7 +79,12 @@ export function DataTable<T extends { id: number | string }>({
   pageSize = 10,
   tableClassName,
 }: DataTableProps<T>) {
-  const [search, setSearch] = useState("");
+  const [internalSearch, setInternalSearch] = useState("");
+  const search = controlledSearch !== undefined ? controlledSearch : internalSearch;
+  const setSearch = (value: string) => {
+    if (onSearchChange) onSearchChange(value);
+    else setInternalSearch(value);
+  };
   const [page, setPage] = useState(0);
   const [activeFilters, setActiveFilters] = useState<Record<string, string>>({});
 

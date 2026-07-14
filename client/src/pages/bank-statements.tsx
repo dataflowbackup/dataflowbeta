@@ -156,16 +156,20 @@ function FilterSearchableSelect({
   allLabel,
   items,
   searchPlaceholder,
+  extraOptions = [],
 }: {
   value: string;
   onChange: (v: string) => void;
   allLabel: string;
   items: { id: number; name: string }[];
   searchPlaceholder: string;
+  /** Opciones especiales con value no numérico (ej. "Sin local"). Se muestran arriba de la lista. */
+  extraOptions?: { value: string; label: string }[];
 }) {
   const [open, setOpen] = useState(false);
+  const extraSelected = extraOptions.find((o) => o.value === value);
   const selected = value === "all" ? null : items.find((x) => String(x.id) === value);
-  const label = selected?.name ?? allLabel;
+  const label = extraSelected?.label ?? selected?.name ?? allLabel;
   return (
     <Popover open={open} onOpenChange={setOpen} modal={false}>
       <PopoverTrigger asChild>
@@ -196,6 +200,19 @@ function FilterSearchableSelect({
                 <Check className={cn("mr-2 h-4 w-4 shrink-0", value === "all" ? "opacity-100" : "opacity-0")} />
                 {allLabel}
               </CommandItem>
+              {extraOptions.map((opt) => (
+                <CommandItem
+                  key={opt.value}
+                  value={`__extra__ ${opt.label}`}
+                  onSelect={() => {
+                    onChange(opt.value);
+                    setOpen(false);
+                  }}
+                >
+                  <Check className={cn("mr-2 h-4 w-4 shrink-0", value === opt.value ? "opacity-100" : "opacity-0")} />
+                  {opt.label}
+                </CommandItem>
+              ))}
               {items.map((item) => (
                 <CommandItem
                   key={item.id}
@@ -415,6 +432,7 @@ export default function BankStatementsPage() {
   const [listFilterDateFrom, setListFilterDateFrom] = useState("");
   const [listFilterDateTo, setListFilterDateTo] = useState("");
   const [listFilterType, setListFilterType] = useState<"all" | "income" | "expense">("all");
+  const [listSearch, setListSearch] = useState("");
   const [uploadBankAccountId, setUploadBankAccountId] = useState("");
   const [uploadDefaultLocalId, setUploadDefaultLocalId] = useState<string>("none");
   const [uploadOpeningBalance, setUploadOpeningBalance] = useState<string>("");
@@ -1166,10 +1184,10 @@ export default function BankStatementsPage() {
   };
 
   const toggleAllSelection = () => {
-    if (selectedTransactionIds.size === listFilteredTransactions.length) {
+    if (selectedTransactionIds.size === searchedTransactions.length) {
       setSelectedTransactionIds(new Set());
     } else {
-      setSelectedTransactionIds(new Set(listFilteredTransactions.map((t) => t.id)));
+      setSelectedTransactionIds(new Set(searchedTransactions.map((t) => t.id)));
     }
   };
 
@@ -1258,35 +1276,18 @@ export default function BankStatementsPage() {
     }));
   };
 
-  const categorizedCount = transactions.filter(t => t.categoryId).length;
-  const uncategorizedCount = transactions.length - categorizedCount;
-  const categorizationPercent = transactions.length > 0 
-    ? Math.round((categorizedCount / transactions.length) * 100) 
+  // Métricas GLOBALES (todo el dataset) — para el banner "tenés N sin categorizar".
+  const globalCategorizedCount = transactions.filter(t => t.categoryId).length;
+  const globalUncategorizedCount = transactions.length - globalCategorizedCount;
+  const globalCategorizationPercent = transactions.length > 0
+    ? Math.round((globalCategorizedCount / transactions.length) * 100)
     : 0;
 
-  const totalIncome = transactions
-    .filter(t => t.type === "income")
-    .reduce((sum, t) => sum + parseFloat(String(t.amount) || "0"), 0);
-
-  const totalExpense = transactions
-    .filter(t => t.type === "expense")
-    .reduce((sum, t) => sum + Math.abs(parseFloat(String(t.amount) || "0")), 0);
-
-  const balance = totalIncome - totalExpense;
   const contextDelta =
     contextOpening != null && contextClosing != null ? contextClosing - contextOpening : null;
-  const balanceDisplayValue = contextClosing != null ? contextClosing : balance;
 
   const incomeCategories = categories.filter(c => c.type === "income" || c.type === "both");
   const expenseCategories = categories.filter(c => c.type === "expense" || c.type === "both");
-
-  const categorizedIncome = transactions
-    .filter(t => t.type === "income" && t.categoryId)
-    .reduce((sum, t) => sum + parseFloat(String(t.amount) || "0"), 0);
-  
-  const categorizedExpense = transactions
-    .filter(t => t.type === "expense" && t.categoryId)
-    .reduce((sum, t) => sum + Math.abs(parseFloat(String(t.amount) || "0")), 0);
 
   const banksForTabs = useMemo(() => {
     const fromTx = Array.from(
@@ -1432,7 +1433,9 @@ export default function BankStatementsPage() {
 
   const listFilteredTransactions = useMemo(() => {
     let rows = tabFilteredTransactions;
-    if (listFilterLocalId !== "all") {
+    if (listFilterLocalId === "none") {
+      rows = rows.filter((t) => t.localId == null);
+    } else if (listFilterLocalId !== "all") {
       const lid = parseInt(listFilterLocalId, 10);
       if (Number.isFinite(lid)) rows = rows.filter((t) => t.localId === lid);
     }
@@ -1471,14 +1474,71 @@ export default function BankStatementsPage() {
     listFilterDateTo,
   ]);
 
+  // Buscador (descripción, descripción 2 e IMPORTE normalizado). Base de la tabla y de los KPIs superiores.
+  const searchedTransactions = useMemo(() => {
+    const q = listSearch.trim().toLowerCase();
+    if (!q) return listFilteredTransactions;
+    const qDigits = q.replace(/[^0-9]/g, "");
+    return listFilteredTransactions.filter((t) => {
+      const desc = String(t.description ?? "").toLowerCase();
+      const desc2 = String(t.description2 ?? "").toLowerCase();
+      if (desc.includes(q) || desc2.includes(q)) return true;
+      if (qDigits.length > 0) {
+        const amtDigits = String(Math.abs(parseFloat(String(t.amount) || "0")) || "")
+          .replace(/[^0-9]/g, "");
+        if (amtDigits.includes(qDigits)) return true;
+      }
+      return false;
+    });
+  }, [listFilteredTransactions, listSearch]);
+
+  // Originales divididos: siguen visibles en la tabla pero NO computan en KPIs ni balances.
+  const splitParentIds = useMemo(
+    () =>
+      new Set(
+        transactions
+          .filter((t) => t.parentTransactionId != null)
+          .map((t) => t.parentTransactionId as number),
+      ),
+    [transactions],
+  );
+
+  // KPIs del dashboard superior: reflejan banco + pestaña + filtros del listado + buscador.
+  // Se excluyen los originales divididos (para no duplicar con sus partes).
+  const kpi = searchedTransactions.filter((t) => !splitParentIds.has(t.id));
+  const bankKpiTransactions = bankFilteredTransactions.filter((t) => !splitParentIds.has(t.id));
+  const categorizedCount = kpi.filter((t) => t.categoryId).length;
+  const uncategorizedCount = kpi.length - categorizedCount;
+  const categorizationPercent = kpi.length > 0
+    ? Math.round((categorizedCount / kpi.length) * 100)
+    : 0;
+  const totalIncome = kpi
+    .filter((t) => t.type === "income")
+    .reduce((sum, t) => sum + parseFloat(String(t.amount) || "0"), 0);
+  const totalExpense = kpi
+    .filter((t) => t.type === "expense")
+    .reduce((sum, t) => sum + Math.abs(parseFloat(String(t.amount) || "0")), 0);
+  const balance = totalIncome - totalExpense;
+  const categorizedIncome = kpi
+    .filter((t) => t.type === "income" && t.categoryId)
+    .reduce((sum, t) => sum + parseFloat(String(t.amount) || "0"), 0);
+  const categorizedExpense = kpi
+    .filter((t) => t.type === "expense" && t.categoryId)
+    .reduce((sum, t) => sum + Math.abs(parseFloat(String(t.amount) || "0")), 0);
+  // Con filtros/búsqueda activos mostramos el neto calculado; sin filtros, el saldo declarado del extracto (contexto).
+  const anyFilterOrSearch =
+    listFiltersActive || listSearch.trim() !== "" || bankFilter !== "all" || filterTab !== "all";
+  const showDeclaredBalance = contextClosing != null && !anyFilterOrSearch;
+  const balanceDisplayValue = showDeclaredBalance ? (contextClosing as number) : balance;
+
   const columns: Column<TransactionWithRelations>[] = [
     {
       key: "select",
       header: () => (
         <Checkbox
           checked={
-            selectedTransactionIds.size === listFilteredTransactions.length &&
-            listFilteredTransactions.length > 0
+            selectedTransactionIds.size === searchedTransactions.length &&
+            searchedTransactions.length > 0
           }
           onCheckedChange={toggleAllSelection}
           data-testid="checkbox-select-all"
@@ -1601,6 +1661,11 @@ export default function BankStatementsPage() {
               Split
             </Badge>
           )}
+          {splitParentIds.has(row.id) && (
+            <Badge variant="outline" className="text-xs text-muted-foreground border-amber-500/50">
+              Dividido — no computa
+            </Badge>
+          )}
         </div>
       ),
     },
@@ -1633,7 +1698,7 @@ export default function BankStatementsPage() {
                   if (!cat) return "";
                   return groupNameByGroupId.get((cat as any).financialGroupId) ?? "";
                 };
-                const rows = listFilteredTransactions.map((t) => ({
+                const rows = searchedTransactions.map((t) => ({
                   Fecha: String(t.transactionDate ?? "").slice(0, 10),
                   Descripción: t.description ?? "",
                   Entidad: t.description2 ?? "",
@@ -1648,7 +1713,7 @@ export default function BankStatementsPage() {
                 XLSX.utils.book_append_sheet(wb, ws, "Extractos");
                 XLSX.writeFile(wb, `extractos_${toISODate(new Date())}.xlsx`);
               }}
-              disabled={listFilteredTransactions.length === 0}
+              disabled={searchedTransactions.length === 0}
             >
               <Download className="h-4 w-4 mr-2" />
               Exportar
@@ -1709,7 +1774,7 @@ export default function BankStatementsPage() {
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold font-mono" data-testid="stat-total">
-              {transactions.length}
+              {kpi.length}
             </div>
           </CardContent>
         </Card>
@@ -1736,7 +1801,7 @@ export default function BankStatementsPage() {
               className="mt-2 h-2"
             />
             <p className="text-xs text-muted-foreground mt-1">
-              {categorizedCount} de {transactions.length} movimientos
+              {categorizedCount} de {kpi.length} movimientos
             </p>
           </CardContent>
         </Card>
@@ -1774,7 +1839,7 @@ export default function BankStatementsPage() {
         <Card>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2 gap-2">
             <CardTitle className="text-sm font-medium">
-              {contextClosing != null ? "Saldo final" : "Balance Neto"}
+              {showDeclaredBalance ? "Saldo final" : "Balance Neto"}
             </CardTitle>
             <DollarSign className="h-4 w-4 text-muted-foreground" />
           </CardHeader>
@@ -1786,7 +1851,7 @@ export default function BankStatementsPage() {
               {formatCurrency(balanceDisplayValue)}
             </div>
             <p className="text-xs text-muted-foreground mt-1">
-              {contextOpening != null && contextClosing != null ? (
+              {showDeclaredBalance && contextOpening != null ? (
                 <>
                   Saldo inicial: {formatCurrency(contextOpening)}
                   {" · "}
@@ -1800,14 +1865,14 @@ export default function BankStatementsPage() {
         </Card>
       </div>
 
-      {categorizationPercent < 100 && transactions.length > 0 && (
+      {globalCategorizationPercent < 100 && transactions.length > 0 && (
         <Card className="border-amber-500/50 bg-amber-500/5">
           <CardContent className="py-4">
             <div className="flex items-center gap-3">
               <AlertCircle className="h-5 w-5 text-amber-600" />
               <div className="flex-1">
                 <p className="font-medium text-amber-800 dark:text-amber-200">
-                  Tienes {uncategorizedCount} movimiento{uncategorizedCount !== 1 ? "s" : ""} sin categorizar
+                  Tienes {globalUncategorizedCount} movimiento{globalUncategorizedCount !== 1 ? "s" : ""} sin categorizar
                 </p>
                 <p className="text-sm text-amber-700 dark:text-amber-300">
                   Categoriza todos los movimientos para poder generar reportes precisos.
@@ -1866,7 +1931,7 @@ export default function BankStatementsPage() {
                 </CardHeader>
                 <CardContent>
                   <div className="text-2xl font-bold font-mono" data-testid="stat-bank-total">
-                    {bankFilteredTransactions.length}
+                    {bankKpiTransactions.length}
                   </div>
                 </CardContent>
               </Card>
@@ -1878,7 +1943,7 @@ export default function BankStatementsPage() {
                 </CardHeader>
                 <CardContent>
                   <div className="text-2xl font-bold font-mono text-green-600" data-testid="stat-bank-income">
-                    {formatCurrency(bankFilteredTransactions.filter(t => t.type === "income").reduce((sum, t) => sum + parseFloat(String(t.amount) || "0"), 0))}
+                    {formatCurrency(bankKpiTransactions.filter(t => t.type === "income").reduce((sum, t) => sum + parseFloat(String(t.amount) || "0"), 0))}
                   </div>
                 </CardContent>
               </Card>
@@ -1890,7 +1955,7 @@ export default function BankStatementsPage() {
                 </CardHeader>
                 <CardContent>
                   <div className="text-2xl font-bold font-mono text-red-600" data-testid="stat-bank-expense">
-                    {formatCurrency(bankFilteredTransactions.filter(t => t.type === "expense").reduce((sum, t) => sum + Math.abs(parseFloat(String(t.amount) || "0")), 0))}
+                    {formatCurrency(bankKpiTransactions.filter(t => t.type === "expense").reduce((sum, t) => sum + Math.abs(parseFloat(String(t.amount) || "0")), 0))}
                   </div>
                 </CardContent>
               </Card>
@@ -1902,8 +1967,8 @@ export default function BankStatementsPage() {
                 </CardHeader>
                 <CardContent>
                   {(() => {
-                    const bankIncome = bankFilteredTransactions.filter(t => t.type === "income").reduce((sum, t) => sum + parseFloat(String(t.amount) || "0"), 0);
-                    const bankExpense = bankFilteredTransactions.filter(t => t.type === "expense").reduce((sum, t) => sum + Math.abs(parseFloat(String(t.amount) || "0")), 0);
+                    const bankIncome = bankKpiTransactions.filter(t => t.type === "income").reduce((sum, t) => sum + parseFloat(String(t.amount) || "0"), 0);
+                    const bankExpense = bankKpiTransactions.filter(t => t.type === "expense").reduce((sum, t) => sum + Math.abs(parseFloat(String(t.amount) || "0")), 0);
                     const bankBalance = bankIncome - bankExpense;
                     return (
                       <div className={`text-2xl font-bold font-mono ${bankBalance >= 0 ? "text-green-600" : "text-red-600"}`} data-testid="stat-bank-balance">
@@ -1953,6 +2018,7 @@ export default function BankStatementsPage() {
                     allLabel="Todos los locales"
                     items={localFilterItems}
                     searchPlaceholder="Buscar local…"
+                    extraOptions={[{ value: "none", label: "Sin local" }]}
                   />
                 </div>
                 <div className="space-y-1 sm:col-span-2">
@@ -2003,10 +2069,12 @@ export default function BankStatementsPage() {
 
             <DataTable
               columns={columns}
-              data={listFilteredTransactions}
+              data={searchedTransactions}
               isLoading={isLoading}
-              searchPlaceholder="Buscar por descripcion o descripcion 2..."
-              searchKeys={["description", "description2"]}
+              searchPlaceholder="Buscar por descripción, entidad o importe..."
+              searchKeys={[]}
+              search={listSearch}
+              onSearchChange={setListSearch}
               emptyMessage={
                 filterTab === "uncategorized"
                   ? "No hay movimientos sin categorizar"
@@ -2075,19 +2143,58 @@ export default function BankStatementsPage() {
                             </p>
                           </div>
                         </div>
-                        <Button
-                          size="icon"
-                          variant="ghost"
-                          onClick={() => {
-                            setDeleteBatchTarget(batch);
-                            setDeleteConfirmCode("");
-                            setIsDeleteBatchOpen(true);
-                          }}
-                          data-testid={`button-delete-batch-${batch.importBatchId}`}
-                          title="Eliminar extracto completo"
-                        >
-                          <Trash2 className="h-4 w-4 text-destructive" />
-                        </Button>
+                        <div className="flex items-center gap-1">
+                          <Button
+                            size="icon"
+                            variant="ghost"
+                            onClick={() => {
+                              const groupNameByGroupId = new Map(financialGroups.map((g) => [g.id, g.name]));
+                              const catGroupName = (catId: number | null | undefined) => {
+                                if (!catId) return "";
+                                const cat = categories.find((c) => c.id === catId);
+                                if (!cat) return "";
+                                return groupNameByGroupId.get((cat as any).financialGroupId) ?? "";
+                              };
+                              const batchRows = transactions.filter((t) => t.importBatchId === batch.importBatchId);
+                              if (batchRows.length === 0) {
+                                toast({ title: "Este extracto no tiene movimientos para exportar", variant: "destructive" });
+                                return;
+                              }
+                              const rows = batchRows.map((t) => ({
+                                Fecha: String(t.transactionDate ?? "").slice(0, 10),
+                                Descripción: t.description ?? "",
+                                Entidad: t.description2 ?? "",
+                                Tipo: t.type === "income" ? "Ingreso" : "Egreso",
+                                Importe: parseFloat(String(t.amount)) || 0,
+                                Grupo: catGroupName(t.categoryId),
+                                Categoría: t.category?.name ?? "",
+                                Local: t.local?.name ?? "",
+                              }));
+                              const ws = XLSX.utils.json_to_sheet(rows);
+                              const wb = XLSX.utils.book_new();
+                              XLSX.utils.book_append_sheet(wb, ws, "Extracto");
+                              const label = (bankInfo?.name || batch.bankSource || "extracto").replace(/[^a-z0-9]+/gi, "_");
+                              XLSX.writeFile(wb, `extracto_${label}_${toISODate(new Date())}.xlsx`);
+                            }}
+                            data-testid={`button-export-batch-${batch.importBatchId}`}
+                            title="Exportar movimientos de este extracto a Excel"
+                          >
+                            <Download className="h-4 w-4" />
+                          </Button>
+                          <Button
+                            size="icon"
+                            variant="ghost"
+                            onClick={() => {
+                              setDeleteBatchTarget(batch);
+                              setDeleteConfirmCode("");
+                              setIsDeleteBatchOpen(true);
+                            }}
+                            data-testid={`button-delete-batch-${batch.importBatchId}`}
+                            title="Eliminar extracto completo"
+                          >
+                            <Trash2 className="h-4 w-4 text-destructive" />
+                          </Button>
+                        </div>
                       </div>
                     );
                   })}
