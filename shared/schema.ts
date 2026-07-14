@@ -867,6 +867,7 @@ export const transactions = pgTable("transactions", {
   clientId: integer("client_id").notNull().references(() => clients.id, { onDelete: "cascade" }),
   localId: integer("local_id").references(() => locals.id),
   bankAccountId: integer("bank_account_id").references(() => bankAccounts.id),
+  cashRegisterId: integer("cash_register_id"),
   categoryId: integer("category_id").references(() => transactionCategories.id),
   transactionDate: date("transaction_date").notNull(),
   description: text("description"),
@@ -897,6 +898,21 @@ export const transactions = pgTable("transactions", {
 export const insertTransactionSchema = createInsertSchema(transactions).omit({ id: true, createdAt: true });
 export type InsertTransaction = z.infer<typeof insertTransactionSchema>;
 export type Transaction = typeof transactions.$inferSelect;
+
+// ==========================================
+// CAJAS DE EFECTIVO (catálogo GLOBAL por cliente)
+// ==========================================
+export const cashRegisters = pgTable("cash_registers", {
+  id: serial("id").primaryKey(),
+  clientId: integer("client_id").notNull().references(() => clients.id, { onDelete: "cascade" }),
+  name: varchar("name", { length: 100 }).notNull(),
+  active: boolean("active").default(true),
+  displayOrder: integer("display_order").default(0),
+  createdAt: timestamp("created_at").defaultNow(),
+});
+export const insertCashRegisterSchema = createInsertSchema(cashRegisters).omit({ id: true, createdAt: true });
+export type InsertCashRegister = z.infer<typeof insertCashRegisterSchema>;
+export type CashRegister = typeof cashRegisters.$inferSelect;
 
 // ==========================================
 // MONTHLY BALANCES

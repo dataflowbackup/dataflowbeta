@@ -27,6 +27,7 @@ import {
   financialGroups,
   transactionCategories,
   bankAccounts,
+  cashRegisters,
   financialImportBatches,
   financialImportJobs,
   financialSavedViews,
@@ -117,6 +118,7 @@ import {
   type TransactionCategory,
   type InsertBankAccount,
   type BankAccount,
+  type CashRegister,
   type InsertFinancialImportBatch,
   type FinancialImportBatch,
   type InsertFinancialImportJob,
@@ -409,7 +411,13 @@ export interface IStorage {
   createTransactionsBatch(transactionsList: InsertTransaction[]): Promise<number>;
   updateTransaction(clientId: number, id: number, transaction: Partial<InsertTransaction>): Promise<Transaction | undefined>;
   deleteTransaction(clientId: number, id: number): Promise<boolean>;
-  
+
+  listCashRegisters(clientId: number, includeInactive?: boolean): Promise<CashRegister[]>;
+  createCashRegister(clientId: number, name: string): Promise<CashRegister>;
+  updateCashRegister(clientId: number, id: number, data: Partial<{ name: string; active: boolean; displayOrder: number }>): Promise<CashRegister | undefined>;
+  deleteCashRegister(clientId: number, id: number): Promise<boolean>;
+
+
   getMonthlyBalances(clientId: number, year: number): Promise<MonthlyBalance[]>;
   createMonthlyBalance(balance: InsertMonthlyBalance): Promise<MonthlyBalance>;
   updateMonthlyBalance(clientId: number, id: number, balance: Partial<InsertMonthlyBalance>): Promise<MonthlyBalance | undefined>;
@@ -2462,6 +2470,7 @@ export class DatabaseStorage implements IStorage {
       description: string;
       categoryId: number | null | undefined;
       localId: number | null | undefined;
+      cashRegisterId?: number | null | undefined;
       type: "income" | "expense";
       amount: number;
     }>,
@@ -2486,6 +2495,7 @@ export class DatabaseStorage implements IStorage {
             clientId,
             localId: r.localId ?? undefined,
             bankAccountId: undefined,
+            cashRegisterId: r.cashRegisterId ?? undefined,
             categoryId: r.categoryId ?? undefined,
             transactionDate: r.transactionDate,
             description: r.description,
@@ -2500,6 +2510,69 @@ export class DatabaseStorage implements IStorage {
       }
       return out;
     });
+  }
+
+  // ---- Cajas de efectivo (catálogo global por cliente) ----
+  async listCashRegisters(clientId: number, includeInactive = false): Promise<CashRegister[]> {
+    const conds = [eq(cashRegisters.clientId, clientId)];
+    if (!includeInactive) conds.push(eq(cashRegisters.active, true));
+    return await db
+      .select()
+      .from(cashRegisters)
+      .where(and(...conds))
+      .orderBy(cashRegisters.displayOrder, cashRegisters.name);
+  }
+
+  async createCashRegister(clientId: number, name: string): Promise<CashRegister> {
+    const [row] = await db
+      .insert(cashRegisters)
+      .values({ clientId, name: name.trim() })
+      .returning();
+    return row;
+  }
+
+  async updateCashRegister(
+    clientId: number,
+    id: number,
+    data: Partial<{ name: string; active: boolean; displayOrder: number }>,
+  ): Promise<CashRegister | undefined> {
+    const patch: any = {};
+    if (data.name !== undefined) patch.name = String(data.name).trim();
+    if (data.active !== undefined) patch.active = data.active;
+    if (data.displayOrder !== undefined) patch.displayOrder = data.displayOrder;
+    if (Object.keys(patch).length === 0) {
+      const [existing] = await db
+        .select()
+        .from(cashRegisters)
+        .where(and(eq(cashRegisters.clientId, clientId), eq(cashRegisters.id, id)));
+      return existing;
+    }
+    const [row] = await db
+      .update(cashRegisters)
+      .set(patch)
+      .where(and(eq(cashRegisters.clientId, clientId), eq(cashRegisters.id, id)))
+      .returning();
+    return row;
+  }
+
+  async deleteCashRegister(clientId: number, id: number): Promise<boolean> {
+    // No se borra físicamente si tiene movimientos: se desactiva para preservar historial.
+    const [used] = await db
+      .select({ id: transactions.id })
+      .from(transactions)
+      .where(and(eq(transactions.clientId, clientId), eq(transactions.cashRegisterId, id)))
+      .limit(1);
+    if (used) {
+      await db
+        .update(cashRegisters)
+        .set({ active: false })
+        .where(and(eq(cashRegisters.clientId, clientId), eq(cashRegisters.id, id)));
+      return false; // desactivada, no borrada
+    }
+    await db
+      .delete(cashRegisters)
+      .where(and(eq(cashRegisters.clientId, clientId), eq(cashRegisters.id, id)));
+    return true;
   }
 
   async createTransaction(transaction: InsertTransaction): Promise<Transaction> {

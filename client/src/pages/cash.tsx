@@ -59,8 +59,13 @@ import {
   Download,
   Upload,
   FileSpreadsheet,
+  CheckCircle,
+  AlertCircle,
+  ListChecks,
+  Wallet,
 } from "lucide-react";
-import type { Transaction, BankAccount, TransactionCategory, Local, FinancialGroup } from "@shared/schema";
+import { Progress } from "@/components/ui/progress";
+import type { Transaction, BankAccount, TransactionCategory, Local, FinancialGroup, CashRegister } from "@shared/schema";
 
 interface TransactionWithRelations extends Transaction {
   bankAccount?: BankAccount | null;
@@ -373,16 +378,19 @@ function FilterSearchableSelect({
   allLabel,
   items,
   searchPlaceholder,
+  extraOptions = [],
 }: {
   value: string;
   onChange: (v: string) => void;
   allLabel: string;
   items: { id: number; name: string }[];
   searchPlaceholder: string;
+  extraOptions?: { value: string; label: string }[];
 }) {
   const [open, setOpen] = useState(false);
+  const extraSelected = extraOptions.find((o) => o.value === value);
   const selected = value === "all" ? null : items.find((x) => String(x.id) === value);
-  const label = selected?.name ?? allLabel;
+  const label = extraSelected?.label ?? selected?.name ?? allLabel;
   return (
     <Popover open={open} onOpenChange={setOpen} modal={false}>
       <PopoverTrigger asChild>
@@ -413,6 +421,19 @@ function FilterSearchableSelect({
                 <Check className={cn("mr-2 h-4 w-4 shrink-0", value === "all" ? "opacity-100" : "opacity-0")} />
                 {allLabel}
               </CommandItem>
+              {extraOptions.map((opt) => (
+                <CommandItem
+                  key={opt.value}
+                  value={`__extra__ ${opt.label}`}
+                  onSelect={() => {
+                    onChange(opt.value);
+                    setOpen(false);
+                  }}
+                >
+                  <Check className={cn("mr-2 h-4 w-4 shrink-0", value === opt.value ? "opacity-100" : "opacity-0")} />
+                  {opt.label}
+                </CommandItem>
+              ))}
               {items.map((item) => (
                 <CommandItem
                   key={item.id}
@@ -465,9 +486,33 @@ export default function CashPage() {
   const { data: financialGroups = [] } = useQuery<FinancialGroup[]>({
     queryKey: ["/api/financial-groups"],
   });
+  const { data: cashRegisters = [] } = useQuery<CashRegister[]>({
+    queryKey: ["/api/cash-registers"],
+  });
 
-  // Clasificación Masiva en Efectivo
+  // Cajas (catálogo global por cliente)
+  const cajasById = useMemo(() => new Map(cashRegisters.map((c) => [c.id, c.name])), [cashRegisters]);
+  const cajaComboItems = useMemo(
+    () => [...cashRegisters].sort((a, b) => String(a.name).localeCompare(String(b.name), "es")).map((c) => ({ id: c.id, name: c.name })),
+    [cashRegisters],
+  );
+  const cajaPickComboOptions = useMemo(
+    () => [
+      { value: "none", label: "Sin caja" },
+      ...cajaComboItems.map((c) => ({ value: String(c.id), label: c.name })),
+    ],
+    [cajaComboItems],
+  );
+  const [filterCajaId, setFilterCajaId] = useState<string>("all");
+  const [batchCajaId, setBatchCajaId] = useState<string>("");
+  const [isCajasOpen, setIsCajasOpen] = useState(false);
+  const [newCajaName, setNewCajaName] = useState("");
+  const [editCajaId, setEditCajaId] = useState<string>("none");
+
+  // Clasificación Masiva en Efectivo (modo: categorizar / descategorizar / borrar)
+  type MasivaMode = "categorize" | "uncategorize" | "delete";
   const [isMasivaOpen, setIsMasivaOpen] = useState(false);
+  const [masivaMode, setMasivaMode] = useState<MasivaMode>("categorize");
   const [masivaDateFrom, setMasivaDateFrom] = useState("");
   const [masivaDateTo, setMasivaDateTo] = useState("");
   const [masivaLocalId, setMasivaLocalId] = useState("");
@@ -475,6 +520,13 @@ export default function CashPage() {
   const [masivaSelectedDescs, setMasivaSelectedDescs] = useState<Set<string>>(new Set());
   const [masivaCategoryId, setMasivaCategoryId] = useState("");
   const [masivaNewLocalId, setMasivaNewLocalId] = useState("");
+
+  const openMasiva = (mode: MasivaMode) => {
+    setMasivaMode(mode);
+    setMasivaDateFrom(""); setMasivaDateTo(""); setMasivaLocalId(""); setMasivaDescSearch("");
+    setMasivaSelectedDescs(new Set()); setMasivaCategoryId(""); setMasivaNewLocalId("");
+    setIsMasivaOpen(true);
+  };
 
   const incomeCategories = useMemo(
     () => categories.filter((c) => c.active !== false && (c.type === "income" || c.type === "both")),
@@ -591,9 +643,30 @@ export default function CashPage() {
         const cid = parseInt(filterCategoryId, 10);
         if (!Number.isFinite(cid) || t.categoryId !== cid) return false;
       }
+      if (filterCajaId !== "all") {
+        if (filterCajaId === "none") {
+          if ((t as any).cashRegisterId != null) return false;
+        } else {
+          const cid = parseInt(filterCajaId, 10);
+          if (!Number.isFinite(cid) || (t as any).cashRegisterId !== cid) return false;
+        }
+      }
       if (filterDateFrom && String(t.transactionDate) < filterDateFrom) return false;
       if (filterDateTo && String(t.transactionDate) > filterDateTo) return false;
-      if (q && !String(t.description ?? "").toLowerCase().includes(q)) return false;
+      if (q) {
+        const desc = String(t.description ?? "").toLowerCase();
+        let match = desc.includes(q);
+        if (!match) {
+          // Buscar también por importe normalizado ("25000" encuentra "25.000,00").
+          const qDigits = q.replace(/[^0-9]/g, "");
+          if (qDigits.length > 0) {
+            const amtDigits = String(Math.abs(parseFloat(String(t.amount) || "0")) || "")
+              .replace(/[^0-9]/g, "");
+            match = amtDigits.includes(qDigits);
+          }
+        }
+        if (!match) return false;
+      }
       return true;
     });
   }, [
@@ -602,6 +675,7 @@ export default function CashPage() {
     filterType,
     filterLocalId,
     filterCategoryId,
+    filterCajaId,
     filterDateFrom,
     filterDateTo,
   ]);
@@ -622,6 +696,16 @@ export default function CashPage() {
   );
 
   const saldoFiltered = useMemo(() => totalIncome - totalExpense, [totalIncome, totalExpense]);
+
+  // % categorizado sobre la vista filtrada (mismo criterio que Extractos).
+  const categorizedCount = useMemo(
+    () => filteredTransactions.filter((t) => t.categoryId).length,
+    [filteredTransactions],
+  );
+  const categorizationPercent = useMemo(
+    () => (filteredTransactions.length > 0 ? Math.round((categorizedCount / filteredTransactions.length) * 100) : 0),
+    [categorizedCount, filteredTransactions.length],
+  );
 
   /**
    * Promedio diario de ingresos: Σ ingresos en la vista ÷ días calendario entre la primera y última fecha
@@ -655,6 +739,7 @@ export default function CashPage() {
     draftRowSeqRef.current = 0;
     setDraftRows([makeDraftRow(draftRowSeqRef)]);
     setNetoRecibido("");
+    setBatchCajaId(cashRegisters.length === 1 ? String(cashRegisters[0].id) : "");
     setBatchOpen(true);
   };
 
@@ -668,12 +753,14 @@ export default function CashPage() {
 
   const saveBatchMutation = useMutation({
     mutationFn: async (items: DraftRow[]) => {
+      const cajaId = batchCajaId ? parseInt(batchCajaId, 10) : null;
       const payload = {
         items: items.map((r) => ({
           transactionDate: r.transactionDate,
           description: r.description.trim(),
           categoryId: r.categoryId ? parseInt(r.categoryId, 10) : null,
           localId: r.localId === "none" ? null : parseInt(r.localId, 10),
+          cashRegisterId: cajaId,
           type: r.type,
           amount: parseEsArAmount(String(r.amount)),
         })),
@@ -692,12 +779,49 @@ export default function CashPage() {
     },
   });
 
+  const createCajaMutation = useMutation({
+    mutationFn: async (name: string) => {
+      const res = await apiRequest("POST", "/api/cash-registers", { name });
+      return res.json();
+    },
+    onSuccess: () => {
+      setNewCajaName("");
+      queryClient.invalidateQueries({ queryKey: ["/api/cash-registers"] });
+    },
+    onError: (e: Error) => toast({ title: "Error", description: e.message, variant: "destructive" }),
+  });
+
+  const deleteCajaMutation = useMutation({
+    mutationFn: async (id: number) => {
+      const res = await apiRequest("DELETE", `/api/cash-registers/${id}`);
+      return res.json() as Promise<{ deleted: boolean; deactivated: boolean }>;
+    },
+    onSuccess: (r) => {
+      toast({
+        title: r.deactivated ? "Caja desactivada" : "Caja eliminada",
+        description: r.deactivated ? "Tenía movimientos, se ocultó para conservar el historial." : undefined,
+      });
+      queryClient.invalidateQueries({ queryKey: ["/api/cash-registers"] });
+    },
+    onError: (e: Error) => toast({ title: "Error", description: e.message, variant: "destructive" }),
+  });
+
   const submitBatch = () => {
     const prepared = draftRows.filter((r) => r.description.trim() !== "" && r.amount !== "");
     if (prepared.length === 0) {
       toast({
         title: "Completá al menos un movimiento",
         description: "Descripción e importe son obligatorios.",
+        variant: "destructive",
+      });
+      return;
+    }
+    if (!batchCajaId) {
+      toast({
+        title: "Elegí una caja",
+        description: cashRegisters.length === 0
+          ? "Primero creá al menos una caja desde el botón \"Cajas\"."
+          : "La caja es obligatoria para registrar movimientos en efectivo.",
         variant: "destructive",
       });
       return;
@@ -928,6 +1052,7 @@ export default function CashPage() {
         amount: amt,
         categoryId: editCategoryId ? parseInt(editCategoryId, 10) : null,
         localId: editLocalId === "none" ? null : parseInt(editLocalId, 10),
+        cashRegisterId: editCajaId === "none" ? null : parseInt(editCajaId, 10),
       });
     },
     onSuccess: async () => {
@@ -941,9 +1066,15 @@ export default function CashPage() {
     },
   });
 
-  // Clasificación Masiva — descripciones disponibles (sin categoría, efectivo)
+  // Masiva — descripciones disponibles según el modo:
+  //  categorizar → sin categoría · descategorizar → con categoría · borrar → todas.
   const masivaGroupedDescs = useMemo(() => {
-    let rows = transactions.filter((t) => !t.categoryId && t.description);
+    let rows = transactions.filter((t) => {
+      if (!t.description) return false;
+      if (masivaMode === "categorize") return !t.categoryId;
+      if (masivaMode === "uncategorize") return !!t.categoryId;
+      return true; // delete
+    });
     if (masivaDateFrom && masivaDateTo) {
       rows = rows.filter((t) => {
         const d = String(t.transactionDate ?? "").slice(0, 10);
@@ -957,7 +1088,7 @@ export default function CashPage() {
     const map = new Map<string, number>();
     for (const t of rows) map.set(t.description!, (map.get(t.description!) || 0) + 1);
     return Array.from(map.entries()).map(([description, count]) => ({ description, count })).sort((a, b) => b.count - a.count);
-  }, [transactions, masivaDateFrom, masivaDateTo, masivaLocalId]);
+  }, [transactions, masivaMode, masivaDateFrom, masivaDateTo, masivaLocalId]);
 
   const masivaFilteredDescs = useMemo(() => {
     const q = masivaDescSearch.trim().toLowerCase();
@@ -967,20 +1098,41 @@ export default function CashPage() {
 
   const masivaMutation = useMutation({
     mutationFn: async () => {
-      if (!masivaCategoryId) throw new Error("Elegí una categoría");
-      const body: Record<string, any> = {
-        categoryId: parseInt(masivaCategoryId, 10),
-        bankSource: "cash",
-      };
-      if (masivaNewLocalId) body.localId = parseInt(masivaNewLocalId, 10);
-      if (masivaDateFrom && masivaDateTo) { body.dateFrom = masivaDateFrom; body.dateTo = masivaDateTo; }
       const descs = Array.from(masivaSelectedDescs);
+      if (descs.length === 0 && !(masivaDateFrom && masivaDateTo)) {
+        throw new Error("Elegí al menos una descripción o un rango de fechas");
+      }
+      const body: Record<string, any> = { bankSource: "cash" };
+      if (masivaDateFrom && masivaDateTo) { body.dateFrom = masivaDateFrom; body.dateTo = masivaDateTo; }
       if (descs.length > 0) body.descriptions = descs;
+
+      if (masivaMode === "delete") {
+        if (masivaLocalId) body.localId = parseInt(masivaLocalId, 10);
+        const res = await apiRequest("POST", "/api/transactions/batch-delete", body);
+        return res.json();
+      }
+      if (masivaMode === "uncategorize") {
+        body.mode = "uncategorize";
+        const res = await apiRequest("POST", "/api/transactions/batch-categorize", body);
+        return res.json();
+      }
+      // categorize
+      if (!masivaCategoryId) throw new Error("Elegí una categoría");
+      body.categoryId = parseInt(masivaCategoryId, 10);
+      if (masivaNewLocalId) body.localId = parseInt(masivaNewLocalId, 10);
       const res = await apiRequest("POST", "/api/transactions/batch-categorize", body);
       return res.json();
     },
     onSuccess: (r: any) => {
-      toast({ title: `${r.updated ?? 0} movimiento(s) categorizados` });
+      const n = r.updated ?? r.deleted ?? 0;
+      toast({
+        title:
+          masivaMode === "delete"
+            ? `${n} movimiento(s) borrados`
+            : masivaMode === "uncategorize"
+            ? `${n} movimiento(s) descategorizados`
+            : `${n} movimiento(s) categorizados`,
+      });
       setIsMasivaOpen(false);
       setMasivaDateFrom(""); setMasivaDateTo(""); setMasivaLocalId(""); setMasivaDescSearch("");
       setMasivaSelectedDescs(new Set()); setMasivaCategoryId(""); setMasivaNewLocalId("");
@@ -1014,6 +1166,7 @@ export default function CashPage() {
     setEditAmount(formatNumber(Math.abs(parseFloat(String(row.amount) || "0")), 2));
     setEditCategoryId(row.categoryId != null ? String(row.categoryId) : "");
     setEditLocalId(row.localId != null ? String(row.localId) : "none");
+    setEditCajaId((row as any).cashRegisterId != null ? String((row as any).cashRegisterId) : "none");
   };
 
   const columns: Column<TransactionWithRelations>[] = [
@@ -1046,6 +1199,19 @@ export default function CashPage() {
       key: "local",
       header: "Local",
       cell: (row) => <span className="text-sm">{row.local?.name ?? "—"}</span>,
+    },
+    {
+      key: "caja",
+      header: "Caja",
+      cell: (row) => {
+        const cid = (row as any).cashRegisterId as number | null | undefined;
+        const name = cid != null ? cajasById.get(cid) : null;
+        return name ? (
+          <Badge variant="outline" className="truncate max-w-40">{name}</Badge>
+        ) : (
+          <span className="text-sm text-muted-foreground">—</span>
+        );
+      },
     },
     {
       key: "category",
@@ -1121,6 +1287,7 @@ export default function CashPage() {
     setFilterType("all");
     setFilterLocalId("all");
     setFilterCategoryId("all");
+    setFilterCajaId("all");
     setFilterDateFrom("");
     setFilterDateTo("");
   };
@@ -1130,6 +1297,7 @@ export default function CashPage() {
     filterType !== "all" ||
     filterLocalId !== "all" ||
     filterCategoryId !== "all" ||
+    filterCajaId !== "all" ||
     filterDateFrom !== "" ||
     filterDateTo !== "";
 
@@ -1144,9 +1312,21 @@ export default function CashPage() {
               <Download className="h-4 w-4 mr-2" />
               Exportar
             </Button>
-            <Button variant="outline" onClick={() => setIsMasivaOpen(true)} data-testid="button-masiva-cash">
+            <Button variant="outline" onClick={() => openMasiva("categorize")} data-testid="button-masiva-cash">
               <Filter className="h-4 w-4 mr-2" />
               Clasificación Masiva
+            </Button>
+            <Button variant="outline" onClick={() => openMasiva("uncategorize")} data-testid="button-masiva-uncat-cash">
+              <ListChecks className="h-4 w-4 mr-2" />
+              Descategorizar Masivo
+            </Button>
+            <Button variant="outline" onClick={() => openMasiva("delete")} data-testid="button-masiva-delete-cash" className="text-destructive hover:text-destructive">
+              <Trash2 className="h-4 w-4 mr-2" />
+              Borrado Masivo
+            </Button>
+            <Button variant="outline" onClick={() => { setNewCajaName(""); setIsCajasOpen(true); }} data-testid="button-cajas">
+              <Wallet className="h-4 w-4 mr-2" />
+              Cajas
             </Button>
             <Button variant="outline" onClick={openImport} data-testid="button-import-cash">
               <Upload className="h-4 w-4 mr-2" />
@@ -1160,7 +1340,7 @@ export default function CashPage() {
         }
       />
 
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
         <Card>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
             <div>
@@ -1248,6 +1428,30 @@ export default function CashPage() {
             )}
           </CardContent>
         </Card>
+        <Card className={categorizationPercent === 100 ? "border-green-500/50" : "border-amber-500/50"}>
+          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+            <CardTitle className="text-sm font-medium">Categorizado</CardTitle>
+            {categorizationPercent === 100 ? (
+              <CheckCircle className="h-4 w-4 text-green-600" />
+            ) : (
+              <AlertCircle className="h-4 w-4 text-amber-600" />
+            )}
+          </CardHeader>
+          <CardContent>
+            <div
+              className={cn(
+                "text-2xl font-bold font-mono",
+                categorizationPercent === 100 ? "text-green-600" : "text-amber-600",
+              )}
+            >
+              {categorizationPercent}%
+            </div>
+            <Progress value={categorizationPercent} className="mt-2 h-2" />
+            <p className="text-xs text-muted-foreground mt-1">
+              {categorizedCount} de {filteredTransactions.length} movimientos
+            </p>
+          </CardContent>
+        </Card>
       </div>
 
       <Card>
@@ -1305,6 +1509,17 @@ export default function CashPage() {
               />
             </div>
             <div className="space-y-1">
+              <Label className="text-xs">Caja</Label>
+              <FilterSearchableSelect
+                value={filterCajaId}
+                onChange={setFilterCajaId}
+                allLabel="Todas las cajas"
+                items={cajaComboItems}
+                searchPlaceholder="Buscar caja…"
+                extraOptions={[{ value: "none", label: "Sin caja" }]}
+              />
+            </div>
+            <div className="space-y-1">
               <Label className="text-xs">Período</Label>
               <DateRangePicker from={filterDateFrom} to={filterDateTo} onChange={(f, t) => { setFilterDateFrom(f); setFilterDateTo(t); }} />
             </div>
@@ -1331,6 +1546,25 @@ export default function CashPage() {
               Podés agregar varias filas y guardarlas todas en una sola operación.
             </DialogDescription>
           </DialogHeader>
+          <div className="rounded-md border bg-muted/30 p-3">
+            <Label className="text-xs">Caja <span className="text-destructive">*</span></Label>
+            {cashRegisters.length === 0 ? (
+              <p className="text-sm text-muted-foreground mt-1">
+                No hay cajas creadas. Cerrá este diálogo y creá una desde el botón <span className="font-medium">"Cajas"</span>.
+              </p>
+            ) : (
+              <>
+                <FilterSearchableSelect
+                  value={batchCajaId || "all"}
+                  onChange={(v) => setBatchCajaId(v === "all" ? "" : v)}
+                  allLabel="Elegí una caja…"
+                  items={cajaComboItems}
+                  searchPlaceholder="Buscar caja…"
+                />
+                <p className="text-xs text-muted-foreground mt-1">Se aplicará a todos los movimientos de esta carga.</p>
+              </>
+            )}
+          </div>
           <ScrollArea className="h-[min(50vh,520px)] w-full pr-3 border rounded-md">
             <div className="space-y-4 p-3">
               {draftRows.map((r) => (
@@ -1553,6 +1787,16 @@ export default function CashPage() {
                   searchPlaceholder="Buscar local…"
                 />
               </div>
+              <div className="space-y-1">
+                <Label>Caja</Label>
+                <DataEntryCombobox
+                  options={cajaPickComboOptions}
+                  value={editCajaId}
+                  onValueChange={setEditCajaId}
+                  placeholder="Caja"
+                  searchPlaceholder="Buscar caja…"
+                />
+              </div>
             </div>
           )}
           <DialogFooter>
@@ -1562,6 +1806,66 @@ export default function CashPage() {
             <Button onClick={() => patchMutation.mutate()} disabled={patchMutation.isPending}>
               Guardar
             </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={isCajasOpen} onOpenChange={setIsCajasOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Cajas de efectivo</DialogTitle>
+            <DialogDescription>
+              Cajas del cliente (ej. Caja Mayor, Caja Menor). Al cargar movimientos vas a elegir a qué caja van.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="flex items-end gap-2">
+              <div className="flex-1 space-y-1">
+                <Label className="text-xs">Nueva caja</Label>
+                <Input
+                  placeholder="Nombre de la caja…"
+                  value={newCajaName}
+                  onChange={(e) => setNewCajaName(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && newCajaName.trim()) createCajaMutation.mutate(newCajaName.trim());
+                  }}
+                />
+              </div>
+              <Button
+                disabled={!newCajaName.trim() || createCajaMutation.isPending}
+                onClick={() => createCajaMutation.mutate(newCajaName.trim())}
+              >
+                <Plus className="h-4 w-4 mr-1" />
+                Agregar
+              </Button>
+            </div>
+            <div className="rounded-md border divide-y max-h-72 overflow-y-auto">
+              {cashRegisters.length === 0 ? (
+                <p className="text-sm text-muted-foreground text-center py-6">No hay cajas creadas todavía.</p>
+              ) : (
+                cashRegisters.map((c) => (
+                  <div key={c.id} className="flex items-center justify-between gap-2 px-3 py-2">
+                    <span className="text-sm truncate">{c.name}</span>
+                    <Button
+                      size="icon"
+                      variant="ghost"
+                      className="h-8 w-8 shrink-0"
+                      title="Eliminar / desactivar caja"
+                      disabled={deleteCajaMutation.isPending}
+                      onClick={() => deleteCajaMutation.mutate(c.id)}
+                    >
+                      <Trash2 className="h-4 w-4 text-destructive" />
+                    </Button>
+                  </div>
+                ))
+              )}
+            </div>
+            <p className="text-xs text-muted-foreground">
+              Si una caja tiene movimientos, al eliminarla se <span className="font-medium">desactiva</span> (no se borra) para conservar el historial.
+            </p>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setIsCajasOpen(false)}>Cerrar</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -1576,8 +1880,20 @@ export default function CashPage() {
         <DialogContent className="sm:max-w-2xl max-h-[min(90vh,880px)] h-[min(90vh,880px)] flex flex-col gap-0 p-0 overflow-hidden sm:rounded-lg">
           <div className="px-6 pt-6 pb-2 pr-12 shrink-0 border-b border-border/50">
             <DialogHeader>
-              <DialogTitle>Clasificación Masiva — Efectivo</DialogTitle>
-              <DialogDescription>Filtrá por período, local y descripción; asigná categoría a todos los movimientos sin categorizar que coincidan.</DialogDescription>
+              <DialogTitle>
+                {masivaMode === "delete"
+                  ? "Borrado Masivo — Efectivo"
+                  : masivaMode === "uncategorize"
+                  ? "Descategorizar Masivo — Efectivo"
+                  : "Clasificación Masiva — Efectivo"}
+              </DialogTitle>
+              <DialogDescription>
+                {masivaMode === "delete"
+                  ? "Filtrá por período, local y descripción; se BORRARÁN todos los movimientos de efectivo que coincidan. Esta acción no se puede deshacer."
+                  : masivaMode === "uncategorize"
+                  ? "Filtrá por período, local y descripción; se quitará la categoría a todos los movimientos categorizados que coincidan."
+                  : "Filtrá por período, local y descripción; asigná categoría a todos los movimientos sin categorizar que coincidan."}
+              </DialogDescription>
             </DialogHeader>
           </div>
           <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain px-6 py-4 space-y-4">
@@ -1611,7 +1927,13 @@ export default function CashPage() {
                 <Input placeholder="Buscar en descripciones…" value={masivaDescSearch} onChange={(e) => setMasivaDescSearch(e.target.value)} className="max-w-md" />
               )}
               {masivaGroupedDescs.length === 0 ? (
-                <div className="text-center py-4 text-sm text-muted-foreground rounded-lg bg-muted/50">No hay movimientos sin categorizar</div>
+                <div className="text-center py-4 text-sm text-muted-foreground rounded-lg bg-muted/50">
+                  {masivaMode === "categorize"
+                    ? "No hay movimientos sin categorizar"
+                    : masivaMode === "uncategorize"
+                    ? "No hay movimientos categorizados"
+                    : "No hay movimientos"}
+                </div>
               ) : masivaFilteredDescs.length === 0 ? (
                 <div className="text-center py-3 text-sm text-muted-foreground rounded-lg bg-muted/50">Ninguna descripción coincide</div>
               ) : (
@@ -1646,35 +1968,55 @@ export default function CashPage() {
               )}
             </div>
 
-            <div className="space-y-2">
-              <p className="text-sm font-medium">3. Categoría a asignar</p>
-              <GroupedCategoryPicker
-                value={masivaCategoryId}
-                onChange={setMasivaCategoryId}
-                categories={allCategoriesSorted}
-                financialGroups={financialGroups}
-              />
-            </div>
+            {masivaMode === "categorize" && (
+              <>
+                <div className="space-y-2">
+                  <p className="text-sm font-medium">3. Categoría a asignar</p>
+                  <GroupedCategoryPicker
+                    value={masivaCategoryId}
+                    onChange={setMasivaCategoryId}
+                    categories={allCategoriesSorted}
+                    financialGroups={financialGroups}
+                  />
+                </div>
 
-            <div className="space-y-2">
-              <p className="text-sm font-medium">4. Local a asignar (opcional)</p>
-              <FilterSearchableSelect
-                value={masivaNewLocalId || "all"}
-                onChange={(v) => setMasivaNewLocalId(v === "all" ? "" : v)}
-                allLabel="No cambiar local"
-                items={localFiltersItems}
-                searchPlaceholder="Buscar local…"
-              />
-            </div>
+                <div className="space-y-2">
+                  <p className="text-sm font-medium">4. Local a asignar (opcional)</p>
+                  <FilterSearchableSelect
+                    value={masivaNewLocalId || "all"}
+                    onChange={(v) => setMasivaNewLocalId(v === "all" ? "" : v)}
+                    allLabel="No cambiar local"
+                    items={localFiltersItems}
+                    searchPlaceholder="Buscar local…"
+                  />
+                </div>
+              </>
+            )}
+            {masivaMode === "delete" && (masivaSelectedDescs.size > 0 || (masivaDateFrom && masivaDateTo)) && (
+              <div className="rounded-lg border border-destructive/40 bg-destructive/5 p-3 text-sm text-destructive">
+                Se borrarán definitivamente todos los movimientos de efectivo que coincidan con el criterio. Revisá antes de confirmar.
+              </div>
+            )}
           </div>
           <div className="px-6 py-4 border-t shrink-0">
             <div className="flex justify-end gap-2">
               <Button variant="outline" onClick={() => setIsMasivaOpen(false)}>Cancelar</Button>
               <Button
-                disabled={!masivaCategoryId || masivaMutation.isPending}
+                variant={masivaMode === "delete" ? "destructive" : "default"}
+                disabled={
+                  masivaMutation.isPending ||
+                  (masivaMode === "categorize" && !masivaCategoryId) ||
+                  (masivaSelectedDescs.size === 0 && !(masivaDateFrom && masivaDateTo))
+                }
                 onClick={() => masivaMutation.mutate()}
               >
-                {masivaMutation.isPending ? "Clasificando…" : "Clasificar"}
+                {masivaMutation.isPending
+                  ? "Procesando…"
+                  : masivaMode === "delete"
+                  ? "Borrar movimientos"
+                  : masivaMode === "uncategorize"
+                  ? "Descategorizar"
+                  : "Clasificar"}
               </Button>
             </div>
           </div>

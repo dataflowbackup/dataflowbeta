@@ -100,6 +100,16 @@ const updateTransactionSchema = z.object({
     return null;
   }),
   invoiced: z.union([z.boolean(), z.coerce.boolean()]).optional(),
+  cashRegisterId: z.union([
+    z.coerce.number().int().positive(),
+    z.null(),
+    z.literal("none"),
+    z.literal(""),
+  ]).optional().transform(val => {
+    if (val === "none" || val === null || val === "" || val === undefined) return null;
+    if (typeof val === "number" && val > 0) return val;
+    return null;
+  }),
   transactionDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
   description: z.string().trim().min(1).max(2000).optional(),
   type: z.enum(["income", "expense"]).optional(),
@@ -111,6 +121,10 @@ const cashMovementRowSchema = z.object({
   description: z.string().trim().min(1).max(2000),
   categoryId: z.union([z.coerce.number().int().positive(), z.null()]).optional().transform((v) => v ?? null),
   localId: z
+    .union([z.coerce.number().int().positive(), z.null(), z.literal(""), z.literal("none")])
+    .optional()
+    .transform((v) => (v === "" || v === "none" || v === undefined || v === null ? null : v)),
+  cashRegisterId: z
     .union([z.coerce.number().int().positive(), z.null(), z.literal(""), z.literal("none")])
     .optional()
     .transform((v) => (v === "" || v === "none" || v === undefined || v === null ? null : v)),
@@ -2900,6 +2914,64 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
   });
 
+  // ---- Cajas de efectivo (catálogo global por cliente) ----
+  app.get("/api/cash-registers", isAuthenticated, async (req, res) => {
+    try {
+      const clientId = await getClientId(req);
+      const includeInactive = req.query.includeInactive === "1" || req.query.includeInactive === "true";
+      const rows = await storage.listCashRegisters(clientId, includeInactive);
+      res.json(rows);
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
+  app.post("/api/cash-registers", isAuthenticated, async (req, res) => {
+    try {
+      const clientId = await getClientId(req);
+      const name = String(req.body?.name ?? "").trim();
+      if (!name) return res.status(400).json({ message: "El nombre de la caja es obligatorio" });
+      const existing = await storage.listCashRegisters(clientId, true);
+      if (existing.some((c) => c.name.trim().toLowerCase() === name.toLowerCase())) {
+        return res.status(409).json({ message: "Ya existe una caja con ese nombre" });
+      }
+      const row = await storage.createCashRegister(clientId, name);
+      res.status(201).json(row);
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
+  app.patch("/api/cash-registers/:id", isAuthenticated, async (req, res) => {
+    try {
+      const clientId = await getClientId(req);
+      const id = parseInt(req.params.id, 10);
+      if (!Number.isFinite(id)) return res.status(400).json({ message: "ID inválido" });
+      const data: any = {};
+      if (req.body?.name !== undefined) data.name = String(req.body.name);
+      if (req.body?.active !== undefined) data.active = Boolean(req.body.active);
+      if (req.body?.displayOrder !== undefined) data.displayOrder = parseInt(String(req.body.displayOrder), 10);
+      const row = await storage.updateCashRegister(clientId, id, data);
+      if (!row) return res.status(404).json({ message: "Caja no encontrada" });
+      res.json(row);
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
+  app.delete("/api/cash-registers/:id", isAuthenticated, async (req, res) => {
+    try {
+      const clientId = await getClientId(req);
+      const id = parseInt(req.params.id, 10);
+      if (!Number.isFinite(id)) return res.status(400).json({ message: "ID inválido" });
+      const removed = await storage.deleteCashRegister(clientId, id);
+      // removed=false => tenía movimientos y se DESACTIVÓ en lugar de borrarse.
+      res.json({ success: true, deleted: removed, deactivated: !removed });
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
   app.patch("/api/transactions/:id", isAuthenticated, async (req, res) => {
     try {
       const clientId = await getClientId(req);
@@ -3057,9 +3129,12 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.post("/api/transactions/batch-categorize", isAuthenticated, async (req, res) => {
     try {
       const clientId = await getClientId(req);
-      const { transactionIds, categoryId, localId, dateFrom, dateTo, description, description2, descriptions, bankSource } = req.body;
+      const { transactionIds, categoryId, localId, dateFrom, dateTo, description, description2, descriptions, bankSource, mode } = req.body;
 
-      if (!categoryId && categoryId !== null) {
+      // mode "uncategorize" = descategorización masiva (quita la categoría a los que SÍ la tienen).
+      const uncategorize = mode === "uncategorize";
+
+      if (!uncategorize && !categoryId && categoryId !== null) {
         return res.status(400).json({ message: "Se requiere categoryId" });
       }
 
@@ -3100,7 +3175,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       } else if (descFilters !== null || desc2Filter !== null) {
         idsToUpdate = allTransactions
           .filter(t => {
-            if (t.categoryId) return false;
+            // categorizar → sólo sin categoría; descategorizar → sólo con categoría.
+            if (uncategorize ? !t.categoryId : Boolean(t.categoryId)) return false;
             if (!matchesDateRange(t)) return false;
             if (bankSource && t.bankSource !== bankSource) return false;
             if (descFilters !== null && !descFilters.includes(t.description ?? "")) return false;
@@ -3117,7 +3193,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
           .filter(t => {
             const txDate = new Date(t.transactionDate);
             if (bankSource && t.bankSource !== bankSource) return false;
-            return txDate >= from && txDate <= to && !t.categoryId;
+            if (!(txDate >= from && txDate <= to)) return false;
+            return uncategorize ? Boolean(t.categoryId) : !t.categoryId;
           })
           .map(t => t.id);
       }
@@ -3128,17 +3205,98 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
       let updated = 0;
       for (const id of idsToUpdate) {
-        const updateData: any = { categoryId: categoryId || null };
-        if (localId !== undefined) updateData.localId = localId || null;
+        const updateData: any = uncategorize
+          ? { categoryId: null }
+          : { categoryId: categoryId || null };
+        if (!uncategorize && localId !== undefined) updateData.localId = localId || null;
         const result = await storage.updateTransaction(clientId, id, updateData);
         if (result) updated++;
       }
 
-      res.json({ 
-        success: true, 
+      res.json({
+        success: true,
         updated,
         total: idsToUpdate.length,
-        message: `Se categorizaron ${updated} de ${idsToUpdate.length} transacciones`
+        message: uncategorize
+          ? `Se descategorizaron ${updated} de ${idsToUpdate.length} transacciones`
+          : `Se categorizaron ${updated} de ${idsToUpdate.length} transacciones`,
+      });
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
+  // Borrado masivo (mismo criterio de selección que la clasificación masiva). Sólo EFECTIVO.
+  app.post("/api/transactions/batch-delete", isAuthenticated, async (req, res) => {
+    try {
+      const clientId = await getClientId(req);
+      const { transactionIds, dateFrom, dateTo, localId, description, descriptions, bankSource } = req.body;
+
+      // Guard de seguridad: sólo se permite el borrado masivo de movimientos de efectivo.
+      if (bankSource !== "cash") {
+        return res.status(400).json({ message: "El borrado masivo sólo está disponible para efectivo" });
+      }
+
+      const allTransactions = await storage.getTransactions(clientId);
+      const tenantTxIds = new Set(allTransactions.map((t) => t.id));
+
+      const matchesDateRange = (t: (typeof allTransactions)[0]) => {
+        if (!dateFrom || !dateTo) return true;
+        const txDate = new Date(t.transactionDate);
+        const from = new Date(dateFrom);
+        const to = new Date(dateTo);
+        to.setHours(23, 59, 59, 999);
+        return txDate >= from && txDate <= to;
+      };
+
+      const descFilters: string[] | null =
+        Array.isArray(descriptions) && descriptions.length > 0
+          ? descriptions.map((d: any) => String(d).trim()).filter(Boolean)
+          : typeof description === "string" && description.trim().length > 0
+          ? [description.trim()]
+          : null;
+
+      const localFilter =
+        localId !== undefined && localId !== null && localId !== "all" ? parseInt(String(localId), 10) : null;
+
+      let idsToDelete: number[] = [];
+
+      if (Array.isArray(transactionIds) && transactionIds.length > 0) {
+        const requestedIds = transactionIds.map((id: any) => parseInt(id));
+        idsToDelete = requestedIds.filter((id) => tenantTxIds.has(id));
+        if (idsToDelete.length !== requestedIds.length) {
+          return res.status(403).json({ message: "Algunas transacciones no pertenecen a este cliente" });
+        }
+        // Aun con ids explícitos, sólo borramos efectivo.
+        const cashIds = new Set(allTransactions.filter((t) => t.bankSource === "cash").map((t) => t.id));
+        idsToDelete = idsToDelete.filter((id) => cashIds.has(id));
+      } else if (descFilters !== null || (dateFrom && dateTo)) {
+        idsToDelete = allTransactions
+          .filter((t) => {
+            if (t.bankSource !== "cash") return false;
+            if (!matchesDateRange(t)) return false;
+            if (localFilter !== null && t.localId !== localFilter) return false;
+            if (descFilters !== null && !descFilters.includes(t.description ?? "")) return false;
+            return true;
+          })
+          .map((t) => t.id);
+      }
+
+      if (idsToDelete.length === 0) {
+        return res.status(400).json({ message: "No hay movimientos para borrar con ese criterio" });
+      }
+
+      let deleted = 0;
+      for (const id of idsToDelete) {
+        const ok = await storage.deleteTransaction(clientId, id);
+        if (ok) deleted++;
+      }
+
+      res.json({
+        success: true,
+        deleted,
+        total: idsToDelete.length,
+        message: `Se borraron ${deleted} de ${idsToDelete.length} movimientos`,
       });
     } catch (e: any) {
       res.status(500).json({ message: e.message });
