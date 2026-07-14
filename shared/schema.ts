@@ -1155,6 +1155,8 @@ export const breakevenAnalyses = pgTable("breakeven_analyses", {
   totalFixedCosts: decimal("total_fixed_costs", { precision: 14, scale: 2 }).default("0"),
   breakevenUnits: decimal("breakeven_units", { precision: 14, scale: 2 }).default("0"),
   breakevenRevenue: decimal("breakeven_revenue", { precision: 14, scale: 2 }).default("0"),
+  // Punto 22: comisiones (%). Array de { label, pct, base: "con_iva"|"sin_iva", ivaRate }.
+  commissions: jsonb("commissions"),
   createdBy: varchar("created_by").references(() => users.id),
   createdAt: timestamp("created_at").defaultNow(),
 });

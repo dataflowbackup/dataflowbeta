@@ -3673,6 +3673,12 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         recipeId: z.coerce.number().int().positive().nullable().optional(),
         salePriceNoIva: z.coerce.number(),
         variableCostNoIva: z.coerce.number(),
+        commissions: z.array(z.object({
+          label: z.string().optional().nullable(),
+          pct: z.coerce.number(),
+          base: z.enum(["con_iva", "sin_iva"]),
+          ivaRate: z.coerce.number().optional(),
+        })).optional().default([]),
         fixedCosts: z.array(z.object({
           transactionCategoryId: z.coerce.number().int().positive().nullable().optional(),
           label: z.string().optional().nullable(),
@@ -3681,8 +3687,13 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       });
       const parsed = bodySchema.safeParse(req.body);
       if (!parsed.success) return res.status(400).json({ message: "Datos inválidos", errors: parsed.error.flatten() });
-      if (parsed.data.salePriceNoIva - parsed.data.variableCostNoIva <= 0) {
-        return res.status(400).json({ message: "El precio de venta debe ser mayor al costo variable (margen de contribución positivo)." });
+      const price = parsed.data.salePriceNoIva;
+      const commPerUnit = parsed.data.commissions.reduce((acc, c) => {
+        const base = c.base === "con_iva" ? price * (1 + (c.ivaRate ?? 0) / 100) : price;
+        return acc + base * (c.pct / 100);
+      }, 0);
+      if (price - parsed.data.variableCostNoIva - commPerUnit <= 0) {
+        return res.status(400).json({ message: "El margen de contribución (precio − costo variable − comisiones) debe ser positivo." });
       }
       const created = await storage.createBreakevenAnalysis({
         clientId,
@@ -3691,6 +3702,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         recipeId: parsed.data.recipeId ?? null,
         salePriceNoIva: parsed.data.salePriceNoIva,
         variableCostNoIva: parsed.data.variableCostNoIva,
+        commissions: parsed.data.commissions,
         createdBy: actorId,
         fixedCosts: parsed.data.fixedCosts,
       });

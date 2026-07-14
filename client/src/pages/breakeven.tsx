@@ -15,7 +15,11 @@ import {
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { formatCurrency } from "@/lib/formatters";
-import { Plus, Trash2, Save, Target, Eye } from "lucide-react";
+import { Plus, Trash2, Save, Target, Eye, TrendingUp } from "lucide-react";
+import {
+  LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, ReferenceDot,
+} from "recharts";
+import { DataEntryCombobox as Combo } from "@/components/data-entry-combobox";
 import type { Local, Recipe, TransactionCategory, BreakevenAnalysis, BreakevenFixedCost } from "@shared/schema";
 
 interface FixedCostRow {
@@ -23,6 +27,18 @@ interface FixedCostRow {
   label: string;
   amount: string;
 }
+
+interface CommissionRow {
+  label: string;
+  pct: string;
+  base: "con_iva" | "sin_iva";
+  ivaRate: string;
+}
+
+const COMMISSION_BASE_OPTIONS = [
+  { value: "sin_iva", label: "Sobre precio SIN IVA (ej. IIBB)" },
+  { value: "con_iva", label: "Sobre precio CON IVA (ej. Mercado Pago)" },
+];
 
 export default function BreakevenPage() {
   const { toast } = useToast();
@@ -34,6 +50,7 @@ export default function BreakevenPage() {
   const [mode, setMode] = useState<"product" | "margin">("product");
   const [marginPctInput, setMarginPctInput] = useState("");
   const [fixed, setFixed] = useState<FixedCostRow[]>([{ transactionCategoryId: "", label: "", amount: "" }]);
+  const [commissions, setCommissions] = useState<CommissionRow[]>([]);
 
   const [detailId, setDetailId] = useState<number | null>(null);
 
@@ -79,13 +96,24 @@ export default function BreakevenPage() {
   const totalFixed = useMemo(() => fixed.reduce((a, f) => a + (parseFloat(f.amount) || 0), 0), [fixed]);
 
   const isMargin = mode === "margin";
-  // % de margen de contribución: en modo producto se deriva del precio/costo; en modo margen lo carga el usuario.
+  // Punto 22: comisiones por unidad (solo modo producto). Sobre precio con o sin IVA.
+  const commissionPerUnit = useMemo(() => {
+    if (isMargin) return 0;
+    return commissions.reduce((acc, c) => {
+      const pct = parseFloat(c.pct) || 0;
+      const iva = parseFloat(c.ivaRate) || 0;
+      const base = c.base === "con_iva" ? priceN * (1 + iva / 100) : priceN;
+      return acc + base * (pct / 100);
+    }, 0);
+  }, [commissions, priceN, isMargin]);
+
+  // % de margen de contribución: en modo producto se deriva del precio/costo/comisiones; en modo margen lo carga el usuario.
   const marginPct = isMargin
     ? parseFloat(marginPctInput) || 0
     : priceN > 0
-      ? ((priceN - costN) / priceN) * 100
+      ? ((priceN - costN - commissionPerUnit) / priceN) * 100
       : 0;
-  const contribution = priceN - costN; // $ por unidad (solo modo producto)
+  const contribution = priceN - costN - commissionPerUnit; // $ por unidad (solo modo producto)
   const valid = isMargin ? marginPct > 0 && marginPct < 100 : contribution > 0;
   // PE en unidades solo aplica en modo producto (hay precio por unidad).
   const units = !isMargin && contribution > 0 ? totalFixed / contribution : null;
@@ -97,6 +125,19 @@ export default function BreakevenPage() {
     : units != null
       ? units * priceN
       : null;
+
+  // Punto 23: datos del gráfico de PE (rectas Ingresos vs Costos totales cruzándose).
+  const chartData = useMemo(() => {
+    if (isMargin || !valid || units == null || priceN <= 0) return [];
+    const varUnit = costN + commissionPerUnit; // costo variable efectivo por unidad
+    const maxU = Math.max(units * 2, 10);
+    const step = maxU / 24;
+    const pts: Array<{ u: number; Ingresos: number; Costos: number }> = [];
+    for (let u = 0; u <= maxU + 0.0001; u += step) {
+      pts.push({ u: Math.round(u), Ingresos: u * priceN, Costos: totalFixed + varUnit * u });
+    }
+    return pts;
+  }, [isMargin, valid, units, priceN, costN, commissionPerUnit, totalFixed]);
 
   const saveMutation = useMutation({
     mutationFn: async () => {
@@ -114,6 +155,16 @@ export default function BreakevenPage() {
         recipeId: isMargin || !recipeId ? null : parseInt(recipeId, 10),
         salePriceNoIva,
         variableCostNoIva,
+        commissions: isMargin
+          ? []
+          : commissions
+              .filter((c) => (parseFloat(c.pct) || 0) > 0)
+              .map((c) => ({
+                label: c.label || null,
+                pct: parseFloat(c.pct) || 0,
+                base: c.base,
+                ivaRate: c.base === "con_iva" ? parseFloat(c.ivaRate) || 0 : undefined,
+              })),
         fixedCosts: fixed
           .filter((f) => parseFloat(f.amount) > 0)
           .map((f) => ({
@@ -218,6 +269,64 @@ export default function BreakevenPage() {
                 </div>
               ))}
             </div>
+
+            {/* Punto 22: comisiones (%) — solo modo producto */}
+            {!isMargin && (
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <Label className="text-sm">Comisiones (%)</Label>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setCommissions((p) => [...p, { label: "", pct: "", base: "sin_iva", ivaRate: "21" }])}
+                    data-testid="button-add-commission"
+                  >
+                    <Plus className="h-4 w-4 mr-1" /> Agregar
+                  </Button>
+                </div>
+                {commissions.length === 0 && (
+                  <p className="text-xs text-muted-foreground">
+                    Cargá comisiones en % (Mercado Pago, IIBB…) y elegí si aplican sobre el precio con o sin IVA. Reducen el margen de contribución.
+                  </p>
+                )}
+                {commissions.map((c, i) => (
+                  <div key={i} className="grid grid-cols-[1fr_90px_1fr_90px_auto] items-center gap-2">
+                    <Input
+                      placeholder="Nombre (ej. Mercado Pago)"
+                      value={c.label}
+                      onChange={(e) => setCommissions((p) => p.map((x, j) => (j === i ? { ...x, label: e.target.value } : x)))}
+                    />
+                    <Input
+                      type="number"
+                      step="any"
+                      placeholder="%"
+                      value={c.pct}
+                      onChange={(e) => setCommissions((p) => p.map((x, j) => (j === i ? { ...x, pct: e.target.value } : x)))}
+                      data-testid={`commission-pct-${i}`}
+                    />
+                    <Combo
+                      options={COMMISSION_BASE_OPTIONS}
+                      value={c.base}
+                      onValueChange={(v) => setCommissions((p) => p.map((x, j) => (j === i ? { ...x, base: v as "con_iva" | "sin_iva" } : x)))}
+                      placeholder="Base"
+                      searchPlaceholder="Buscar…"
+                    />
+                    <Input
+                      type="number"
+                      step="any"
+                      placeholder="IVA %"
+                      value={c.ivaRate}
+                      disabled={c.base !== "con_iva"}
+                      title="Alícuota de IVA (solo si aplica sobre precio con IVA)"
+                      onChange={(e) => setCommissions((p) => p.map((x, j) => (j === i ? { ...x, ivaRate: e.target.value } : x)))}
+                    />
+                    <Button variant="ghost" size="icon" onClick={() => setCommissions((p) => p.filter((_, j) => j !== i))}>
+                      <Trash2 className="h-4 w-4 text-destructive" />
+                    </Button>
+                  </div>
+                ))}
+              </div>
+            )}
           </CardContent>
         </Card>
 
@@ -226,6 +335,9 @@ export default function BreakevenPage() {
             <CardTitle className="text-base flex items-center gap-2"><Target className="h-4 w-4" /> Resultado</CardTitle>
           </CardHeader>
           <CardContent className="space-y-2 text-sm">
+            {!isMargin && commissionPerUnit > 0 && (
+              <div className="flex justify-between"><span className="text-muted-foreground">Comisiones ($/u)</span><span className="font-mono text-amber-600">− {formatCurrency(commissionPerUnit)}</span></div>
+            )}
             {!isMargin && (
               <div className="flex justify-between"><span className="text-muted-foreground">Margen contribución ($/u)</span><span className={`font-mono ${contribution <= 0 ? "text-red-600" : ""}`}>{formatCurrency(contribution)}</span></div>
             )}
@@ -247,6 +359,52 @@ export default function BreakevenPage() {
           </CardContent>
         </Card>
       </div>
+
+      {/* Punto 23: gráfico de punto de equilibrio (rectas Ingresos vs Costos) */}
+      {!isMargin && valid && chartData.length > 0 && units != null && (
+        <Card>
+          <CardHeader className="pb-3">
+            <CardTitle className="text-base flex items-center gap-2">
+              <TrendingUp className="h-4 w-4 text-emerald-500" /> Punto de equilibrio — visual
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="grid gap-4 lg:grid-cols-[1fr_240px] items-center">
+              <ResponsiveContainer width="100%" height={280}>
+                <LineChart data={chartData} margin={{ top: 8, right: 16, left: 8, bottom: 20 }}>
+                  <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
+                  <XAxis dataKey="u" tick={{ fontSize: 11 }} label={{ value: "Unidades", position: "insideBottom", offset: -10, fontSize: 11 }} />
+                  <YAxis tick={{ fontSize: 10 }} tickFormatter={(v) => formatCurrency(v).replace("$", "").trim()} />
+                  <Tooltip
+                    formatter={(v: number) => formatCurrency(v)}
+                    labelFormatter={(u) => `${u} unidades`}
+                  />
+                  <Legend wrapperStyle={{ fontSize: 12 }} />
+                  <Line type="monotone" dataKey="Ingresos" stroke="#16a34a" strokeWidth={2} dot={false} />
+                  <Line type="monotone" dataKey="Costos" stroke="#dc2626" strokeWidth={2} dot={false} />
+                  <ReferenceDot x={Math.round(units)} y={units * priceN} r={6} fill="hsl(var(--primary))" stroke="white" strokeWidth={2} />
+                </LineChart>
+              </ResponsiveContainer>
+              <div className="space-y-3">
+                <div className="rounded-lg border p-3">
+                  <p className="text-xs text-muted-foreground">Necesitás vender</p>
+                  <p className="text-2xl font-bold">{units.toFixed(0)} <span className="text-sm font-normal text-muted-foreground">unidades</span></p>
+                  <p className="text-xs text-muted-foreground mt-1">para no ganar ni perder.</p>
+                </div>
+                <div className="rounded-lg border p-3">
+                  <p className="text-xs text-muted-foreground">Equivale a facturar</p>
+                  <p className="text-xl font-bold font-mono">{revenue != null ? formatCurrency(revenue) : "—"}</p>
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  Debajo del punto de cruce hay <span className="text-red-600 font-medium">pérdida</span>; por encima,
+                  <span className="text-green-600 font-medium"> ganancia</span>. La comisión y el costo variable ya están
+                  restados del margen.
+                </p>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       <Card>
         <CardHeader className="pb-3"><CardTitle className="text-base">Análisis guardados</CardTitle></CardHeader>
@@ -349,6 +507,24 @@ export default function BreakevenPage() {
                   </ul>
                 )}
               </div>
+
+              {Array.isArray((detail.analysis as any).commissions) && (detail.analysis as any).commissions.length > 0 && (
+                <div>
+                  <div className="flex items-center justify-between border-b pb-1 mb-2">
+                    <span className="font-medium">Comisiones consideradas</span>
+                  </div>
+                  <ul className="space-y-1">
+                    {(detail.analysis as any).commissions.map((c: any, i: number) => (
+                      <li key={i} className="flex justify-between">
+                        <span className="text-muted-foreground">
+                          {c.label || "Comisión"} — {c.base === "con_iva" ? `sobre precio con IVA${c.ivaRate ? ` (${c.ivaRate}%)` : ""}` : "sobre precio sin IVA"}
+                        </span>
+                        <span className="font-mono">{(parseFloat(String(c.pct)) || 0).toFixed(2)}%</span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
             </div>
           )}
         </DialogContent>

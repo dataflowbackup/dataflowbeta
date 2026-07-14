@@ -3388,11 +3388,20 @@ export class DatabaseStorage implements IStorage {
     salePriceNoIva: number;
     variableCostNoIva: number;
     createdBy?: string | null;
+    commissions?: Array<{ label?: string | null; pct: number; base: "con_iva" | "sin_iva"; ivaRate?: number }>;
     fixedCosts: Array<{ transactionCategoryId?: number | null; label?: string | null; amount: number }>;
   }): Promise<BreakevenAnalysis> {
     const price = Number(input.salePriceNoIva) || 0;
     const variable = Number(input.variableCostNoIva) || 0;
-    const contribution = price - variable;
+    // Punto 22: comisiones (%). Sobre precio con o sin IVA. Reducen el margen de contribución.
+    const commissions = Array.isArray(input.commissions) ? input.commissions : [];
+    const commissionPerUnit = commissions.reduce((acc, c) => {
+      const pct = Number(c.pct) || 0;
+      const ivaRate = Number(c.ivaRate) || 0;
+      const base = c.base === "con_iva" ? price * (1 + ivaRate / 100) : price;
+      return acc + base * (pct / 100);
+    }, 0);
+    const contribution = price - variable - commissionPerUnit;
     const totalFixed = Math.round(input.fixedCosts.reduce((a, f) => a + (Number(f.amount) || 0), 0) * 100) / 100;
     // PE en unidades = costos fijos / margen de contribución (si el margen es positivo).
     const units = contribution > 0 ? Math.round((totalFixed / contribution) * 100) / 100 : 0;
@@ -3409,6 +3418,7 @@ export class DatabaseStorage implements IStorage {
       totalFixedCosts: String(totalFixed),
       breakevenUnits: String(units),
       breakevenRevenue: String(revenue),
+      commissions: commissions.length > 0 ? commissions : null,
       createdBy: input.createdBy ?? null,
     } as any).returning();
 
