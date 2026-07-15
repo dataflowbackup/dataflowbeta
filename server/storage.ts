@@ -2918,7 +2918,21 @@ export class DatabaseStorage implements IStorage {
       allCategories.filter((c) => isOtroMovimiento(c.specialType) || isMovFinCategory(c)).map((c) => c.id),
     );
 
+    // Tipo del grupo financiero resuelto de cada categoría (por financialGroupId o mapeo legacy).
+    // Se usa para NETEAR por categoría: en un grupo de Gasto, un ingreso (reintegro/recupero) RESTA;
+    // en un grupo de Venta, un egreso (gasto de caja) RESTA. Así los grupos reconcilian con los totales.
+    const finGroupTypeById = new Map(allFinancialGroups.map((g) => [g.id, String(g.type)]));
+    const catGroupTypeById = new Map<number, string | undefined>(
+      allCategories.map((c) => {
+        const resolvedId = c.financialGroupId ?? (c.groupId ? legacyToFinancialId.get(c.groupId) : undefined);
+        return [c.id, resolvedId != null ? finGroupTypeById.get(resolvedId) : undefined];
+      }),
+    );
+
     const categoryMonthlyTotals: Record<number, Record<number, number>> = {};
+    // Neto por categoría en la DIRECCIÓN de su grupo (gasto: egreso +, ingreso −; venta: ingreso +, egreso −).
+    // Es lo que se muestra como subtotal del grupo y lo que compone Gastos Totales / Ventas.
+    const categoryNetMonthly: Record<number, Record<number, number>> = {};
     // Punto 7: firmado por categoría ESPECIAL, con la MISMA base que el total (dirección de
     // cada transacción). Así la suma de las filas de Movimientos Financieros = el Total, sin
     // importar en qué grupo (aunque sea mixto) viva la categoría especial.
@@ -2926,11 +2940,17 @@ export class DatabaseStorage implements IStorage {
     const summaryIncome: Record<number, number> = {};
     const summaryExpenses: Record<number, number> = {};
     const otrosMovimientos: Record<number, number> = {};
+    // Movimientos no-especiales cuya categoría NO tiene grupo income/expense (huérfanos): entran al
+    // total por su tipo para no cambiar la Utilidad, aunque no aparezcan en ningún grupo.
+    const orphanIncome: Record<number, number> = {};
+    const orphanExpense: Record<number, number> = {};
 
     for (let m = 1; m <= 12; m++) {
       summaryIncome[m] = 0;
       summaryExpenses[m] = 0;
       otrosMovimientos[m] = 0;
+      orphanIncome[m] = 0;
+      orphanExpense[m] = 0;
     }
 
     for (const tx of filteredTransactions) {
@@ -2963,10 +2983,22 @@ export class DatabaseStorage implements IStorage {
         continue;
       }
 
-      if (tx.type === "income") {
-        summaryIncome[month] += amount;
-      } else if (tx.type === "expense") {
-        summaryExpenses[month] += amount;
+      // Netear por la dirección del grupo de la categoría (gasto: egreso +, ingreso −; venta al revés).
+      const gType = catGroupTypeById.get(tx.categoryId);
+      if (gType === "expense" || gType === "income") {
+        const net =
+          gType === "expense"
+            ? (tx.type === "expense" ? amount : -amount)
+            : (tx.type === "income" ? amount : -amount);
+        if (!categoryNetMonthly[tx.categoryId]) {
+          categoryNetMonthly[tx.categoryId] = {};
+          for (let m = 1; m <= 12; m++) categoryNetMonthly[tx.categoryId][m] = 0;
+        }
+        categoryNetMonthly[tx.categoryId][month] += net;
+      } else {
+        // Sin grupo income/expense: huérfano. Entra al total por su tipo (preserva la Utilidad).
+        if (tx.type === "income") orphanIncome[month] += amount;
+        else if (tx.type === "expense") orphanExpense[month] += amount;
       }
     }
     
@@ -2987,34 +3019,41 @@ export class DatabaseStorage implements IStorage {
         groupSignedMonthly[m] = 0;
       }
 
-      const categories = groupCategories.map(cat => {
-        const monthlyTotals = categoryMonthlyTotals[cat.id] || {};
-        const sign = String(cat.type) === "expense" ? -1 : 1;
+      // No especiales: subtotal = NETO en la dirección del grupo (gasto: egreso−ingreso; venta: ingreso−egreso).
+      // Especiales (Movimientos Financieros): NO suman al subtotal; se muestran aparte.
+      const mappedCats = groupCategories.map(cat => {
+        const special = isOtroMovimiento(cat.specialType) || isMovFinCategory(cat);
+        const monthlyTotals = special ? (categoryMonthlyTotals[cat.id] || {}) : (categoryNetMonthly[cat.id] || {});
         let yearTotal = 0;
 
         for (let m = 1; m <= 12; m++) {
           const val = monthlyTotals[m] || 0;
           yearTotal += val;
-          groupMonthlyTotals[m] += val;
-          groupSignedMonthly[m] += val * sign;
+          if (!special) {
+            groupMonthlyTotals[m] += val;
+            groupSignedMonthly[m] += val;
+          }
         }
 
         return {
           id: cat.id,
           name: cat.name,
           // isSpecial = "es Movimiento Financiero (excluido del neto)": por specialType o por tipo de grupo.
-          isSpecial: isOtroMovimiento(cat.specialType) || isMovFinCategory(cat),
+          isSpecial: special,
           specialType: cat.specialType ?? null,
           monthlyTotals,
           yearTotal,
         };
       });
 
+      // Categorías reales (para el detalle de Gastos/Ventas). Las especiales van aparte.
+      const categories = mappedCats.filter((c) => !c.isSpecial);
+
       const groupYearTotal = Object.values(groupMonthlyTotals).reduce((a, b) => a + b, 0);
-      // El grupo es "Movimiento Financiero" si su tipo lo es, o si todas sus categorías lo son.
+      // El grupo es "Movimiento Financiero" si su tipo lo es, o si TODAS sus categorías lo son.
       const groupIsSpecial =
         String(group.type) === MOVIMIENTOS_FINANCIEROS_GROUP_TYPE ||
-        (categories.length > 0 && categories.every((c) => c.isSpecial));
+        (mappedCats.length > 0 && mappedCats.every((c) => c.isSpecial));
       const groupSpecialType =
         groupCategories.find((c) => c.specialType)?.specialType ?? null;
 
@@ -3022,7 +3061,7 @@ export class DatabaseStorage implements IStorage {
       // El Total de Movimientos Financieros = suma de estos firmados en TODOS los grupos.
       const specialSignedMonthlyTotals: Record<number, number> = {};
       for (let m = 1; m <= 12; m++) specialSignedMonthlyTotals[m] = 0;
-      const specialCategories = categories
+      const specialCategories = mappedCats
         .filter((c) => c.isSpecial)
         .map((c) => {
           const signedMonthlyTotals = specialSignedByCat[c.id] || {};
@@ -3050,6 +3089,20 @@ export class DatabaseStorage implements IStorage {
         yearTotal: groupYearTotal,
       };
     });
+
+    // Gastos Totales y Ventas = suma de los subtotales NETOS de los grupos (por tipo) + huérfanos.
+    // Así los grupos reconcilian EXACTO con los totales, y la Utilidad se preserva (huérfanos incluidos).
+    for (let m = 1; m <= 12; m++) {
+      let inc = orphanIncome[m];
+      let exp = orphanExpense[m];
+      for (const g of groups) {
+        if (g.isSpecial) continue;
+        if (String(g.type) === "income") inc += g.monthlyTotals[m] || 0;
+        else if (String(g.type) === "expense") exp += g.monthlyTotals[m] || 0;
+      }
+      summaryIncome[m] = inc;
+      summaryExpenses[m] = exp;
+    }
 
     const summaryNet: Record<number, number> = {};
     for (let m = 1; m <= 12; m++) {
