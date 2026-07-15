@@ -60,6 +60,7 @@ export default function PapPage() {
     { value: "extractos", label: "Extractos" },
     { value: "datalive", label: "Datalive" },
     { value: "fudo", label: "FUDO" },
+    { value: "shares", label: "Shares" },
   ];
 
   const { data, isLoading } = useQuery<PapReport>({

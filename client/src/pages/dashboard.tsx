@@ -170,18 +170,18 @@ export default function DashboardPage() {
   const [year, setYear] = useState(now.getFullYear());
   const [month, setMonth] = useState(now.getMonth() + 1);
   const [globalLocalIds, setGlobalLocalIds] = useState<number[]>([]);
-  const [source, setSource] = useState<"fudo" | "datalive">("fudo");
+  const [source, setSource] = useState<"fudo" | "datalive" | "shares">("fudo");
 
   // Week widget filters
   const [weekStart, setWeekStart] = useState(currentWeekMonday());
   const [weekLocalIds, setWeekLocalIds] = useState<number[]>([]);
-  const [weekSource, setWeekSource] = useState<"fudo" | "datalive">("fudo");
+  const [weekSource, setWeekSource] = useState<"fudo" | "datalive" | "shares">("fudo");
 
   // Top products/categories filters
   const [topDateFrom, setTopDateFrom] = useState(`${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-01`);
   const [topDateTo, setTopDateTo] = useState(now.toISOString().slice(0, 10));
   const [topLocalIds, setTopLocalIds] = useState<number[]>([]);
-  const [topSource, setTopSource] = useState<"fudo" | "datalive">("fudo");
+  const [topSource, setTopSource] = useState<"fudo" | "datalive" | "shares">("fudo");
   const [excludedProducts, setExcludedProducts] = useState<Set<string>>(new Set());
   const [excludedCategorias, setExcludedCategorias] = useState<Set<string>>(new Set());
 
@@ -327,7 +327,13 @@ export default function DashboardPage() {
       const cost = recipe ? parseFloat(String(recipe.totalCost ?? "0")) || 0 : null;
       const unitMargin = price != null && cost != null ? price - cost : null;
       const totalMargin = unitMargin != null ? unitMargin * (p.cantidad ?? 0) : null;
-      return { ...p, recipeId, recipeName: recipe?.name ?? null, unitMargin, totalMargin };
+      // Punto 4: usar el margen % YA calculado y persistido en la receta (ej. Empanada 35,97%),
+      // no un porcentaje recalculado. Es coherente con unitMargin (ambos sin IVA).
+      const marginPct =
+        recipe != null && recipe.marginPercentage != null && recipe.marginPercentage !== ""
+          ? parseFloat(String(recipe.marginPercentage))
+          : null;
+      return { ...p, recipeId, recipeName: recipe?.name ?? null, unitMargin, totalMargin, marginPct };
     });
   }, [visibleProducts, mappingByName, recipeById]);
   const totalMargin = useMemo(
@@ -395,10 +401,10 @@ export default function DashboardPage() {
               <div className="space-y-1">
                 <Label className="text-xs font-medium text-muted-foreground">Fuente de ventas</Label>
                 <div className="flex gap-1">
-                  {(["fudo","datalive"] as const).map((s) => (
+                  {(["fudo","datalive","shares"] as const).map((s) => (
                     <button key={s} onClick={() => setSource(s)}
                       className={`px-3 py-1 rounded-md text-xs font-medium border transition-colors ${source === s ? "bg-primary text-primary-foreground border-primary" : "bg-background text-muted-foreground border-border hover:bg-muted"}`}>
-                      {s === "fudo" ? "FUDO" : "DATALIVE"}
+                      {s === "fudo" ? "FUDO" : s === "datalive" ? "DATALIVE" : "SHARES"}
                     </button>
                   ))}
                 </div>
@@ -606,10 +612,10 @@ export default function DashboardPage() {
                 <Input type="date" value={weekStart} onChange={(e) => setWeekStart(e.target.value)} className="h-8 w-40 text-xs" />
               </div>
               <div className="flex gap-1">
-                {(["fudo","datalive"] as const).map((s) => (
+                {(["fudo","datalive","shares"] as const).map((s) => (
                   <button key={s} onClick={() => setWeekSource(s)}
                     className={`px-2 py-1 rounded text-xs font-medium border transition-colors ${weekSource === s ? "bg-primary text-primary-foreground border-primary" : "bg-background text-muted-foreground border-border hover:bg-muted"}`}>
-                    {s === "fudo" ? "FUDO" : "DATALIVE"}
+                    {s === "fudo" ? "FUDO" : s === "datalive" ? "DATALIVE" : "SHARES"}
                   </button>
                 ))}
               </div>
@@ -768,10 +774,10 @@ export default function DashboardPage() {
                 <span className="text-muted-foreground">—</span>
                 <Input type="date" value={topDateTo} onChange={(e) => setTopDateTo(e.target.value)} className="h-7 w-36 text-xs" />
                 <div className="flex gap-1">
-                  {(["fudo","datalive"] as const).map((s) => (
+                  {(["fudo","datalive","shares"] as const).map((s) => (
                     <button key={s} onClick={() => setTopSource(s)}
                       className={`px-2 py-0.5 rounded text-xs font-medium border transition-colors ${topSource === s ? "bg-primary text-primary-foreground border-primary" : "bg-background text-muted-foreground border-border hover:bg-muted"}`}>
-                      {s === "fudo" ? "FUDO" : "DATA"}
+                      {s === "fudo" ? "FUDO" : s === "datalive" ? "DATA" : "SHARES"}
                     </button>
                   ))}
                 </div>
@@ -857,6 +863,11 @@ export default function DashboardPage() {
                       <p className="text-[11px] text-muted-foreground">{(p.cantidad ?? 0).toLocaleString()} u.</p>
                       {p.unitMargin != null ? (
                         <>
+                          {p.marginPct != null && (
+                            <p className="text-xs font-bold text-emerald-700">
+                              {p.marginPct.toLocaleString("es-AR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}%
+                            </p>
+                          )}
                           <p className="text-xs font-semibold text-emerald-600">{formatCurrency(p.totalMargin ?? 0)}</p>
                           <p className="text-[10px] text-muted-foreground">{formatCurrency(p.unitMargin)}/u</p>
                         </>
@@ -932,7 +943,7 @@ export default function DashboardPage() {
               Composición de Ventas — Medios de Pago
               <AnalysisPdfButton name="composicion_ventas" />
             </CardTitle>
-            <p className="text-xs text-muted-foreground">{MONTH_NAMES_FULL[month - 1]} {year} · {source === "fudo" ? "FUDO" : "DATALIVE"}</p>
+            <p className="text-xs text-muted-foreground">{MONTH_NAMES_FULL[month - 1]} {year} · {source === "fudo" ? "FUDO" : source === "datalive" ? "DATALIVE" : "SHARES"}</p>
           </CardHeader>
           <CardContent>
             {composicionData.length === 0 ? (
@@ -973,7 +984,7 @@ export default function DashboardPage() {
               Evolución de Ventas {year}
               <AnalysisPdfButton name="evolucion_ventas" />
             </CardTitle>
-            <p className="text-xs text-muted-foreground">Mes a mes · {source === "fudo" ? "FUDO" : "DATALIVE"}</p>
+            <p className="text-xs text-muted-foreground">Mes a mes · {source === "fudo" ? "FUDO" : source === "datalive" ? "DATALIVE" : "SHARES"}</p>
           </CardHeader>
           <CardContent>
             <div className="h-44">

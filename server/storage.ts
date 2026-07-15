@@ -55,6 +55,8 @@ import {
   fudoPagos,
   fudoProductos,
   dataliveProductos,
+  sharesVentas,
+  sharesProductos,
   productRecipeMappings,
   monthlyGoals,
   decomisos,
@@ -165,6 +167,8 @@ import {
   type FudoVenta,
   type FudoProducto,
   type DataliveProducto,
+  type SharesVenta,
+  type SharesProducto,
   type Decomiso,
   type DecomisoProductMapping,
   type DecomisoLocalMapping,
@@ -509,7 +513,7 @@ export interface IStorage {
   }): Promise<BreakevenAnalysis>;
 
   /** CMV = stock inicial + compras (CMC) − stock final; CMV% sobre venta (con o sin IVA según ivaIncluded). */
-  computeCmv(clientId: number, opts: { localId?: number; stockInicialId: number; stockFinalId: number; dateFrom?: string; dateTo?: string; salesSource?: "extractos" | "datalive" | "fudo"; ivaIncluded?: boolean }): Promise<{
+  computeCmv(clientId: number, opts: { localId?: number; stockInicialId: number; stockFinalId: number; dateFrom?: string; dateTo?: string; salesSource?: "extractos" | "datalive" | "fudo" | "shares"; ivaIncluded?: boolean }): Promise<{
     stockInicial: number;
     stockInicialDate: string;
     stockFinal: number;
@@ -527,7 +531,7 @@ export interface IStorage {
   /** Total de decomisos valorizados para un período/local — usado en el CMV y preview. */
   getDecomisosTotal(clientId: number, opts: { localId?: number; dateFrom?: string; dateTo?: string }): Promise<number>;
   /** Guarda un cálculo de CMV como registro (recalcula server-side para integridad). */
-  saveCmvCalculation(clientId: number, opts: { localId?: number; stockInicialId: number; stockFinalId: number; dateFrom?: string; dateTo?: string; salesSource?: "extractos" | "datalive" | "fudo"; ivaIncluded?: boolean; createdBy?: string | null }): Promise<CmvCalculation>;
+  saveCmvCalculation(clientId: number, opts: { localId?: number; stockInicialId: number; stockFinalId: number; dateFrom?: string; dateTo?: string; salesSource?: "extractos" | "datalive" | "fudo" | "shares"; ivaIncluded?: boolean; createdBy?: string | null }): Promise<CmvCalculation>;
   listCmvCalculations(clientId: number): Promise<CmvCalculation[]>;
   deleteCmvCalculation(clientId: number, id: number): Promise<void>;
 
@@ -572,6 +576,33 @@ export interface IStorage {
     opts: { sourceFile?: string | null; createdBy?: string | null; replace?: boolean },
   ): Promise<{ insertados: number; omitidos: number; reemplazados: number }>;
   deleteDataliveProductosByPeriodo(clientId: number, localId: number, fechaDesde: string, fechaHasta: string): Promise<number>;
+
+  // Ventas + Productos SHARES (tercer origen, espejo de FUDO)
+  listSharesVentas(clientId: number, localId?: number): Promise<SharesVenta[]>;
+  importSharesVentas(
+    clientId: number,
+    localId: number,
+    days: Array<{
+      fecha: string;
+      ventaTotal: number;
+      ventaEfectivo: number;
+      ventaTarjeta: number;
+      ventaEfectivoOnline: number;
+      ventaOperOnline: number;
+      ventaMercadopago: number;
+    }>,
+    opts: { sourceFile?: string | null; createdBy?: string | null; replaceFechas?: string[] },
+  ): Promise<{ insertados: number; omitidos: number; reemplazados: number }>;
+  deleteSharesVenta(clientId: number, id: number): Promise<boolean>;
+  listSharesProductos(clientId: number, opts?: { localId?: number; fechaDesde?: string; fechaHasta?: string }): Promise<SharesProducto[]>;
+  importSharesProductos(
+    clientId: number,
+    localId: number,
+    items: Array<{ fecha: string; producto: string; categoria: string; cantidad: number }>,
+    opts: { sourceFile?: string | null; createdBy?: string | null; replaceFechas?: string[] },
+  ): Promise<{ insertados: number; omitidos: number; reemplazados: number }>;
+  deleteSharesProductosByFecha(clientId: number, localId: number, fecha: string): Promise<number>;
+  getSharesSalesTotalByPeriod(clientId: number, opts: { dateFrom?: string; dateTo?: string; localIds?: number[] }): Promise<number>;
 
   // Decomisos (mercadería decomisada — reporte de Datalive, valorizada por local)
   listDecomisos(clientId: number, opts?: { localId?: number; fechaDesde?: string; fechaHasta?: string; tipo?: string }): Promise<Decomiso[]>;
@@ -2888,6 +2919,10 @@ export class DatabaseStorage implements IStorage {
     );
 
     const categoryMonthlyTotals: Record<number, Record<number, number>> = {};
+    // Punto 7: firmado por categoría ESPECIAL, con la MISMA base que el total (dirección de
+    // cada transacción). Así la suma de las filas de Movimientos Financieros = el Total, sin
+    // importar en qué grupo (aunque sea mixto) viva la categoría especial.
+    const specialSignedByCat: Record<number, Record<number, number>> = {};
     const summaryIncome: Record<number, number> = {};
     const summaryExpenses: Record<number, number> = {};
     const otrosMovimientos: Record<number, number> = {};
@@ -2918,7 +2953,13 @@ export class DatabaseStorage implements IStorage {
 
       if (specialCategoryIds.has(tx.categoryId)) {
         // "Otros Movimientos": fuera del neto. Signo informativo (egreso resta).
-        otrosMovimientos[month] += tx.type === "expense" ? -amount : amount;
+        const signed = tx.type === "expense" ? -amount : amount;
+        otrosMovimientos[month] += signed;
+        if (!specialSignedByCat[tx.categoryId]) {
+          specialSignedByCat[tx.categoryId] = {};
+          for (let m = 1; m <= 12; m++) specialSignedByCat[tx.categoryId][m] = 0;
+        }
+        specialSignedByCat[tx.categoryId][month] += signed;
         continue;
       }
 
@@ -2977,6 +3018,24 @@ export class DatabaseStorage implements IStorage {
       const groupSpecialType =
         groupCategories.find((c) => c.specialType)?.specialType ?? null;
 
+      // Punto 7: categorías especiales de ESTE grupo (aunque el grupo sea mixto) con su firmado.
+      // El Total de Movimientos Financieros = suma de estos firmados en TODOS los grupos.
+      const specialSignedMonthlyTotals: Record<number, number> = {};
+      for (let m = 1; m <= 12; m++) specialSignedMonthlyTotals[m] = 0;
+      const specialCategories = categories
+        .filter((c) => c.isSpecial)
+        .map((c) => {
+          const signedMonthlyTotals = specialSignedByCat[c.id] || {};
+          for (let m = 1; m <= 12; m++) specialSignedMonthlyTotals[m] += signedMonthlyTotals[m] || 0;
+          return {
+            id: c.id,
+            name: c.name,
+            specialType: c.specialType,
+            monthlyTotals: c.monthlyTotals,
+            signedMonthlyTotals,
+          };
+        });
+
       return {
         id: group.id,
         name: group.name,
@@ -2986,6 +3045,8 @@ export class DatabaseStorage implements IStorage {
         categories,
         monthlyTotals: groupMonthlyTotals,
         signedMonthlyTotals: groupSignedMonthly,
+        specialSignedMonthlyTotals,
+        specialCategories,
         yearTotal: groupYearTotal,
       };
     });
@@ -3000,6 +3061,33 @@ export class DatabaseStorage implements IStorage {
     const totalNet = totalIncome - totalExpenses;
     const totalOtrosMovimientos = Object.values(otrosMovimientos).reduce((a, b) => a + b, 0);
 
+    // Punto 6: Traslados de Mercadería valorizados por mes (recibidos − enviados) desde la óptica
+    // del/los local(es) seleccionado(s). NO afecta la Utilidad ni los saldos bancarios: solo se
+    // RESTA en el "Movimiento neto (caja)". Si se ven todos los locales (o ambas puntas están en la
+    // selección), los traslados internos se compensan a 0.
+    const traslados: Record<number, number> = {};
+    for (let m = 1; m <= 12; m++) traslados[m] = 0;
+    const activeTransfers = await db
+      .select()
+      .from(merchandiseTransfers)
+      .where(and(
+        eq(merchandiseTransfers.clientId, clientId),
+        eq(merchandiseTransfers.status, "active"),
+        sql`${merchandiseTransfers.transferDate} >= ${startDate}`,
+        sql`${merchandiseTransfers.transferDate} <= ${endDate}`,
+      ));
+    const inSelection = (lid: number | null) =>
+      localIdSet == null ? true : lid != null && localIdSet.has(lid);
+    for (const tr of activeTransfers) {
+      // Mes tomado del string YYYY-MM-DD (evita el corrimiento por timezone de new Date()).
+      const m = parseInt(String(tr.transferDate).slice(5, 7), 10);
+      if (!Number.isFinite(m) || m < 1 || m > 12) continue;
+      const val = parseFloat(String(tr.totalValue) || "0");
+      if (inSelection(tr.toLocalId)) traslados[m] += val; // recibido: entra mercadería
+      if (inSelection(tr.fromLocalId)) traslados[m] -= val; // enviado: sale mercadería
+    }
+    const totalTraslados = Object.values(traslados).reduce((a, b) => a + b, 0);
+
     return {
       groups,
       summary: {
@@ -3008,10 +3096,13 @@ export class DatabaseStorage implements IStorage {
         net: summaryNet,
         // Otros Movimientos: asentados pero fuera del neto (signo informativo).
         otrosMovimientos,
+        // Punto 6: Traslados de Mercadería (recibidos − enviados). Solo resta en el neto de caja.
+        traslados,
         totalIncome,
         totalExpenses,
         totalNet,
         totalOtrosMovimientos,
+        totalTraslados,
       },
     };
   }
@@ -3100,19 +3191,32 @@ export class DatabaseStorage implements IStorage {
     return rows.reduce((acc, r) => acc + (parseFloat(String(r.total)) || 0), 0);
   }
 
+  async getSharesSalesTotalByPeriod(
+    clientId: number,
+    opts: { dateFrom?: string; dateTo?: string; localIds?: number[] },
+  ): Promise<number> {
+    const conds = [eq(sharesVentas.clientId, clientId)];
+    if (opts.dateFrom) conds.push(sql`${sharesVentas.fecha} >= ${opts.dateFrom}`);
+    if (opts.dateTo) conds.push(sql`${sharesVentas.fecha} <= ${opts.dateTo}`);
+    if (opts.localIds && opts.localIds.length > 0) conds.push(inArray(sharesVentas.localId, opts.localIds));
+    const rows = await db.select({ total: sharesVentas.ventaTotal }).from(sharesVentas).where(and(...conds));
+    return rows.reduce((acc, r) => acc + (parseFloat(String(r.total)) || 0), 0);
+  }
+
   private async getSalesBySource(
     clientId: number,
     opts: { dateFrom?: string; dateTo?: string; localIds?: number[] },
-    source: "extractos" | "datalive" | "fudo",
+    source: "extractos" | "datalive" | "fudo" | "shares",
   ): Promise<number> {
     if (source === "datalive") return this.getDataliveSalesTotalByPeriod(clientId, opts);
     if (source === "fudo") return this.getFudoSalesTotalByPeriod(clientId, opts);
+    if (source === "shares") return this.getSharesSalesTotalByPeriod(clientId, opts);
     return this.getSalesTotalByPeriod(clientId, opts);
   }
 
   async getCmcReport(
     clientId: number,
-    opts: { dateFrom?: string; dateTo?: string; localIds?: number[]; salesSource?: "extractos" | "datalive" | "fudo" },
+    opts: { dateFrom?: string; dateTo?: string; localIds?: number[]; salesSource?: "extractos" | "datalive" | "fudo" | "shares" },
   ) {
     // 1) Facturas en alcance (activas, por fecha/local).
     const invConds = [eq(invoices.clientId, clientId), eq(invoices.status, "active")];
@@ -3208,7 +3312,7 @@ export class DatabaseStorage implements IStorage {
 
   async getPapReport(
     clientId: number,
-    opts: { dateFrom?: string; dateTo?: string; localIds?: number[]; supplierIds?: number[]; salesSource?: "extractos" | "datalive" | "fudo" },
+    opts: { dateFrom?: string; dateTo?: string; localIds?: number[]; supplierIds?: number[]; salesSource?: "extractos" | "datalive" | "fudo" | "shares" },
   ) {
     const hasLocals = opts.localIds && opts.localIds.length > 0;
     const hasSuppliers = opts.supplierIds && opts.supplierIds.length > 0;
@@ -3438,7 +3542,7 @@ export class DatabaseStorage implements IStorage {
 
   async computeCmv(
     clientId: number,
-    opts: { localId?: number; stockInicialId: number; stockFinalId: number; dateFrom?: string; dateTo?: string; salesSource?: "extractos" | "datalive" | "fudo"; ivaIncluded?: boolean },
+    opts: { localId?: number; stockInicialId: number; stockFinalId: number; dateFrom?: string; dateTo?: string; salesSource?: "extractos" | "datalive" | "fudo" | "shares"; ivaIncluded?: boolean },
   ) {
     const [ini] = await db.select().from(stockValuations)
       .where(and(eq(stockValuations.id, opts.stockInicialId), eq(stockValuations.clientId, clientId)));
@@ -3515,7 +3619,7 @@ export class DatabaseStorage implements IStorage {
 
   async saveCmvCalculation(
     clientId: number,
-    opts: { localId?: number; stockInicialId: number; stockFinalId: number; dateFrom?: string; dateTo?: string; salesSource?: "extractos" | "datalive" | "fudo"; ivaIncluded?: boolean; createdBy?: string | null },
+    opts: { localId?: number; stockInicialId: number; stockFinalId: number; dateFrom?: string; dateTo?: string; salesSource?: "extractos" | "datalive" | "fudo" | "shares"; ivaIncluded?: boolean; createdBy?: string | null },
   ): Promise<CmvCalculation> {
     // Se recalcula server-side para que el registro sea íntegro (no se confía en el cliente).
     const r = await this.computeCmv(clientId, {
@@ -3804,6 +3908,167 @@ export class DatabaseStorage implements IStorage {
         omitidos++;
       } else {
         await db.insert(fudoProductos).values(values as any);
+        if (replace.has(item.fecha) && existingFechasSet.has(item.fecha)) {
+          reemplazados++;
+        } else {
+          insertados++;
+        }
+      }
+    }
+    return { insertados, omitidos, reemplazados };
+  }
+
+  // ==========================================
+  // SHARES (ventas + productos) — espejo de Fudo, tercer origen de ventas.
+  // ==========================================
+  async listSharesVentas(clientId: number, localId?: number): Promise<SharesVenta[]> {
+    const conds = [eq(sharesVentas.clientId, clientId)];
+    if (localId != null) conds.push(eq(sharesVentas.localId, localId));
+    return db.select().from(sharesVentas).where(and(...conds)).orderBy(desc(sharesVentas.fecha));
+  }
+
+  async importSharesVentas(
+    clientId: number,
+    localId: number,
+    days: Array<{
+      fecha: string;
+      ventaTotal: number;
+      ventaEfectivo: number;
+      ventaTarjeta: number;
+      ventaEfectivoOnline: number;
+      ventaOperOnline: number;
+      ventaMercadopago: number;
+    }>,
+    opts: { sourceFile?: string | null; createdBy?: string | null; replaceFechas?: string[] },
+  ): Promise<{ insertados: number; omitidos: number; reemplazados: number }> {
+    const replace = new Set(opts.replaceFechas ?? []);
+    const existing = await db
+      .select({ fecha: sharesVentas.fecha })
+      .from(sharesVentas)
+      .where(and(eq(sharesVentas.clientId, clientId), eq(sharesVentas.localId, localId)));
+    const existingSet = new Set(existing.map((r) => String(r.fecha)));
+
+    let insertados = 0;
+    let omitidos = 0;
+    let reemplazados = 0;
+
+    for (const d of days) {
+      const values = {
+        clientId,
+        localId,
+        fecha: d.fecha,
+        ventaTotal: String(d.ventaTotal),
+        ventaEfectivo: String(d.ventaEfectivo),
+        ventaTarjeta: String(d.ventaTarjeta),
+        ventaEfectivoOnline: String(d.ventaEfectivoOnline),
+        ventaOperOnline: String(d.ventaOperOnline),
+        ventaMercadopago: String(d.ventaMercadopago),
+        sourceFile: opts.sourceFile ?? null,
+        createdBy: opts.createdBy ?? null,
+      };
+      if (existingSet.has(d.fecha)) {
+        if (replace.has(d.fecha)) {
+          await db
+            .update(sharesVentas)
+            .set({
+              ventaTotal: values.ventaTotal,
+              ventaEfectivo: values.ventaEfectivo,
+              ventaTarjeta: values.ventaTarjeta,
+              ventaEfectivoOnline: values.ventaEfectivoOnline,
+              ventaOperOnline: values.ventaOperOnline,
+              ventaMercadopago: values.ventaMercadopago,
+              sourceFile: values.sourceFile,
+              updatedAt: new Date(),
+            })
+            .where(and(eq(sharesVentas.clientId, clientId), eq(sharesVentas.localId, localId), eq(sharesVentas.fecha, d.fecha)));
+          reemplazados++;
+        } else {
+          omitidos++;
+        }
+      } else {
+        await db.insert(sharesVentas).values(values as any);
+        insertados++;
+      }
+    }
+    return { insertados, omitidos, reemplazados };
+  }
+
+  async deleteSharesVenta(clientId: number, id: number): Promise<boolean> {
+    const [venta] = await db
+      .select({ localId: sharesVentas.localId, fecha: sharesVentas.fecha })
+      .from(sharesVentas)
+      .where(and(eq(sharesVentas.clientId, clientId), eq(sharesVentas.id, id)));
+    if (!venta) return false;
+    await db.delete(sharesVentas).where(and(eq(sharesVentas.clientId, clientId), eq(sharesVentas.id, id)));
+    await db.delete(sharesProductos).where(
+      and(eq(sharesProductos.clientId, clientId), eq(sharesProductos.localId, venta.localId), eq(sharesProductos.fecha, venta.fecha)),
+    );
+    return true;
+  }
+
+  async deleteSharesProductosByFecha(clientId: number, localId: number, fecha: string): Promise<number> {
+    const deleted = await db.delete(sharesProductos).where(
+      and(eq(sharesProductos.clientId, clientId), eq(sharesProductos.localId, localId), eq(sharesProductos.fecha, fecha)),
+    ).returning({ id: sharesProductos.id });
+    return deleted.length;
+  }
+
+  async listSharesProductos(clientId: number, opts?: { localId?: number; fechaDesde?: string; fechaHasta?: string }): Promise<SharesProducto[]> {
+    const conds: any[] = [eq(sharesProductos.clientId, clientId)];
+    if (opts?.localId != null) conds.push(eq(sharesProductos.localId, opts.localId));
+    if (opts?.fechaDesde) conds.push(gte(sharesProductos.fecha, opts.fechaDesde));
+    if (opts?.fechaHasta) conds.push(lte(sharesProductos.fecha, opts.fechaHasta));
+    return db.select().from(sharesProductos).where(and(...conds)).orderBy(desc(sharesProductos.fecha), asc(sharesProductos.producto));
+  }
+
+  async importSharesProductos(
+    clientId: number,
+    localId: number,
+    items: Array<{ fecha: string; producto: string; categoria: string; cantidad: number }>,
+    opts: { sourceFile?: string | null; createdBy?: string | null; replaceFechas?: string[] },
+  ): Promise<{ insertados: number; omitidos: number; reemplazados: number }> {
+    const replace = new Set(opts.replaceFechas ?? []);
+
+    const fechasExistentes = await db
+      .select({ fecha: sharesProductos.fecha })
+      .from(sharesProductos)
+      .where(and(eq(sharesProductos.clientId, clientId), eq(sharesProductos.localId, localId)));
+    const existingFechasSet = new Set(fechasExistentes.map((r) => String(r.fecha)));
+
+    for (const fecha of replace) {
+      if (existingFechasSet.has(fecha)) {
+        await db.delete(sharesProductos).where(
+          and(eq(sharesProductos.clientId, clientId), eq(sharesProductos.localId, localId), eq(sharesProductos.fecha, fecha)),
+        );
+      }
+    }
+
+    const remaining = await db
+      .select({ fecha: sharesProductos.fecha, producto: sharesProductos.producto })
+      .from(sharesProductos)
+      .where(and(eq(sharesProductos.clientId, clientId), eq(sharesProductos.localId, localId)));
+    const remainingSet = new Set(remaining.map((r) => `${r.fecha}||${r.producto}`));
+
+    let insertados = 0;
+    let omitidos = 0;
+    let reemplazados = 0;
+
+    for (const item of items) {
+      const key = `${item.fecha}||${item.producto}`;
+      const values = {
+        clientId,
+        localId,
+        fecha: item.fecha,
+        producto: item.producto,
+        categoria: item.categoria || null,
+        cantidad: item.cantidad,
+        sourceFile: opts.sourceFile ?? null,
+        createdBy: opts.createdBy ?? null,
+      };
+      if (remainingSet.has(key)) {
+        omitidos++;
+      } else {
+        await db.insert(sharesProductos).values(values as any);
         if (replace.has(item.fecha) && existingFechasSet.has(item.fecha)) {
           reemplazados++;
         } else {
@@ -4784,7 +5049,7 @@ export class DatabaseStorage implements IStorage {
   // DASHBOARD AGGREGATIONS
   // ==========================================
 
-  async getDashboardVentasSummary(clientId: number, year: number, month: number, localIds: number[], source: "fudo" | "datalive") {
+  async getDashboardVentasSummary(clientId: number, year: number, month: number, localIds: number[], source: "fudo" | "datalive" | "shares") {
     const pad = (n: number) => String(n).padStart(2, "0");
     const makeRange = (y: number, m: number) => {
       const from = `${y}-${pad(m)}-01`;
@@ -4803,6 +5068,11 @@ export class DatabaseStorage implements IStorage {
           ventaTotal: rows.reduce((s, r) => s + (parseFloat(String(r.vt)) || 0), 0),
           ticketCount: rows.reduce((s, r) => s + (r.tc ?? 0), 0),
         };
+      } else if (source === "shares") {
+        const conds = [eq(sharesVentas.clientId, clientId), gte(sharesVentas.fecha, from), lte(sharesVentas.fecha, to)];
+        if (localIds.length > 0) conds.push(inArray(sharesVentas.localId, localIds));
+        const rows = await db.select({ vt: sharesVentas.ventaTotal }).from(sharesVentas).where(and(...conds));
+        return { ventaTotal: rows.reduce((s, r) => s + (parseFloat(String(r.vt)) || 0), 0), ticketCount: null };
       } else {
         const conds = [eq(dataliveVentas.clientId, clientId), gte(dataliveVentas.fecha, from), lte(dataliveVentas.fecha, to)];
         if (localIds.length > 0) conds.push(inArray(dataliveVentas.localId, localIds));
@@ -4887,7 +5157,7 @@ export class DatabaseStorage implements IStorage {
       .sort((a, b) => b.deuda - a.deuda);
   }
 
-  async getDashboardVentasSemanales(clientId: number, weekStart: string, localIds: number[], source: "fudo" | "datalive") {
+  async getDashboardVentasSemanales(clientId: number, weekStart: string, localIds: number[], source: "fudo" | "datalive" | "shares") {
     const startDate = new Date(weekStart + "T00:00:00Z");
     const prevStartDate = new Date(startDate);
     prevStartDate.setUTCDate(prevStartDate.getUTCDate() - 7);
@@ -4903,6 +5173,11 @@ export class DatabaseStorage implements IStorage {
           const conds = [eq(fudoVentas.clientId, clientId), eq(fudoVentas.fecha, d)];
           if (localIds.length > 0) conds.push(inArray(fudoVentas.localId, localIds));
           const rows = await db.select({ vt: fudoVentas.ventaTotal }).from(fudoVentas).where(and(...conds));
+          days.push({ date: d, ventaTotal: rows.reduce((s, r) => s + (parseFloat(String(r.vt)) || 0), 0) });
+        } else if (source === "shares") {
+          const conds = [eq(sharesVentas.clientId, clientId), eq(sharesVentas.fecha, d)];
+          if (localIds.length > 0) conds.push(inArray(sharesVentas.localId, localIds));
+          const rows = await db.select({ vt: sharesVentas.ventaTotal }).from(sharesVentas).where(and(...conds));
           days.push({ date: d, ventaTotal: rows.reduce((s, r) => s + (parseFloat(String(r.vt)) || 0), 0) });
         } else {
           const conds = [eq(dataliveVentas.clientId, clientId), eq(dataliveVentas.fecha, d)];
@@ -4985,11 +5260,18 @@ export class DatabaseStorage implements IStorage {
     return { ...calcSummary(rows), rows };
   }
 
-  async getDashboardTopProductos(clientId: number, dateFrom: string, dateTo: string, localIds: number[], source: "fudo" | "datalive") {
+  async getDashboardTopProductos(clientId: number, dateFrom: string, dateTo: string, localIds: number[], source: "fudo" | "datalive" | "shares") {
     if (source === "fudo") {
       const conds = [eq(fudoProductos.clientId, clientId), gte(fudoProductos.fecha, dateFrom), lte(fudoProductos.fecha, dateTo)];
       if (localIds.length > 0) conds.push(inArray(fudoProductos.localId, localIds));
       const rows = await db.select({ producto: fudoProductos.producto, cantidad: fudoProductos.cantidad }).from(fudoProductos).where(and(...conds));
+      const map = new Map<string, number>();
+      for (const r of rows) map.set(r.producto, (map.get(r.producto) ?? 0) + (r.cantidad ?? 0));
+      return Array.from(map.entries()).map(([producto, cantidad]) => ({ producto, cantidad })).sort((a, b) => b.cantidad - a.cantidad);
+    } else if (source === "shares") {
+      const conds = [eq(sharesProductos.clientId, clientId), gte(sharesProductos.fecha, dateFrom), lte(sharesProductos.fecha, dateTo)];
+      if (localIds.length > 0) conds.push(inArray(sharesProductos.localId, localIds));
+      const rows = await db.select({ producto: sharesProductos.producto, cantidad: sharesProductos.cantidad }).from(sharesProductos).where(and(...conds));
       const map = new Map<string, number>();
       for (const r of rows) map.set(r.producto, (map.get(r.producto) ?? 0) + (r.cantidad ?? 0));
       return Array.from(map.entries()).map(([producto, cantidad]) => ({ producto, cantidad })).sort((a, b) => b.cantidad - a.cantidad);
@@ -5003,11 +5285,21 @@ export class DatabaseStorage implements IStorage {
     }
   }
 
-  async getDashboardTopCategorias(clientId: number, dateFrom: string, dateTo: string, localIds: number[], source: "fudo" | "datalive") {
+  async getDashboardTopCategorias(clientId: number, dateFrom: string, dateTo: string, localIds: number[], source: "fudo" | "datalive" | "shares") {
     if (source === "fudo") {
       const conds = [eq(fudoProductos.clientId, clientId), gte(fudoProductos.fecha, dateFrom), lte(fudoProductos.fecha, dateTo)];
       if (localIds.length > 0) conds.push(inArray(fudoProductos.localId, localIds));
       const rows = await db.select({ categoria: fudoProductos.categoria, cantidad: fudoProductos.cantidad }).from(fudoProductos).where(and(...conds));
+      const map = new Map<string, number>();
+      for (const r of rows) {
+        const cat = r.categoria || "Sin categoría";
+        map.set(cat, (map.get(cat) ?? 0) + (r.cantidad ?? 0));
+      }
+      return Array.from(map.entries()).map(([categoria, cantidad]) => ({ categoria, cantidad })).sort((a, b) => b.cantidad - a.cantidad);
+    } else if (source === "shares") {
+      const conds = [eq(sharesProductos.clientId, clientId), gte(sharesProductos.fecha, dateFrom), lte(sharesProductos.fecha, dateTo)];
+      if (localIds.length > 0) conds.push(inArray(sharesProductos.localId, localIds));
+      const rows = await db.select({ categoria: sharesProductos.categoria, cantidad: sharesProductos.cantidad }).from(sharesProductos).where(and(...conds));
       const map = new Map<string, number>();
       for (const r of rows) {
         const cat = r.categoria || "Sin categoría";
@@ -5020,7 +5312,7 @@ export class DatabaseStorage implements IStorage {
     }
   }
 
-  async getDashboardComposicionPagos(clientId: number, year: number, month: number, localIds: number[], source: "fudo" | "datalive") {
+  async getDashboardComposicionPagos(clientId: number, year: number, month: number, localIds: number[], source: "fudo" | "datalive" | "shares") {
     const pad = (n: number) => String(n).padStart(2, "0");
     const from = `${year}-${pad(month)}-01`;
     const lastDay = new Date(year, month, 0).getDate();
@@ -5036,6 +5328,29 @@ export class DatabaseStorage implements IStorage {
       return Array.from(map.entries())
         .map(([medioPago, importe]) => ({ medioPago, importe, pct: total > 0 ? (importe / total) * 100 : 0 }))
         .sort((a, b) => b.importe - a.importe);
+    } else if (source === "shares") {
+      const conds = [eq(sharesVentas.clientId, clientId), gte(sharesVentas.fecha, from), lte(sharesVentas.fecha, to)];
+      if (localIds.length > 0) conds.push(inArray(sharesVentas.localId, localIds));
+      const rows = await db.select({
+        ef: sharesVentas.ventaEfectivo,
+        tj: sharesVentas.ventaTarjeta,
+        efOn: sharesVentas.ventaEfectivoOnline,
+        opOn: sharesVentas.ventaOperOnline,
+        mp: sharesVentas.ventaMercadopago,
+      }).from(sharesVentas).where(and(...conds));
+      const sum = (k: "ef" | "tj" | "efOn" | "opOn" | "mp") => rows.reduce((s, r) => s + (parseFloat(String(r[k])) || 0), 0);
+      const medios = [
+        { medioPago: "Efectivo", importe: sum("ef") },
+        { medioPago: "Tarjeta", importe: sum("tj") },
+        { medioPago: "Efectivo Online", importe: sum("efOn") },
+        { medioPago: "Operación Online", importe: sum("opOn") },
+        { medioPago: "Mercado Pago", importe: sum("mp") },
+      ];
+      const total = medios.reduce((s, m) => s + m.importe, 0);
+      return medios
+        .map((m) => ({ ...m, pct: total > 0 ? (m.importe / total) * 100 : 0 }))
+        .filter((x) => x.importe > 0)
+        .sort((a, b) => b.importe - a.importe);
     } else {
       const conds = [eq(dataliveVentas.clientId, clientId), gte(dataliveVentas.fecha, from), lte(dataliveVentas.fecha, to)];
       if (localIds.length > 0) conds.push(inArray(dataliveVentas.localId, localIds));
@@ -5050,7 +5365,7 @@ export class DatabaseStorage implements IStorage {
     }
   }
 
-  async getDashboardEvolucionMensual(clientId: number, year: number, localIds: number[], source: "fudo" | "datalive") {
+  async getDashboardEvolucionMensual(clientId: number, year: number, localIds: number[], source: "fudo" | "datalive" | "shares") {
     const pad = (n: number) => String(n).padStart(2, "0");
     const months = Array.from({ length: 12 }, (_, i) => i + 1);
     const result = [];
@@ -5063,6 +5378,11 @@ export class DatabaseStorage implements IStorage {
         const conds = [eq(fudoVentas.clientId, clientId), gte(fudoVentas.fecha, from), lte(fudoVentas.fecha, to)];
         if (localIds.length > 0) conds.push(inArray(fudoVentas.localId, localIds));
         const rows = await db.select({ vt: fudoVentas.ventaTotal }).from(fudoVentas).where(and(...conds));
+        ventaTotal = rows.reduce((s, r) => s + (parseFloat(String(r.vt)) || 0), 0);
+      } else if (source === "shares") {
+        const conds = [eq(sharesVentas.clientId, clientId), gte(sharesVentas.fecha, from), lte(sharesVentas.fecha, to)];
+        if (localIds.length > 0) conds.push(inArray(sharesVentas.localId, localIds));
+        const rows = await db.select({ vt: sharesVentas.ventaTotal }).from(sharesVentas).where(and(...conds));
         ventaTotal = rows.reduce((s, r) => s + (parseFloat(String(r.vt)) || 0), 0);
       } else {
         const conds = [eq(dataliveVentas.clientId, clientId), gte(dataliveVentas.fecha, from), lte(dataliveVentas.fecha, to)];

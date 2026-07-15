@@ -57,6 +57,7 @@ export default function CmcPage() {
     { value: "extractos", label: "Extractos" },
     { value: "datalive", label: "Datalive" },
     { value: "fudo", label: "FUDO" },
+    { value: "shares", label: "Shares" },
   ];
 
   const url = useMemo(() => {

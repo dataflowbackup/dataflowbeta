@@ -3452,7 +3452,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         typeof localIdsRaw === "string" && localIdsRaw && localIdsRaw !== "all"
           ? localIdsRaw.split(",").map((s) => parseInt(s, 10)).filter((n) => Number.isFinite(n))
           : undefined;
-      const salesSource = req.query.salesSource === "datalive" ? "datalive" : req.query.salesSource === "fudo" ? "fudo" : "extractos";
+      const salesSource = req.query.salesSource === "datalive" ? "datalive" : req.query.salesSource === "fudo" ? "fudo" : req.query.salesSource === "shares" ? "shares" : "extractos";
       const data = await storage.getCmcReport(clientId, { dateFrom, dateTo, localIds, salesSource });
 
       // Ajuste por traslados: solo cuando se filtra por un único local.
@@ -3481,7 +3481,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
           : undefined;
       const localIds = parseIds(req.query.localIds ?? req.query.localId);
       const supplierIds = parseIds(req.query.supplierIds ?? req.query.supplierId);
-      const salesSource = req.query.salesSource === "datalive" ? "datalive" : req.query.salesSource === "fudo" ? "fudo" : "extractos";
+      const salesSource = req.query.salesSource === "datalive" ? "datalive" : req.query.salesSource === "fudo" ? "fudo" : req.query.salesSource === "shares" ? "shares" : "extractos";
       const data = await storage.getPapReport(clientId, { dateFrom, dateTo, localIds, supplierIds, salesSource });
       res.json(data);
     } catch (e: any) {
@@ -3592,7 +3592,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const localId = req.query.localId && req.query.localId !== "all" ? parseInt(req.query.localId as string, 10) : undefined;
       const dateFrom = typeof req.query.dateFrom === "string" && req.query.dateFrom ? req.query.dateFrom : undefined;
       const dateTo = typeof req.query.dateTo === "string" && req.query.dateTo ? req.query.dateTo : undefined;
-      const salesSource = req.query.salesSource === "datalive" ? "datalive" : req.query.salesSource === "fudo" ? "fudo" : "extractos";
+      const salesSource = req.query.salesSource === "datalive" ? "datalive" : req.query.salesSource === "fudo" ? "fudo" : req.query.salesSource === "shares" ? "shares" : "extractos";
       const ivaIncluded = req.query.ivaIncluded === "true";
       const data = await storage.computeCmv(clientId, { localId, stockInicialId, stockFinalId, dateFrom, dateTo, salesSource, ivaIncluded });
       res.json(data);
@@ -3622,7 +3622,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const localId = req.body?.localId && req.body.localId !== "all" ? parseInt(String(req.body.localId), 10) : undefined;
       const dateFrom = typeof req.body?.dateFrom === "string" && req.body.dateFrom ? req.body.dateFrom : undefined;
       const dateTo = typeof req.body?.dateTo === "string" && req.body.dateTo ? req.body.dateTo : undefined;
-      const salesSource = req.body?.salesSource === "datalive" ? "datalive" : req.body?.salesSource === "fudo" ? "fudo" : "extractos";
+      const salesSource = req.body?.salesSource === "datalive" ? "datalive" : req.body?.salesSource === "fudo" ? "fudo" : req.body?.salesSource === "shares" ? "shares" : "extractos";
       const ivaIncluded = req.body?.ivaIncluded === true;
       const saved = await storage.saveCmvCalculation(clientId, { localId, stockInicialId, stockFinalId, dateFrom, dateTo, salesSource, ivaIncluded, createdBy: actorId });
       res.json(saved);
@@ -3890,6 +3890,139 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const fechaDesde = req.query.fechaDesde as string | undefined;
       const fechaHasta = req.query.fechaHasta as string | undefined;
       res.json(await storage.listFudoProductos(clientId, { localId, fechaDesde, fechaHasta }));
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
+  // Ventas + Productos SHARES — tercer origen. Ventas y productos vienen en archivos SEPARADOS
+  // (como Datalive); el parseo del Excel se hace en el browser (shared/sharesSalesParser).
+  app.get("/api/shares-ventas", isAuthenticated, async (req, res) => {
+    try {
+      const clientId = await getClientId(req);
+      const localId = req.query.localId && req.query.localId !== "all" ? parseInt(req.query.localId as string, 10) : undefined;
+      res.json(await storage.listSharesVentas(clientId, localId));
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
+  app.post("/api/shares-ventas/import", isAuthenticated, async (req, res) => {
+    try {
+      const clientId = await getClientId(req);
+      const userId = await getAuthenticatedUserId(req);
+      const bodySchema = z.object({
+        localId: z.coerce.number().int().positive(),
+        sourceFile: z.string().max(255).optional().nullable(),
+        replaceFechas: z.array(z.string()).optional(),
+        days: z
+          .array(
+            z.object({
+              fecha: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Fecha inválida"),
+              ventaTotal: z.coerce.number(),
+              ventaEfectivo: z.coerce.number(),
+              ventaTarjeta: z.coerce.number(),
+              ventaEfectivoOnline: z.coerce.number(),
+              ventaOperOnline: z.coerce.number(),
+              ventaMercadopago: z.coerce.number(),
+            }),
+          )
+          .min(1, "No hay días para importar"),
+      });
+      const parsed = bodySchema.safeParse(req.body);
+      if (!parsed.success) return res.status(400).json({ message: "Datos inválidos", errors: parsed.error.flatten() });
+
+      const locs = await storage.getLocals(clientId);
+      if (!locs.some((l) => l.id === parsed.data.localId)) {
+        return res.status(400).json({ message: "Local inválido para esta empresa." });
+      }
+
+      const result = await storage.importSharesVentas(clientId, parsed.data.localId, parsed.data.days, {
+        sourceFile: parsed.data.sourceFile ?? null,
+        createdBy: userId ?? null,
+        replaceFechas: parsed.data.replaceFechas ?? [],
+      });
+      res.json(result);
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
+  app.delete("/api/shares-ventas/:id", isAuthenticated, async (req, res) => {
+    try {
+      const clientId = await getClientId(req);
+      const id = parseInt(req.params.id, 10);
+      if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ message: "Id inválido" });
+      const ok = await storage.deleteSharesVenta(clientId, id);
+      if (!ok) return res.status(404).json({ message: "Venta no encontrada" });
+      res.json({ ok: true });
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
+  app.get("/api/shares-productos", isAuthenticated, async (req, res) => {
+    try {
+      const clientId = await getClientId(req);
+      const localId = req.query.localId && req.query.localId !== "all" ? parseInt(req.query.localId as string, 10) : undefined;
+      const fechaDesde = req.query.fechaDesde as string | undefined;
+      const fechaHasta = req.query.fechaHasta as string | undefined;
+      res.json(await storage.listSharesProductos(clientId, { localId, fechaDesde, fechaHasta }));
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
+  app.post("/api/shares-productos/import", isAuthenticated, async (req, res) => {
+    try {
+      const clientId = await getClientId(req);
+      const userId = await getAuthenticatedUserId(req);
+      const bodySchema = z.object({
+        localId: z.coerce.number().int().positive(),
+        sourceFile: z.string().max(255).optional().nullable(),
+        replaceFechas: z.array(z.string()).optional(),
+        items: z
+          .array(
+            z.object({
+              fecha: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Fecha inválida"),
+              producto: z.string().max(255),
+              categoria: z.string().max(255).optional().default(""),
+              cantidad: z.coerce.number().int(),
+            }),
+          )
+          .min(1, "No hay productos para importar"),
+      });
+      const parsed = bodySchema.safeParse(req.body);
+      if (!parsed.success) return res.status(400).json({ message: "Datos inválidos", errors: parsed.error.flatten() });
+
+      const locs = await storage.getLocals(clientId);
+      if (!locs.some((l) => l.id === parsed.data.localId)) {
+        return res.status(400).json({ message: "Local inválido para esta empresa." });
+      }
+
+      const result = await storage.importSharesProductos(
+        clientId,
+        parsed.data.localId,
+        parsed.data.items.map((a) => ({ ...a, categoria: a.categoria ?? "" })),
+        { sourceFile: parsed.data.sourceFile ?? null, createdBy: userId ?? null, replaceFechas: parsed.data.replaceFechas ?? [] },
+      );
+      res.json(result);
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
+  app.delete("/api/shares-productos/fecha", isAuthenticated, async (req, res) => {
+    try {
+      const clientId = await getClientId(req);
+      const bodySchema = z.object({
+        localId: z.coerce.number().int().positive(),
+        fecha: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+      });
+      const parsed = bodySchema.safeParse(req.body);
+      if (!parsed.success) return res.status(400).json({ message: "Datos inválidos" });
+      const count = await storage.deleteSharesProductosByFecha(clientId, parsed.data.localId, parsed.data.fecha);
+      res.json({ eliminados: count });
     } catch (e: any) {
       res.status(500).json({ message: e.message });
     }
@@ -5486,7 +5619,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const year = parseInt(String(req.query.year ?? new Date().getFullYear()), 10);
       const month = parseInt(String(req.query.month ?? new Date().getMonth() + 1), 10);
       const localIds = String(req.query.localIds ?? "").split(",").map(Number).filter((n) => n > 0);
-      const source = String(req.query.source ?? "fudo") as "fudo" | "datalive";
+      const source = String(req.query.source ?? "fudo") as "fudo" | "datalive" | "shares";
       const data = await storage.getDashboardVentasSummary(clientId, year, month, localIds, source);
       res.json(data);
     } catch (e: any) { res.status(500).json({ message: e.message }); }
@@ -5515,7 +5648,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const clientId = await getClientId(req);
       const weekStart = String(req.query.weekStart ?? "");
       const localIds = String(req.query.localIds ?? "").split(",").map(Number).filter((n) => n > 0);
-      const source = String(req.query.source ?? "fudo") as "fudo" | "datalive";
+      const source = String(req.query.source ?? "fudo") as "fudo" | "datalive" | "shares";
       if (!weekStart.match(/^\d{4}-\d{2}-\d{2}$/)) return res.status(400).json({ message: "weekStart inválido" });
       const data = await storage.getDashboardVentasSemanales(clientId, weekStart, localIds, source);
       res.json(data);
@@ -5540,7 +5673,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const dateFrom = String(req.query.dateFrom ?? "");
       const dateTo = String(req.query.dateTo ?? "");
       const localIds = String(req.query.localIds ?? "").split(",").map(Number).filter((n) => n > 0);
-      const source = String(req.query.source ?? "fudo") as "fudo" | "datalive";
+      const source = String(req.query.source ?? "fudo") as "fudo" | "datalive" | "shares";
       const data = await storage.getDashboardTopProductos(clientId, dateFrom, dateTo, localIds, source);
       res.json(data);
     } catch (e: any) { res.status(500).json({ message: e.message }); }
@@ -5552,7 +5685,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const dateFrom = String(req.query.dateFrom ?? "");
       const dateTo = String(req.query.dateTo ?? "");
       const localIds = String(req.query.localIds ?? "").split(",").map(Number).filter((n) => n > 0);
-      const source = String(req.query.source ?? "fudo") as "fudo" | "datalive";
+      const source = String(req.query.source ?? "fudo") as "fudo" | "datalive" | "shares";
       const data = await storage.getDashboardTopCategorias(clientId, dateFrom, dateTo, localIds, source);
       res.json(data);
     } catch (e: any) { res.status(500).json({ message: e.message }); }
@@ -5564,7 +5697,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const year = parseInt(String(req.query.year ?? new Date().getFullYear()), 10);
       const month = parseInt(String(req.query.month ?? new Date().getMonth() + 1), 10);
       const localIds = String(req.query.localIds ?? "").split(",").map(Number).filter((n) => n > 0);
-      const source = String(req.query.source ?? "fudo") as "fudo" | "datalive";
+      const source = String(req.query.source ?? "fudo") as "fudo" | "datalive" | "shares";
       const data = await storage.getDashboardComposicionPagos(clientId, year, month, localIds, source);
       res.json(data);
     } catch (e: any) { res.status(500).json({ message: e.message }); }
@@ -5575,7 +5708,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const clientId = await getClientId(req);
       const year = parseInt(String(req.query.year ?? new Date().getFullYear()), 10);
       const localIds = String(req.query.localIds ?? "").split(",").map(Number).filter((n) => n > 0);
-      const source = String(req.query.source ?? "fudo") as "fudo" | "datalive";
+      const source = String(req.query.source ?? "fudo") as "fudo" | "datalive" | "shares";
       const data = await storage.getDashboardEvolucionMensual(clientId, year, localIds, source);
       res.json(data);
     } catch (e: any) { res.status(500).json({ message: e.message }); }

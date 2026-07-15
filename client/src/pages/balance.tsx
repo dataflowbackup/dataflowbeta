@@ -45,6 +45,7 @@ interface CategoryData {
   isSpecial?: boolean;
   specialType?: string | null;
   monthlyTotals: Record<number, number>;
+  signedMonthlyTotals?: Record<number, number>;
   yearTotal: number;
 }
 
@@ -57,6 +58,9 @@ interface GroupData {
   categories: CategoryData[];
   monthlyTotals: Record<number, number>;
   signedMonthlyTotals?: Record<number, number>;
+  // Punto 7: firmado y categorías SOLO especiales de este grupo (para Movimientos Financieros).
+  specialSignedMonthlyTotals?: Record<number, number>;
+  specialCategories?: CategoryData[];
   yearTotal: number;
 }
 
@@ -68,10 +72,13 @@ interface SpreadsheetData {
     net: Record<number, number>;
     /** Otros Movimientos por mes (no afectan el neto). Signo informativo. */
     otrosMovimientos?: Record<number, number>;
+    /** Punto 6: Traslados de Mercadería por mes (recibidos − enviados). Solo resta en el neto de caja. */
+    traslados?: Record<number, number>;
     totalIncome: number;
     totalExpenses: number;
     totalNet: number;
     totalOtrosMovimientos?: number;
+    totalTraslados?: number;
   };
 }
 
@@ -143,6 +150,10 @@ export default function BalancePage() {
   const monthlyVentas = spreadsheet?.summary.income[month] ?? 0;
   const monthlyGastos = spreadsheet?.summary.expenses[month] ?? 0;
   const monthlyUtilidad = monthlyVentas - monthlyGastos;
+  // Punto 6: Traslados de Mercadería del mes (recibidos − enviados). No afecta Utilidad ni saldos;
+  // solo se resta en el "Movimiento neto (caja)".
+  const monthlyTraslados = spreadsheet?.summary.traslados?.[month] ?? 0;
+  const trasladosPercent = monthlyVentas > 0 ? (monthlyTraslados / monthlyVentas) * 100 : 0;
 
   const prevMonth = month === 1 ? 12 : month - 1;
   const prevVentas = spreadsheet?.summary.income[prevMonth] ?? 0;
@@ -156,9 +167,11 @@ export default function BalancePage() {
 
   // Otros Movimientos: Inicio de mes, Retiros, Préstamos, Otros Ingresos, Transferencias.
   // Quedan asentados y se muestran abajo, pero NO afectan la utilidad.
+  // Punto 7: incluir TODO grupo que tenga categorías especiales (aunque sea mixto), no solo los
+  // 100% especiales. Así el movimiento que antes sumaba al Total pero no se mostraba, ahora es fila.
   const otrosMovGroups = useMemo(() => {
     if (!spreadsheet) return [];
-    return spreadsheet.groups.filter(g => g.isSpecial);
+    return spreadsheet.groups.filter(g => (g.specialCategories?.length ?? 0) > 0 || g.isSpecial);
   }, [spreadsheet]);
 
   // Punto 4: grupos de Ventas (ingresos no especiales) para desglosar.
@@ -177,12 +190,14 @@ export default function BalancePage() {
     const first = `${y}-${String(m).padStart(2, "0")}-01`;
     const lastDay = new Date(y, m, 0).getDate();
     const last = `${y}-${String(m).padStart(2, "0")}-${String(lastDay).padStart(2, "0")}`;
-    const matches = cmvList.filter(
-      (c) =>
-        c.localId === localId &&
-        String(c.periodFrom).slice(0, 10) === first &&
-        String(c.periodTo).slice(0, 10) === last,
-    );
+    // Punto 2: flexibilizar. Se muestra el CMV guardado más reciente cuyo período SE SOLAPA con el
+    // mes elegido (aunque no sea exactamente del día 1 al último), en vez de exigir mes calendario exacto.
+    const matches = cmvList.filter((c) => {
+      if (c.localId !== localId) return false;
+      const from = String(c.periodFrom).slice(0, 10);
+      const to = String(c.periodTo).slice(0, 10);
+      return from <= last && to >= first; // solapamiento con [first, last]
+    });
     if (matches.length === 0) return null;
     return matches.sort((a, b) => (b.id ?? 0) - (a.id ?? 0))[0];
   }, [cmvList, selectedLocalIds, selectedYear, selectedMonth]);
@@ -228,17 +243,22 @@ export default function BalancePage() {
       rows.push({ label: g.groupName, value: formatCurrency(g.groupAmount), indent: true, bold: true });
       for (const c of g.categories) rows.push({ label: `   ${c.name}`, value: formatCurrency(c.amount), indent: true });
     }
+    rows.push({ label: "Traslados de Mercadería (no afecta utilidad)", value: formatCurrency(monthlyTraslados), indent: true });
     rows.push({ label: "Gastos Totales", value: formatCurrency(monthlyGastos), bold: true });
     rows.push({ label: "Utilidad", value: formatCurrency(monthlyUtilidad), bold: true });
     rows.push({ label: "Utilidad %", value: `${utilidadPercent.toFixed(2)}%`, bold: true });
-    if (otrosMovGroups.length > 0) {
+    if (otrosMovGroups.length > 0 || monthlyTraslados !== 0) {
       rows.push({ label: "MOVIMIENTOS FINANCIEROS (no afectan rentabilidad)", value: "", bold: true });
       for (const g of otrosMovGroups) {
-        const signed = g.signedMonthlyTotals?.[month] ?? g.monthlyTotals[month] ?? 0;
+        const signed = g.specialSignedMonthlyTotals?.[month]
+          ?? g.signedMonthlyTotals?.[month] ?? g.monthlyTotals[month] ?? 0;
         rows.push({ label: g.name, value: formatCurrency(signed), indent: true });
       }
       rows.push({ label: "Total Movimientos Financieros", value: formatCurrency(spreadsheet?.summary.otrosMovimientos?.[month] ?? 0), bold: true });
-      rows.push({ label: "Movimiento neto del período (caja)", value: formatCurrency(monthlyUtilidad + (spreadsheet?.summary.otrosMovimientos?.[month] ?? 0)), bold: true });
+      if (monthlyTraslados !== 0) {
+        rows.push({ label: "− Traslados de Mercadería", value: formatCurrency(monthlyTraslados), indent: true });
+      }
+      rows.push({ label: "Movimiento neto del período (caja)", value: formatCurrency(monthlyUtilidad + (spreadsheet?.summary.otrosMovimientos?.[month] ?? 0) - monthlyTraslados), bold: true });
     }
     if (matchedCmv) {
       rows.push({ label: "CMV DEL PERÍODO (dato asentado)", value: "", bold: true });
@@ -408,6 +428,15 @@ export default function BalancePage() {
                     ))}
                 </div>
               ))}
+              {/* Punto 6: Traslados de Mercadería — última fila, debajo del último grupo (RRHH).
+                  No suma a Gastos Totales ni a la Utilidad; solo se resta del neto de caja. */}
+              <div className="grid grid-cols-1 gap-2 sm:grid-cols-[1fr_auto] text-sm font-semibold border-t pt-2">
+                <span className="inline-flex items-center gap-2">
+                  Traslados de Mercadería
+                  <span className="text-[10px] font-normal text-muted-foreground">(no afecta la utilidad)</span>
+                </span>
+                <span className="font-mono text-right" data-testid="text-traslados-mercaderia">{formatCurrency(monthlyTraslados)}</span>
+              </div>
             </div>
 
             <div className="grid grid-cols-1 gap-2 sm:grid-cols-[1fr_auto] border-t pt-3">
@@ -462,6 +491,14 @@ export default function BalancePage() {
                     ))}
                 </div>
               ))}
+              {/* Punto 6: Traslados de Mercadería en % (sobre ventas). */}
+              <div className="grid grid-cols-1 gap-2 sm:grid-cols-[1fr_auto] text-sm font-semibold border-t pt-2">
+                <span className="inline-flex items-center gap-2">
+                  Traslados de Mercadería
+                  <span className="text-[10px] font-normal text-muted-foreground">(no afecta la utilidad)</span>
+                </span>
+                <span className="font-mono text-right">{trasladosPercent.toFixed(2)}%</span>
+              </div>
             </div>
 
             <div className="grid grid-cols-1 gap-2 sm:grid-cols-[1fr_auto] border-t pt-3">
@@ -475,7 +512,7 @@ export default function BalancePage() {
               </span>
             </div>
 
-            {otrosMovGroups.length > 0 && (
+            {(otrosMovGroups.length > 0 || monthlyTraslados !== 0) && (
               <div className="space-y-2 border-t-2 pt-4" data-testid="section-movimientos-financieros">
                 <div className="grid grid-cols-1 gap-2 sm:grid-cols-[1fr_auto]">
                   <span className="font-bold uppercase">Movimientos Financieros</span>
@@ -484,9 +521,13 @@ export default function BalancePage() {
                   </span>
                 </div>
                 {otrosMovGroups.map((group, idx) => {
-                  const signed = group.signedMonthlyTotals?.[month] ?? group.monthlyTotals[month] ?? 0;
+                  // Punto 7: mostrar SOLO la parte especial del grupo (por si es mixto), con el
+                  // mismo firmado que compone el Total.
+                  const specialCats = group.specialCategories ?? group.categories;
+                  const signed = group.specialSignedMonthlyTotals?.[month]
+                    ?? group.signedMonthlyTotals?.[month] ?? group.monthlyTotals[month] ?? 0;
                   const expanded = expandedMovFinGroupIds.includes(group.id);
-                  const hasCats = group.categories.length > 0;
+                  const hasCats = specialCats.length > 0;
                   return (
                     <div key={`movfin-${group.id}-${idx}`} className="space-y-1">
                       <div className="grid grid-cols-1 gap-2 sm:grid-cols-[1fr_auto] text-sm">
@@ -513,11 +554,11 @@ export default function BalancePage() {
                         <span className="font-mono text-right text-muted-foreground">{formatCurrency(signed)}</span>
                       </div>
                       {expanded &&
-                        group.categories.map((cat, catIdx) => (
+                        specialCats.map((cat, catIdx) => (
                           <div key={`movfin-${group.id}-${cat.name}-${catIdx}`} className="grid grid-cols-1 gap-2 sm:grid-cols-[1fr_auto] text-sm">
                             <span className="pl-6 text-muted-foreground">{cat.name}</span>
                             <span className="font-mono text-right text-muted-foreground">
-                              {formatCurrency(cat.monthlyTotals[month] ?? 0)}
+                              {formatCurrency(cat.signedMonthlyTotals?.[month] ?? cat.monthlyTotals[month] ?? 0)}
                             </span>
                           </div>
                         ))}
@@ -531,19 +572,26 @@ export default function BalancePage() {
                   </span>
                 </div>
 
+                {monthlyTraslados !== 0 && (
+                  <div className="grid grid-cols-1 gap-2 sm:grid-cols-[1fr_auto] text-sm">
+                    <span className="font-semibold">− Traslados de Mercadería</span>
+                    <span className="font-mono text-right font-semibold">{formatCurrency(monthlyTraslados)}</span>
+                  </div>
+                )}
+
                 <div className="grid grid-cols-1 gap-2 sm:grid-cols-[1fr_auto] border-t-2 pt-2">
                   <span className="font-bold uppercase">Movimiento neto del período (caja)</span>
                   <span
                     className="font-mono text-right font-bold"
                     data-testid="text-movimiento-neto-caja"
                   >
-                    {formatCurrency(monthlyUtilidad + (spreadsheet.summary.otrosMovimientos?.[month] ?? 0))}
+                    {formatCurrency(monthlyUtilidad + (spreadsheet.summary.otrosMovimientos?.[month] ?? 0) - monthlyTraslados)}
                   </span>
                 </div>
                 <p className="text-xs text-muted-foreground">
-                  Utilidad (rentabilidad) + Movimientos Financieros. Este total es el que impacta los
-                  saldos de caja/cuentas — por eso los Movimientos Financieros quedan asentados aunque
-                  no afecten la rentabilidad.
+                  Utilidad (rentabilidad) + Movimientos Financieros − Traslados de Mercadería. Los traslados
+                  ajustan la rentabilidad final (mercadería que un local pagó pero no usó, o usó pero no pagó)
+                  sin tocar los saldos de caja/cuentas.
                 </p>
               </div>
             )}
@@ -553,7 +601,11 @@ export default function BalancePage() {
               <div className="space-y-2 border-t-2 pt-4" data-testid="section-cmv-balance">
                 <div className="grid grid-cols-1 gap-2 sm:grid-cols-[1fr_auto]">
                   <span className="font-bold uppercase">CMV del período</span>
-                  <span className="text-xs text-muted-foreground self-center sm:text-right">Dato asentado (no afecta el balance)</span>
+                  <span className="text-xs text-muted-foreground self-center sm:text-right">
+                    {matchedCmv
+                      ? `Período CMV: ${String(matchedCmv.periodFrom).slice(0, 10)} → ${String(matchedCmv.periodTo).slice(0, 10)}`
+                      : "Dato asentado (no afecta el balance)"}
+                  </span>
                 </div>
                 {matchedCmv ? (
                   <>
@@ -584,7 +636,7 @@ export default function BalancePage() {
                   </>
                 ) : (
                   <p className="text-sm text-muted-foreground">
-                    No hay un CMV calculado para {fullMonths[month - 1]} {selectedYear} (mes completo) de este local.
+                    No hay un CMV guardado que se solape con {fullMonths[month - 1]} {selectedYear} para este local.
                     Calculalo y guardalo desde el módulo CMV para que aparezca acá.
                   </p>
                 )}

@@ -132,6 +132,7 @@ const menuSections: MenuSection[] = [
       { title: "Ventas Datalive", url: "/ventas-datalive", icon: Upload },
       { title: "Decomisos", url: "/decomisos", icon: Trash2 },
       { title: "Ventas FUDO", url: "/ventas-fudo", icon: Upload },
+      { title: "Ventas Shares", url: "/ventas-shares", icon: Upload },
       { title: "Objetivos Mensuales", url: "/objetivos-mensuales", icon: Target },
       { title: "Dashboard", url: "/dashboard", icon: BarChart3 },
     ],

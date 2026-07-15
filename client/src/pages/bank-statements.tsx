@@ -424,6 +424,8 @@ export default function BankStatementsPage() {
   const [batchLocalId, setBatchLocalId] = useState<string>("");
   const [batchDescSearch, setBatchDescSearch] = useState("");
   const [batchDesc2Search, setBatchDesc2Search] = useState("");
+  // Punto 1: filtro por Entidad (banco de origen) dentro de la categorización masiva.
+  const [batchBankSource, setBatchBankSource] = useState<string>("");
   const [isDeleteBatchOpen, setIsDeleteBatchOpen] = useState(false);
   const [deleteBatchTarget, setDeleteBatchTarget] = useState<ImportBatch | null>(null);
   const [deleteConfirmCode, setDeleteConfirmCode] = useState("");
@@ -927,7 +929,9 @@ export default function BankStatementsPage() {
       dateFrom?: string;
       dateTo?: string;
       description?: string;
+      descriptions?: string[];
       description2?: string;
+      bankSource?: string;
       mode?: "uncategorize";
     }) => {
       return apiRequest("POST", "/api/transactions/batch-categorize", data);
@@ -946,6 +950,7 @@ export default function BankStatementsPage() {
       setBatchDateTo("");
       setSelectedDescriptions(new Set());
       setSelectedDescription2("");
+      setBatchBankSource("");
     },
     onError: (error: Error) => {
       toast({ title: "Error en clasificacion masiva", description: error.message, variant: "destructive" });
@@ -1112,6 +1117,7 @@ export default function BankStatementsPage() {
     batchCategorizeMutation.mutate({
       ...(hasDescriptions ? { descriptions: Array.from(selectedDescriptions) } : {}),
       ...(hasDescription2 ? { description2: selectedDescription2 } : {}),
+      ...(batchBankSource ? { bankSource: batchBankSource } : {}),
       ...(hasSelection ? { transactionIds: Array.from(selectedTransactionIds) } : {}),
       ...(uncategorize ? { mode: "uncategorize" as const } : {}),
       categoryId: uncategorize ? null : parseInt(batchCategoryId),
@@ -1137,6 +1143,10 @@ export default function BankStatementsPage() {
       const lid = parseInt(batchFilterLocalId, 10);
       base = base.filter(t => t.localId === lid);
     }
+    // Punto 1: acotar por Entidad (banco de origen).
+    if (batchBankSource) {
+      base = base.filter((t) => t.bankSource === batchBankSource);
+    }
     const groups = new Map<string, number>();
     for (const t of base) {
       const desc = t.description || "";
@@ -1145,7 +1155,7 @@ export default function BankStatementsPage() {
     return Array.from(groups.entries())
       .map(([description, count]) => ({ description, count }))
       .sort((a, b) => b.count - a.count);
-  }, [transactions, batchMode, batchDateFrom, batchDateTo, batchFilterLocalId]);
+  }, [transactions, batchMode, batchDateFrom, batchDateTo, batchFilterLocalId, batchBankSource]);
 
   const groupedDescriptions2 = useMemo(() => {
     let base = transactions.filter(
@@ -1157,9 +1167,18 @@ export default function BankStatementsPage() {
         return d >= batchDateFrom && d <= batchDateTo;
       });
     }
-    // Punto 8: la Entidad/Descripción 2 se acota a lo elegido en Descripción 1.
+    // Punto 1: acotar por Entidad (banco de origen).
+    if (batchBankSource) {
+      base = base.filter((t) => t.bankSource === batchBankSource);
+    }
+    // Punto 3/8: la Descripción 2 se acota a la Descripción 1. Si hay descripciones
+    // seleccionadas, usa esas; si no, se acota a medida que se ESCRIBE en el buscador
+    // de Descripción 1 (para que D2 muestre solo las descripciones 2 que corresponden).
     if (selectedDescriptions.size > 0) {
       base = base.filter((t) => selectedDescriptions.has(t.description ?? ""));
+    } else {
+      const q = batchDescSearch.trim().toLowerCase();
+      if (q) base = base.filter((t) => String(t.description ?? "").toLowerCase().includes(q));
     }
     const groups = new Map<string, number>();
     for (const t of base) {
@@ -1169,7 +1188,7 @@ export default function BankStatementsPage() {
     return Array.from(groups.entries())
       .map(([description2, count]) => ({ description2, count }))
       .sort((a, b) => b.count - a.count);
-  }, [transactions, batchMode, batchDateFrom, batchDateTo, selectedDescriptions]);
+  }, [transactions, batchMode, batchDateFrom, batchDateTo, selectedDescriptions, batchDescSearch, batchBankSource]);
 
   const filteredGroupedDescriptions = useMemo(() => {
     const q = batchDescSearch.trim().toLowerCase();
@@ -2859,6 +2878,18 @@ export default function BankStatementsPage() {
                 <div className="space-y-1">
                   <Label className="text-xs">Local (filtro de búsqueda)</Label>
                   <BatchLocalCombobox locals={locals} value={batchFilterLocalId || "none"} onChange={(v) => { setBatchFilterLocalId(v === "none" ? "" : v); setSelectedDescriptions(new Set()); }} />
+                </div>
+                <div className="space-y-1">
+                  <Label className="text-xs">Entidad (banco de origen)</Label>
+                  <Select value={batchBankSource || "all"} onValueChange={(v) => { setBatchBankSource(v === "all" ? "" : v); setSelectedDescriptions(new Set()); setSelectedDescription2(""); }}>
+                    <SelectTrigger data-testid="select-batch-bank-source"><SelectValue placeholder="Todas las entidades" /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">Todas las entidades</SelectItem>
+                      {availableBanks.map((b) => (
+                        <SelectItem key={b.id} value={b.id}>{b.name}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
                 </div>
                 <p className="text-xs text-muted-foreground">
                   {batchMode === "uncategorize"

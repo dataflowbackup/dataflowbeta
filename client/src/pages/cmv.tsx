@@ -177,6 +177,7 @@ function Dashboard({ records, locals, goals }: { records: CmvSaved[]; locals: Lo
     { value: "extractos", label: "Extractos" },
     { value: "datalive", label: "Datalive" },
     { value: "fudo", label: "FUDO" },
+    { value: "shares", label: "Shares" },
   ];
 
   const hasFilters = filterFrom || filterTo || filterSource !== "all" || filterLocals.length > 0;
@@ -393,7 +394,7 @@ export default function CmvPage() {
   const [stockFinalId, setStockFinalId] = useState("");
   const [dateFrom, setDateFrom] = useState(firstDayOfYear());
   const [dateTo, setDateTo] = useState(today());
-  const [salesSource, setSalesSource] = useState<"extractos" | "datalive">("extractos");
+  const [salesSource, setSalesSource] = useState<"extractos" | "datalive" | "fudo" | "shares">("extractos");
   const [ivaIncluded, setIvaIncluded] = useState(false);
 
   const { data: locals = [] } = useQuery<Local[]>({ queryKey: ["/api/locals"] });
@@ -422,6 +423,7 @@ export default function CmvPage() {
     { value: "extractos", label: "Extractos" },
     { value: "datalive", label: "Datalive" },
     { value: "fudo", label: "FUDO" },
+    { value: "shares", label: "Shares" },
   ];
   const ivaOptions = [
     { value: "sin", label: "Sin IVA (÷1,21)" },
@@ -579,7 +581,7 @@ export default function CmvPage() {
               <DataEntryCombobox
                 options={sourceOptions}
                 value={salesSource}
-                onValueChange={(v) => setSalesSource(v as "extractos" | "datalive" | "fudo")}
+                onValueChange={(v) => setSalesSource(v as "extractos" | "datalive" | "fudo" | "shares")}
                 placeholder="Fuente"
                 searchPlaceholder="Buscar…"
               />

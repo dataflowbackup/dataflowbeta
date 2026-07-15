@@ -46,6 +46,7 @@ import BreakevenPage from "@/pages/breakeven";
 import DataliveVentasPage from "@/pages/datalive-ventas";
 import DecomisosPage from "@/pages/decomisos";
 import FudoVentasPage from "@/pages/fudo-ventas";
+import SharesVentasPage from "@/pages/shares-ventas";
 import DashboardPage from "@/pages/dashboard";
 import ObjetivosMensualesPage from "@/pages/objetivos-mensuales";
 import StockPage from "@/pages/stock";
@@ -99,6 +100,7 @@ function AppRouter() {
       <Route path="/ventas-datalive" component={DataliveVentasPage} />
       <Route path="/decomisos" component={DecomisosPage} />
       <Route path="/ventas-fudo" component={FudoVentasPage} />
+      <Route path="/ventas-shares" component={SharesVentasPage} />
       <Route path="/dashboard" component={DashboardPage} />
       <Route path="/objetivos-mensuales" component={ObjetivosMensualesPage} />
       <Route path="/stock" component={StockPage} />

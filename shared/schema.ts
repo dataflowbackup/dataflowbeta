@@ -1336,6 +1336,61 @@ export type InsertDataliveProducto = z.infer<typeof insertDataliveProductoSchema
 export type DataliveProducto = typeof dataliveProductos.$inferSelect;
 
 // ==========================================
+// SHARES VENTAS (Ventas brutas importadas de "Shares" — tabla paralela y dedicada)
+// Una fila por (empresa, local, día). El Excel de Shares parte el día en 2 filas (Pto.Vta 8 y 9);
+// el parser SUMA ambas para tener la venta bruta total del día. Idempotente por (cliente, local, día).
+// ==========================================
+export const sharesVentas = pgTable(
+  "shares_ventas",
+  {
+    id: serial("id").primaryKey(),
+    clientId: integer("client_id").notNull().references(() => clients.id, { onDelete: "cascade" }),
+    localId: integer("local_id").notNull().references(() => locals.id),
+    fecha: date("fecha").notNull(),
+    ventaTotal: decimal("venta_total", { precision: 14, scale: 2 }).default("0"),
+    ventaEfectivo: decimal("venta_efectivo", { precision: 14, scale: 2 }).default("0"),
+    ventaTarjeta: decimal("venta_tarjeta", { precision: 14, scale: 2 }).default("0"),
+    ventaEfectivoOnline: decimal("venta_efectivo_online", { precision: 14, scale: 2 }).default("0"),
+    ventaOperOnline: decimal("venta_oper_online", { precision: 14, scale: 2 }).default("0"),
+    ventaMercadopago: decimal("venta_mercadopago", { precision: 14, scale: 2 }).default("0"),
+    sourceFile: varchar("source_file", { length: 255 }),
+    createdBy: varchar("created_by").references(() => users.id),
+    createdAt: timestamp("created_at").defaultNow(),
+    updatedAt: timestamp("updated_at").defaultNow(),
+  },
+  (table) => [uniqueIndex("shares_ventas_client_local_fecha_uq").on(table.clientId, table.localId, table.fecha)],
+);
+
+export const insertSharesVentaSchema = createInsertSchema(sharesVentas).omit({ id: true, createdAt: true, updatedAt: true });
+export type InsertSharesVenta = z.infer<typeof insertSharesVentaSchema>;
+export type SharesVenta = typeof sharesVentas.$inferSelect;
+
+// ==========================================
+// SHARES PRODUCTOS (Productos vendidos importados del reporte de productos de "Shares")
+// Una fila por (empresa, local, fecha, producto). Idempotente por ese cuarteto.
+// ==========================================
+export const sharesProductos = pgTable(
+  "shares_productos",
+  {
+    id: serial("id").primaryKey(),
+    clientId: integer("client_id").notNull().references(() => clients.id, { onDelete: "cascade" }),
+    localId: integer("local_id").notNull().references(() => locals.id),
+    fecha: date("fecha").notNull(),
+    producto: varchar("producto", { length: 255 }).notNull(),
+    categoria: varchar("categoria", { length: 255 }),
+    cantidad: integer("cantidad").notNull().default(0),
+    sourceFile: varchar("source_file", { length: 255 }),
+    createdBy: varchar("created_by").references(() => users.id),
+    createdAt: timestamp("created_at").defaultNow(),
+  },
+  (table) => [uniqueIndex("shares_productos_client_local_fecha_producto_uq").on(table.clientId, table.localId, table.fecha, table.producto)],
+);
+
+export const insertSharesProductoSchema = createInsertSchema(sharesProductos).omit({ id: true, createdAt: true });
+export type InsertSharesProducto = z.infer<typeof insertSharesProductoSchema>;
+export type SharesProducto = typeof sharesProductos.$inferSelect;
+
+// ==========================================
 // MAPEO producto vendido (FUDO/Datalive, por nombre) → receta de DataFlow (punto 18)
 // Asignación MANUAL: los nombres importados no coinciden con las recetas.
 // ==========================================
@@ -1344,7 +1399,7 @@ export const productRecipeMappings = pgTable(
   {
     id: serial("id").primaryKey(),
     clientId: integer("client_id").notNull().references(() => clients.id, { onDelete: "cascade" }),
-    source: varchar("source", { length: 20 }).notNull(), // "fudo" | "datalive"
+    source: varchar("source", { length: 20 }).notNull(), // "fudo" | "datalive" | "shares"
     productName: varchar("product_name", { length: 255 }).notNull(),
     recipeId: integer("recipe_id").notNull().references(() => recipes.id, { onDelete: "cascade" }),
     createdAt: timestamp("created_at").defaultNow(),
