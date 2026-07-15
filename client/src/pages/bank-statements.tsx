@@ -29,6 +29,7 @@ import { DateRangePicker } from "@/components/date-range-picker";
 import { Progress } from "@/components/ui/progress";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Checkbox } from "@/components/ui/checkbox";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { DataEntryCombobox } from "@/components/data-entry-combobox";
 import {
   Command,
