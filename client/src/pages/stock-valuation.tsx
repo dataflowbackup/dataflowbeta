@@ -12,7 +12,7 @@ import { ConfirmDialog } from "@/components/confirm-dialog";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { formatCurrency } from "@/lib/formatters";
-import { Download, Upload, Save, Package, RotateCcw } from "lucide-react";
+import { Download, Upload, Save, Package, RotateCcw, Pencil, X, AlertTriangle } from "lucide-react";
 import type { Supply, Local, UnitOfMeasure } from "@shared/schema";
 
 interface StockValuationRow {
@@ -21,6 +21,12 @@ interface StockValuationRow {
   valuationDate: string;
   totalValued: string | number;
   status: string;
+}
+
+interface CmvUsageRow {
+  id: number;
+  periodFrom: string | null;
+  periodTo: string | null;
 }
 
 function today(): string {
@@ -36,11 +42,25 @@ export default function StockValuationPage() {
   const [search, setSearch] = useState("");
   const [qty, setQty] = useState<Record<number, string>>({});
   const [reverseTarget, setReverseTarget] = useState<StockValuationRow | null>(null);
+  const [editingId, setEditingId] = useState<number | null>(null);
+  // Costos congelados de la valorización que se está editando: corregir cantidades no debe
+  // re-precificar con los costos de hoy. Espeja la regla del server.
+  const [costOverride, setCostOverride] = useState<Record<number, number>>({});
 
   const { data: supplies = [] } = useQuery<Supply[]>({ queryKey: ["/api/supplies"] });
   const { data: locals = [] } = useQuery<Local[]>({ queryKey: ["/api/locals"] });
   const { data: units = [] } = useQuery<UnitOfMeasure[]>({ queryKey: ["/api/units"] });
   const { data: valuations = [] } = useQuery<StockValuationRow[]>({ queryKey: ["/api/finance/stock-valuations"] });
+
+  // CMV guardados que usan la valorización en edición: se recalculan al guardar.
+  const { data: cmvUsage = [] } = useQuery<CmvUsageRow[]>({
+    queryKey: ["/api/finance/stock-valuations", editingId, "cmv-usage"],
+    enabled: editingId != null,
+    queryFn: async () => {
+      const res = await apiRequest("GET", `/api/finance/stock-valuations/${editingId}/cmv-usage`);
+      return res.json();
+    },
+  });
 
   const unitName = useMemo(() => new Map(units.map((u) => [u.id, u.abbreviation || u.name])), [units]);
   const localName = useMemo(() => new Map(locals.map((l) => [l.id, l.name])), [locals]);
@@ -50,7 +70,7 @@ export default function StockValuationPage() {
     [locals],
   );
 
-  const cost = (s: Supply) => parseFloat(String(s.lastCost ?? 0)) || 0;
+  const cost = (s: Supply) => costOverride[s.id] ?? (parseFloat(String(s.lastCost ?? 0)) || 0);
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -115,23 +135,70 @@ export default function StockValuationPage() {
     }
   };
 
+  const resetForm = () => {
+    setEditingId(null);
+    setCostOverride({});
+    setQty({});
+    setValuationDate(today());
+    setLocalId("all");
+    setSearch("");
+  };
+
+  const startEdit = async (row: StockValuationRow) => {
+    try {
+      const res = await apiRequest("GET", `/api/finance/stock-valuations/${row.id}`);
+      const data = await res.json();
+      const nextQty: Record<number, string> = {};
+      const nextCost: Record<number, number> = {};
+      for (const it of data.items ?? []) {
+        nextQty[it.supplyId] = String(parseFloat(String(it.quantity)) || 0);
+        nextCost[it.supplyId] = parseFloat(String(it.replacementUnitCost ?? 0)) || 0;
+      }
+      setQty(nextQty);
+      setCostOverride(nextCost);
+      setValuationDate(String(data.valuation.valuationDate));
+      setLocalId(data.valuation.localId != null ? String(data.valuation.localId) : "all");
+      setSearch("");
+      setEditingId(row.id);
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    } catch (e: any) {
+      toast({ title: "No se pudo abrir la valorización", description: e?.message, variant: "destructive" });
+    }
+  };
+
   const saveMutation = useMutation({
     mutationFn: async () => {
       const items = supplies
         .map((s) => ({ supplyId: s.id, quantity: parseFloat(qty[s.id] ?? "") }))
         .filter((it) => Number.isFinite(it.quantity) && it.quantity > 0);
       if (items.length === 0) throw new Error("Cargá al menos un insumo con cantidad");
-      const res = await apiRequest("POST", "/api/finance/stock-valuations", {
+      const body = {
         valuationDate,
         localId: localId === "all" ? null : parseInt(localId, 10),
         items,
-      });
+      };
+      const res = editingId != null
+        ? await apiRequest("PUT", `/api/finance/stock-valuations/${editingId}`, body)
+        : await apiRequest("POST", "/api/finance/stock-valuations", body);
       return res.json();
     },
-    onSuccess: () => {
+    onSuccess: (result: any) => {
       queryClient.invalidateQueries({ queryKey: ["/api/finance/stock-valuations"] });
-      toast({ title: "Valorización guardada", description: `Total ${formatCurrency(total)} al ${valuationDate}.` });
-      setQty({});
+      if (editingId != null) {
+        queryClient.invalidateQueries({ queryKey: ["/api/finance/cmv-calculations"] });
+        const recalc = result?.recalculatedCmvIds?.length ?? 0;
+        const failed = result?.failedCmvIds?.length ?? 0;
+        toast({
+          title: "Valorización actualizada",
+          description: `Total ${formatCurrency(total)} al ${valuationDate}.`
+            + (recalc > 0 ? ` Se recalcularon ${recalc} CMV que la usan.` : "")
+            + (failed > 0 ? ` ${failed} CMV no se pudieron recalcular: revisalos.` : ""),
+          variant: failed > 0 ? "destructive" : undefined,
+        });
+      } else {
+        toast({ title: "Valorización guardada", description: `Total ${formatCurrency(total)} al ${valuationDate}.` });
+      }
+      resetForm();
     },
     onError: (e: Error) => toast({ title: "No se pudo guardar", description: e.message, variant: "destructive" }),
   });
@@ -153,11 +220,40 @@ export default function StockValuationPage() {
         description="Cantidad en stock × costo de reposición (última compra) de cada insumo"
       />
 
-      <Card>
+      <Card className={editingId != null ? "border-primary" : undefined}>
         <CardHeader className="pb-3">
-          <CardTitle className="text-base">Nueva valorización</CardTitle>
+          <CardTitle className="text-base flex items-center justify-between gap-2">
+            <span className="flex items-center gap-2">
+              {editingId != null && <Pencil className="h-4 w-4 text-primary" />}
+              {editingId != null ? "Editando valorización" : "Nueva valorización"}
+            </span>
+            {editingId != null && (
+              <Button variant="ghost" size="sm" onClick={resetForm} data-testid="button-cancel-edit">
+                <X className="h-4 w-4 mr-1" /> Cancelar edición
+              </Button>
+            )}
+          </CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
+          {editingId != null && cmvUsage.length > 0 && (
+            <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 flex gap-2">
+              <AlertTriangle className="h-4 w-4 text-amber-600 dark:text-amber-500 mt-0.5 shrink-0" />
+              <div className="text-sm text-amber-700 dark:text-amber-400">
+                <p className="font-medium">
+                  {cmvUsage.length === 1 ? "Hay 1 CMV guardado que usa esta valorización." : `Hay ${cmvUsage.length} CMV guardados que usan esta valorización.`}
+                </p>
+                <p className="text-xs mt-0.5">
+                  Al guardar los cambios se recalculan automáticamente:{" "}
+                  {cmvUsage.map((c) => `${c.periodFrom ?? "—"} → ${c.periodTo ?? "—"}`).join(" · ")}
+                </p>
+              </div>
+            </div>
+          )}
+          {editingId != null && (
+            <p className="text-xs text-muted-foreground">
+              Los costos de reposición quedan como estaban cuando se creó la valorización. Un insumo que agregues ahora toma su costo actual.
+            </p>
+          )}
           <div className="flex flex-col gap-4 sm:flex-row sm:flex-wrap sm:items-end">
             <div className="space-y-1">
               <Label className="text-xs">Fecha</Label>
@@ -234,7 +330,8 @@ export default function StockValuationPage() {
             <div className="flex items-center gap-4">
               <div className="text-lg font-bold font-mono" data-testid="text-total">Total: {formatCurrency(total)}</div>
               <Button onClick={() => saveMutation.mutate()} disabled={saveMutation.isPending || filledCount === 0} data-testid="button-save">
-                <Save className="h-4 w-4 mr-2" /> {saveMutation.isPending ? "Guardando..." : "Guardar valorización"}
+                <Save className="h-4 w-4 mr-2" />
+                {saveMutation.isPending ? "Guardando..." : editingId != null ? "Guardar cambios" : "Guardar valorización"}
               </Button>
             </div>
           </div>
@@ -257,7 +354,7 @@ export default function StockValuationPage() {
                     <th className="text-left px-3 py-2 font-medium border-b">Local</th>
                     <th className="text-right px-3 py-2 font-medium border-b">Total valorizado</th>
                     <th className="text-left px-3 py-2 font-medium border-b">Estado</th>
-                    <th className="px-3 py-2 border-b w-20"></th>
+                    <th className="text-right px-3 py-2 font-medium border-b w-32">Acciones</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -271,9 +368,14 @@ export default function StockValuationPage() {
                       </td>
                       <td className="px-3 py-2 text-right">
                         {v.status === "active" && (
-                          <Button variant="ghost" size="icon" onClick={() => setReverseTarget(v)} data-testid={`button-reverse-${v.id}`}>
-                            <RotateCcw className="h-4 w-4 text-destructive" />
-                          </Button>
+                          <div className="flex justify-end gap-1">
+                            <Button variant="ghost" size="icon" title="Editar valorización" onClick={() => startEdit(v)} data-testid={`button-edit-${v.id}`}>
+                              <Pencil className="h-4 w-4 text-muted-foreground" />
+                            </Button>
+                            <Button variant="ghost" size="icon" title="Reversar (no borra: la marca como reversada)" onClick={() => setReverseTarget(v)} data-testid={`button-reverse-${v.id}`}>
+                              <RotateCcw className="h-4 w-4 text-amber-600 dark:text-amber-500" />
+                            </Button>
+                          </div>
                         )}
                       </td>
                     </tr>

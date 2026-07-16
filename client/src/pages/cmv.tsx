@@ -11,7 +11,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { formatCurrency } from "@/lib/formatters";
-import { Calculator, Save, TrendingUp, TrendingDown, BarChart2, DollarSign, Trash2, ChevronsUpDown, Check } from "lucide-react";
+import { Calculator, Save, TrendingUp, TrendingDown, BarChart2, DollarSign, Trash2, ChevronsUpDown, Check, Pencil, X } from "lucide-react";
 import {
   Dialog,
   DialogContent,
@@ -40,6 +40,8 @@ import type { Local } from "@shared/schema";
 interface CmvSaved {
   id: number;
   localId: number | null;
+  stockInicialId: number | null;
+  stockFinalId: number | null;
   periodFrom: string | null;
   periodTo: string | null;
   cmv: string | number;
@@ -396,6 +398,7 @@ export default function CmvPage() {
   const [dateTo, setDateTo] = useState(today());
   const [salesSource, setSalesSource] = useState<"extractos" | "datalive" | "fudo" | "shares">("extractos");
   const [ivaIncluded, setIvaIncluded] = useState(false);
+  const [editingId, setEditingId] = useState<number | null>(null);
 
   const { data: locals = [] } = useQuery<Local[]>({ queryKey: ["/api/locals"] });
   const { data: valuations = [] } = useQuery<ValuationRow[]>({ queryKey: ["/api/finance/stock-valuations"] });
@@ -406,18 +409,23 @@ export default function CmvPage() {
     () => [{ value: "all", label: "Todos los locales" }, ...locals.map((l) => ({ value: String(l.id), label: l.name }))],
     [locals],
   );
+  // Las reversadas no se ofrecen, salvo que el CMV que estás editando ya las use: si no,
+  // el combo se vería vacío al abrir un CMV viejo.
   const valuationOptions = useMemo(
-    () =>
-      valuations
-        .filter((v) => v.status === "active")
+    () => {
+      const selected = new Set([stockInicialId, stockFinalId].filter(Boolean));
+      return valuations
+        .filter((v) => v.status === "active" || selected.has(String(v.id)))
         .map((v) => {
           const localName = v.localId != null ? (locals.find((l) => l.id === v.localId)?.name ?? "Local desconocido") : "Todos los locales";
+          const reversed = v.status !== "active" ? " (reversada)" : "";
           return {
             value: String(v.id),
-            label: `${v.valuationDate} — ${localName} — ${formatCurrency(parseFloat(String(v.totalValued)) || 0)}`,
+            label: `${v.valuationDate} — ${localName} — ${formatCurrency(parseFloat(String(v.totalValued)) || 0)}${reversed}`,
           };
-        }),
-    [valuations, locals],
+        });
+    },
+    [valuations, locals, stockInicialId, stockFinalId],
   );
   const sourceOptions = [
     { value: "extractos", label: "Extractos" },
@@ -483,9 +491,24 @@ export default function CmvPage() {
   const [deleteCode, setDeleteCode] = useState("");
 
   const { toast } = useToast();
+
+  const cancelEdit = () => setEditingId(null);
+
+  const startEdit = (c: CmvSaved) => {
+    setLocalId(c.localId != null ? String(c.localId) : "all");
+    setStockInicialId(c.stockInicialId != null ? String(c.stockInicialId) : "");
+    setStockFinalId(c.stockFinalId != null ? String(c.stockFinalId) : "");
+    setDateFrom(c.periodFrom ?? firstDayOfYear());
+    setDateTo(c.periodTo ?? today());
+    setSalesSource((c.salesSource as "extractos" | "datalive" | "fudo" | "shares") ?? "extractos");
+    setIvaIncluded(!!c.ivaIncluded);
+    setEditingId(c.id);
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  };
+
   const saveMutation = useMutation({
     mutationFn: async () => {
-      const res = await apiRequest("POST", "/api/finance/cmv-calculations", {
+      const body = {
         stockInicialId,
         stockFinalId,
         localId: localId === "all" ? null : localId,
@@ -493,12 +516,18 @@ export default function CmvPage() {
         dateTo,
         salesSource,
         ivaIncluded,
-      });
+      };
+      const res = editingId != null
+        ? await apiRequest("PUT", `/api/finance/cmv-calculations/${editingId}`, body)
+        : await apiRequest("POST", "/api/finance/cmv-calculations", body);
       return res.json();
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/finance/cmv-calculations"] });
-      toast({ title: "CMV guardado", description: "Quedó registrado el cálculo." });
+      toast(editingId != null
+        ? { title: "CMV actualizado", description: "Se recalculó con los parámetros nuevos." }
+        : { title: "CMV guardado", description: "Quedó registrado el cálculo." });
+      setEditingId(null);
     },
     onError: (e: Error) => toast({ title: "No se pudo guardar", description: e.message, variant: "destructive" }),
   });
@@ -542,8 +571,20 @@ export default function CmvPage() {
       {saved.length > 0 && <Dashboard records={saved} locals={locals} goals={monthlyGoals} />}
 
       {/* Parámetros */}
-      <Card>
-        <CardHeader className="pb-3"><CardTitle className="text-base">Parámetros</CardTitle></CardHeader>
+      <Card className={editingId != null ? "border-primary" : undefined}>
+        <CardHeader className="pb-3">
+          <CardTitle className="text-base flex items-center justify-between gap-2">
+            <span className="flex items-center gap-2">
+              {editingId != null && <Pencil className="h-4 w-4 text-primary" />}
+              {editingId != null ? "Editando CMV guardado" : "Parámetros"}
+            </span>
+            {editingId != null && (
+              <Button variant="ghost" size="sm" onClick={cancelEdit} data-testid="button-cancel-edit-cmv">
+                <X className="h-4 w-4 mr-1" /> Cancelar edición
+              </Button>
+            )}
+          </CardTitle>
+        </CardHeader>
         <CardContent>
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
             <div className="space-y-1">
@@ -621,7 +662,8 @@ export default function CmvPage() {
               disabled={!data || isLoading || saveMutation.isPending}
               data-testid="button-save-cmv"
             >
-              <Save className="h-4 w-4 mr-2" /> {saveMutation.isPending ? "Guardando..." : "Guardar"}
+              <Save className="h-4 w-4 mr-2" />
+              {saveMutation.isPending ? "Guardando..." : editingId != null ? "Guardar cambios" : "Guardar"}
             </Button>
           </CardHeader>
           <CardContent>
@@ -724,14 +766,27 @@ export default function CmvPage() {
                         {c.decomisoPct == null ? "—" : `${pct(c.decomisoPct).toFixed(2)}%`}
                       </td>
                       <td className="px-3 py-2">
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          className="h-7 w-7 text-muted-foreground hover:text-destructive"
-                          onClick={() => { setDeleteTarget(c); setDeleteCode(""); }}
-                        >
-                          <Trash2 className="h-3.5 w-3.5" />
-                        </Button>
+                        <div className="flex gap-1">
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-7 w-7 text-muted-foreground hover:text-primary"
+                            title="Editar CMV"
+                            onClick={() => startEdit(c)}
+                            data-testid={`button-edit-cmv-${c.id}`}
+                          >
+                            <Pencil className="h-3.5 w-3.5" />
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-7 w-7 text-muted-foreground hover:text-destructive"
+                            title="Eliminar CMV"
+                            onClick={() => { setDeleteTarget(c); setDeleteCode(""); }}
+                          >
+                            <Trash2 className="h-3.5 w-3.5" />
+                          </Button>
+                        </div>
                       </td>
                     </tr>
                   ))}

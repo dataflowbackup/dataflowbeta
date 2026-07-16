@@ -3541,6 +3541,47 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
   });
 
+  // Qué CMV guardados dependen de esta valorización (para avisar antes de editarla).
+  app.get("/api/finance/stock-valuations/:id/cmv-usage", isAuthenticated, requirePermission("stock_valuation.view", "view"), async (req, res) => {
+    try {
+      const { clientId } = (req as any).rbac;
+      const id = parseInt(req.params.id, 10);
+      if (!Number.isFinite(id)) return res.status(400).json({ message: "ID inválido" });
+      res.json(await storage.listCmvCalculationsByValuation(clientId, id));
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
+  app.put("/api/finance/stock-valuations/:id", isAuthenticated, requirePermission("stock_valuation.create", "create"), async (req, res) => {
+    try {
+      const { clientId } = (req as any).rbac;
+      const id = parseInt(req.params.id, 10);
+      if (!Number.isFinite(id)) return res.status(400).json({ message: "ID inválido" });
+      const bodySchema = z.object({
+        localId: z.coerce.number().int().positive().nullable().optional(),
+        valuationDate: z.string().min(1),
+        notes: z.string().optional().nullable(),
+        items: z.array(z.object({
+          supplyId: z.coerce.number().int().positive(),
+          quantity: z.coerce.number(),
+          unitOfMeasureId: z.coerce.number().int().positive().nullable().optional(),
+        })).min(1, "Cargá al menos un insumo con cantidad"),
+      });
+      const parsed = bodySchema.safeParse(req.body);
+      if (!parsed.success) return res.status(400).json({ message: "Datos inválidos", errors: parsed.error.flatten() });
+      const result = await storage.updateStockValuation(clientId, id, {
+        localId: parsed.data.localId ?? null,
+        valuationDate: parsed.data.valuationDate,
+        notes: parsed.data.notes ?? null,
+        items: parsed.data.items,
+      });
+      res.json(result);
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
   app.post("/api/finance/stock-valuations/:id/reverse", isAuthenticated, requirePermission("stock_valuation.delete", "delete"), async (req, res) => {
     try {
       const { clientId } = (req as any).rbac;
@@ -3626,6 +3667,28 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const ivaIncluded = req.body?.ivaIncluded === true;
       const saved = await storage.saveCmvCalculation(clientId, { localId, stockInicialId, stockFinalId, dateFrom, dateTo, salesSource, ivaIncluded, createdBy: actorId });
       res.json(saved);
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
+  app.put("/api/finance/cmv-calculations/:id", isAuthenticated, requirePermission("cmv.view", "create"), async (req, res) => {
+    try {
+      const { clientId } = (req as any).rbac;
+      const id = parseInt(req.params.id, 10);
+      if (!Number.isFinite(id)) return res.status(400).json({ message: "ID inválido" });
+      const stockInicialId = parseInt(req.body?.stockInicialId, 10);
+      const stockFinalId = parseInt(req.body?.stockFinalId, 10);
+      if (!Number.isFinite(stockInicialId) || !Number.isFinite(stockFinalId)) {
+        return res.status(400).json({ message: "Elegí stock inicial y stock final" });
+      }
+      const localId = req.body?.localId && req.body.localId !== "all" ? parseInt(String(req.body.localId), 10) : undefined;
+      const dateFrom = typeof req.body?.dateFrom === "string" && req.body.dateFrom ? req.body.dateFrom : undefined;
+      const dateTo = typeof req.body?.dateTo === "string" && req.body.dateTo ? req.body.dateTo : undefined;
+      const salesSource = req.body?.salesSource === "datalive" ? "datalive" : req.body?.salesSource === "fudo" ? "fudo" : req.body?.salesSource === "shares" ? "shares" : "extractos";
+      const ivaIncluded = req.body?.ivaIncluded === true;
+      const updated = await storage.updateCmvCalculation(clientId, id, { localId, stockInicialId, stockFinalId, dateFrom, dateTo, salesSource, ivaIncluded });
+      res.json(updated);
     } catch (e: any) {
       res.status(500).json({ message: e.message });
     }

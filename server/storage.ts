@@ -496,6 +496,17 @@ export interface IStorage {
     createdBy?: string | null;
     items: Array<{ supplyId: number; quantity: number; unitOfMeasureId?: number | null; replacementUnitCost?: number | null }>;
   }): Promise<StockValuation>;
+  /**
+   * Edita una valorización activa (fecha, local, cantidades) y recalcula los CMV guardados
+   * que la usan — si no, quedarían apuntando a una valorización que ya dice otra cosa.
+   * Los costos ya congelados se conservan: solo los insumos nuevos toman el lastCost de hoy.
+   */
+  updateStockValuation(clientId: number, id: number, input: {
+    localId?: number | null;
+    valuationDate: string;
+    notes?: string | null;
+    items: Array<{ supplyId: number; quantity: number; unitOfMeasureId?: number | null }>;
+  }): Promise<{ valuation: StockValuation; recalculatedCmvIds: number[]; failedCmvIds: number[] }>;
   reverseStockValuation(clientId: number, id: number): Promise<StockValuation | undefined>;
 
   // Punto de Equilibrio (Fase 8)
@@ -533,6 +544,10 @@ export interface IStorage {
   /** Guarda un cálculo de CMV como registro (recalcula server-side para integridad). */
   saveCmvCalculation(clientId: number, opts: { localId?: number; stockInicialId: number; stockFinalId: number; dateFrom?: string; dateTo?: string; salesSource?: "extractos" | "datalive" | "fudo" | "shares"; ivaIncluded?: boolean; createdBy?: string | null }): Promise<CmvCalculation>;
   listCmvCalculations(clientId: number): Promise<CmvCalculation[]>;
+  /** Edita los parámetros de un CMV guardado y recalcula sus derivados server-side. */
+  updateCmvCalculation(clientId: number, id: number, opts: { localId?: number; stockInicialId: number; stockFinalId: number; dateFrom?: string; dateTo?: string; salesSource?: "extractos" | "datalive" | "fudo" | "shares"; ivaIncluded?: boolean }): Promise<CmvCalculation>;
+  /** CMV guardados que usan una valorización como stock inicial o final. */
+  listCmvCalculationsByValuation(clientId: number, valuationId: number): Promise<CmvCalculation[]>;
   deleteCmvCalculation(clientId: number, id: number): Promise<void>;
 
   // Ventas Datalive (tabla paralela, fase 1)
@@ -3517,6 +3532,87 @@ export class DatabaseStorage implements IStorage {
     return created;
   }
 
+  async updateStockValuation(
+    clientId: number,
+    id: number,
+    input: {
+      localId?: number | null;
+      valuationDate: string;
+      notes?: string | null;
+      items: Array<{ supplyId: number; quantity: number; unitOfMeasureId?: number | null }>;
+    },
+  ): Promise<{ valuation: StockValuation; recalculatedCmvIds: number[]; failedCmvIds: number[] }> {
+    const [existing] = await db.select().from(stockValuations)
+      .where(and(eq(stockValuations.id, id), eq(stockValuations.clientId, clientId)));
+    if (!existing) throw new Error("Valorización no encontrada");
+    if (existing.status !== "active") throw new Error("No se puede editar una valorización reversada");
+
+    // Los costos congelados al crear se conservan: corregir una cantidad no debe re-precificar
+    // la valorización con los costos de hoy. Solo un insumo nuevo toma el lastCost actual.
+    const prevItems = await db.select().from(stockValuationItems).where(eq(stockValuationItems.valuationId, id));
+    const prevCost = new Map(prevItems.map((it) => [it.supplyId, parseFloat(String(it.replacementUnitCost ?? 0)) || 0]));
+
+    const supplyRows = await db
+      .select({ id: supplies.id, lastCost: supplies.lastCost, unitOfMeasureId: supplies.unitOfMeasureId })
+      .from(supplies)
+      .where(eq(supplies.clientId, clientId));
+    const supplyMap = new Map(supplyRows.map((s) => [s.id, s]));
+
+    const prepared = input.items
+      .filter((it) => it.supplyId != null && Number(it.quantity) > 0)
+      .map((it) => {
+        const s = supplyMap.get(it.supplyId);
+        const cost = prevCost.has(it.supplyId)
+          ? (prevCost.get(it.supplyId) as number)
+          : parseFloat(String(s?.lastCost ?? 0)) || 0;
+        const qty = Number(it.quantity) || 0;
+        const uom = it.unitOfMeasureId ?? (s?.unitOfMeasureId as number | null) ?? null;
+        const lineTotal = Math.round(qty * cost * 100) / 100;
+        return { supplyId: it.supplyId, unitOfMeasureId: uom, quantity: qty, replacementUnitCost: cost, lineTotal };
+      });
+
+    const totalValued = Math.round(prepared.reduce((a, it) => a + it.lineTotal, 0) * 100) / 100;
+
+    const [updated] = await db.update(stockValuations).set({
+      localId: input.localId ?? null,
+      valuationDate: input.valuationDate,
+      totalValued: String(totalValued),
+      notes: input.notes ?? existing.notes ?? null,
+    } as any).where(and(eq(stockValuations.id, id), eq(stockValuations.clientId, clientId))).returning();
+
+    await db.delete(stockValuationItems).where(eq(stockValuationItems.valuationId, id));
+    if (prepared.length > 0) {
+      await db.insert(stockValuationItems).values(
+        prepared.map((it) => ({
+          valuationId: id,
+          supplyId: it.supplyId,
+          unitOfMeasureId: it.unitOfMeasureId,
+          quantity: String(it.quantity),
+          replacementUnitCost: String(it.replacementUnitCost),
+          lineTotal: String(it.lineTotal),
+        })) as any,
+      );
+    }
+
+    // Los CMV guardados copian los totales al guardarse: si no se recalculan acá, quedan
+    // mostrando el stock viejo mientras apuntan a esta valorización ya cambiada.
+    const dependents = await this.listCmvCalculationsByValuation(clientId, id);
+    const recalculatedCmvIds: number[] = [];
+    const failedCmvIds: number[] = [];
+    for (const row of dependents) {
+      try {
+        await this.recomputeCmvRow(clientId, row);
+        recalculatedCmvIds.push(row.id);
+      } catch {
+        // Un CMV que no recalcula (p. ej. le falta el otro stock) no debe abortar la edición:
+        // se reporta para que el usuario lo revise.
+        failedCmvIds.push(row.id);
+      }
+    }
+
+    return { valuation: updated, recalculatedCmvIds, failedCmvIds };
+  }
+
   async reverseStockValuation(clientId: number, id: number): Promise<StockValuation | undefined> {
     const [updated] = await db.update(stockValuations)
       .set({ status: "reversed" })
@@ -3708,6 +3804,81 @@ export class DatabaseStorage implements IStorage {
 
   async listCmvCalculations(clientId: number): Promise<CmvCalculation[]> {
     return db.select().from(cmvCalculations).where(eq(cmvCalculations.clientId, clientId)).orderBy(desc(cmvCalculations.id));
+  }
+
+  async listCmvCalculationsByValuation(clientId: number, valuationId: number): Promise<CmvCalculation[]> {
+    return db.select().from(cmvCalculations)
+      .where(and(
+        eq(cmvCalculations.clientId, clientId),
+        or(eq(cmvCalculations.stockInicialId, valuationId), eq(cmvCalculations.stockFinalId, valuationId)),
+      ))
+      .orderBy(desc(cmvCalculations.id));
+  }
+
+  /** Re-corre computeCmv con los parámetros ya guardados de la fila y pisa los derivados. */
+  private async recomputeCmvRow(clientId: number, row: CmvCalculation): Promise<CmvCalculation> {
+    if (row.stockInicialId == null || row.stockFinalId == null) {
+      throw new Error("El CMV no tiene stock inicial/final asociado");
+    }
+    const r = await this.computeCmv(clientId, {
+      localId: row.localId ?? undefined,
+      stockInicialId: row.stockInicialId,
+      stockFinalId: row.stockFinalId,
+      dateFrom: row.periodFrom ?? undefined,
+      dateTo: row.periodTo ?? undefined,
+      salesSource: (row.salesSource as "extractos" | "datalive" | "fudo" | "shares") ?? "extractos",
+      ivaIncluded: !!row.ivaIncluded,
+    });
+    const [updated] = await db.update(cmvCalculations).set({
+      stockInicial: String(r.stockInicial),
+      compras: String(r.compras),
+      stockFinal: String(r.stockFinal),
+      cmv: String(r.cmv),
+      ventaNeta: String(r.ventaNeta),
+      cmvPct: r.cmvPct != null ? String(r.cmvPct) : null,
+      decomisos: String(r.decomisos),
+      decomisoPct: r.decomisoPct != null ? String(r.decomisoPct) : null,
+    } as any).where(and(eq(cmvCalculations.id, row.id), eq(cmvCalculations.clientId, clientId))).returning();
+    return updated;
+  }
+
+  async updateCmvCalculation(
+    clientId: number,
+    id: number,
+    opts: { localId?: number; stockInicialId: number; stockFinalId: number; dateFrom?: string; dateTo?: string; salesSource?: "extractos" | "datalive" | "fudo" | "shares"; ivaIncluded?: boolean },
+  ): Promise<CmvCalculation> {
+    const [existing] = await db.select({ id: cmvCalculations.id }).from(cmvCalculations)
+      .where(and(eq(cmvCalculations.id, id), eq(cmvCalculations.clientId, clientId)));
+    if (!existing) throw new Error("CMV no encontrado");
+
+    // Mismo criterio que al guardar: se recalcula server-side, no se confía en el cliente.
+    const r = await this.computeCmv(clientId, {
+      localId: opts.localId,
+      stockInicialId: opts.stockInicialId,
+      stockFinalId: opts.stockFinalId,
+      dateFrom: opts.dateFrom,
+      dateTo: opts.dateTo,
+      salesSource: opts.salesSource,
+      ivaIncluded: opts.ivaIncluded,
+    });
+    const [updated] = await db.update(cmvCalculations).set({
+      localId: opts.localId ?? null,
+      stockInicialId: opts.stockInicialId,
+      stockFinalId: opts.stockFinalId,
+      periodFrom: opts.dateFrom ?? null,
+      periodTo: opts.dateTo ?? null,
+      stockInicial: String(r.stockInicial),
+      compras: String(r.compras),
+      stockFinal: String(r.stockFinal),
+      cmv: String(r.cmv),
+      ventaNeta: String(r.ventaNeta),
+      cmvPct: r.cmvPct != null ? String(r.cmvPct) : null,
+      decomisos: String(r.decomisos),
+      decomisoPct: r.decomisoPct != null ? String(r.decomisoPct) : null,
+      salesSource: opts.salesSource ?? "extractos",
+      ivaIncluded: opts.ivaIncluded ?? false,
+    } as any).where(and(eq(cmvCalculations.id, id), eq(cmvCalculations.clientId, clientId))).returning();
+    return updated;
   }
 
   async deleteCmvCalculation(clientId: number, id: number): Promise<void> {
