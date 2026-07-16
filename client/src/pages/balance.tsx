@@ -28,6 +28,7 @@ import {
   Minus,
 } from "lucide-react";
 import type { Local, CmvCalculation } from "@shared/schema";
+import { pickCmvForMonth } from "@shared/cmvMonthMatch";
 
 const fullMonths = [
   "Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio",
@@ -180,27 +181,13 @@ export default function BalancePage() {
     return spreadsheet.groups.filter(g => g.type === "income" && !g.isSpecial);
   }, [spreadsheet]);
 
-  // Punto 12: CMV que coincide con mes COMPLETO + un único local seleccionado.
-  const matchedCmv = useMemo<CmvCalculation | null>(() => {
-    if (selectedLocalIds.length !== 1) return null;
-    const localId = selectedLocalIds[0];
-    const y = parseInt(selectedYear, 10);
-    const m = parseInt(selectedMonth, 10);
-    if (!Number.isFinite(y) || !Number.isFinite(m)) return null;
-    const first = `${y}-${String(m).padStart(2, "0")}-01`;
-    const lastDay = new Date(y, m, 0).getDate();
-    const last = `${y}-${String(m).padStart(2, "0")}-${String(lastDay).padStart(2, "0")}`;
-    // Punto 2: flexibilizar. Se muestra el CMV guardado más reciente cuyo período SE SOLAPA con el
-    // mes elegido (aunque no sea exactamente del día 1 al último), en vez de exigir mes calendario exacto.
-    const matches = cmvList.filter((c) => {
-      if (c.localId !== localId) return false;
-      const from = String(c.periodFrom).slice(0, 10);
-      const to = String(c.periodTo).slice(0, 10);
-      return from <= last && to >= first; // solapamiento con [first, last]
-    });
-    if (matches.length === 0) return null;
-    return matches.sort((a, b) => (b.id ?? 0) - (a.id ?? 0))[0];
+  // Punto 12: CMV a asentar en el balance (mes elegido + un único local).
+  const cmvMatch = useMemo(() => {
+    if (selectedLocalIds.length !== 1) return { matched: null, nearby: [] as CmvCalculation[] };
+    return pickCmvForMonth(cmvList, selectedLocalIds[0], parseInt(selectedYear, 10), parseInt(selectedMonth, 10));
   }, [cmvList, selectedLocalIds, selectedYear, selectedMonth]);
+
+  const matchedCmv = cmvMatch.matched;
 
   const totalGastosPercent = monthlyVentas > 0 ? (monthlyGastos / monthlyVentas) * 100 : 0;
   const utilidadPercent = monthlyVentas > 0 ? (monthlyUtilidad / monthlyVentas) * 100 : 0;
@@ -635,10 +622,24 @@ export default function BalancePage() {
                     </div>
                   </>
                 ) : (
-                  <p className="text-sm text-muted-foreground">
-                    No hay un CMV guardado que se solape con {fullMonths[month - 1]} {selectedYear} para este local.
-                    Calculalo y guardalo desde el módulo CMV para que aparezca acá.
-                  </p>
+                  <div className="space-y-1">
+                    <p className="text-sm text-muted-foreground">
+                      No hay un CMV guardado que cubra {fullMonths[month - 1]} {selectedYear} para este local.
+                      Calculalo y guardalo desde el módulo CMV para que aparezca acá.
+                    </p>
+                    {cmvMatch.nearby.length > 0 && (
+                      <p className="text-xs text-muted-foreground">
+                        Hay {cmvMatch.nearby.length === 1 ? "un CMV" : `${cmvMatch.nearby.length} CMV`} de este local que
+                        {cmvMatch.nearby.length === 1 ? " toca" : " tocan"} el mes pero no
+                        {cmvMatch.nearby.length === 1 ? " lo representa" : " lo representan"} (
+                        {cmvMatch.nearby
+                          .slice(0, 3)
+                          .map((c) => `${String(c.periodFrom).slice(0, 10)} → ${String(c.periodTo).slice(0, 10)}`)
+                          .join(" · ")}
+                        {cmvMatch.nearby.length > 3 ? " · …" : ""}). Solo se asienta el que va de punta a punta del mes.
+                      </p>
+                    )}
+                  </div>
                 )}
               </div>
             )}
