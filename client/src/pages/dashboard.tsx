@@ -13,7 +13,7 @@ import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
-  LineChart, Line, PieChart, Pie, Cell,
+  LineChart, Line, PieChart, Pie, Cell, LabelList,
 } from "recharts";
 import {
   TrendingUp, TrendingDown, Minus, Target, Ticket, DollarSign, Building2,
@@ -31,6 +31,13 @@ const PIE_COLORS = ["#6366f1","#f59e0b","#10b981","#ef4444","#8b5cf6","#ec4899",
 function pct(n: number | null) {
   if (n == null) return null;
   return n.toFixed(1) + "%";
+}
+
+// Importe dentro de la barra: sin decimales para que entre en vertical; vacío si no hubo venta.
+function barAmountLabel(v: any) {
+  const n = Number(v);
+  if (!n) return "";
+  return Math.round(n).toLocaleString("es-AR");
 }
 
 function TrendBadge({ value }: { value: number | null }) {
@@ -115,13 +122,20 @@ function currentWeekMonday() {
 // Captura un nodo del DOM y lo baja como PDF (multi-página si es alto). "Foto" del análisis.
 async function downloadNodeAsPdf(el: HTMLElement, filename: string) {
   const isDark = document.documentElement.classList.contains("dark");
+  // El viewport del clon debe ser el real: si se achica, los gráficos (SVG de ancho fijo)
+  // se desbordan y quedan cortados, y los filtros con flex-wrap se re-acomodan pisándose.
   const canvas = await html2canvas(el, {
     scale: 2,
     useCORS: true,
     backgroundColor: isDark ? "#0b1220" : "#ffffff",
-    windowWidth: el.scrollWidth,
+    windowWidth: document.documentElement.clientWidth,
+    windowHeight: document.documentElement.clientHeight,
   });
-  const pdf = new jsPDF({ orientation: "p", unit: "pt", format: "a4" });
+  const pdf = new jsPDF({
+    orientation: canvas.width > canvas.height ? "l" : "p",
+    unit: "pt",
+    format: "a4",
+  });
   const pageW = pdf.internal.pageSize.getWidth();
   const pageH = pdf.internal.pageSize.getHeight();
   const imgW = pageW;
@@ -143,7 +157,12 @@ async function downloadNodeAsPdf(el: HTMLElement, filename: string) {
 }
 
 // Botón "PDF" por análisis: exporta la card más cercana marcada con [data-pdf-card].
-function AnalysisPdfButton({ name }: { name: string }) {
+// onBeforeCapture/onAfterCapture permiten mostrar encabezados solo en el PDF.
+function AnalysisPdfButton({ name, onBeforeCapture, onAfterCapture }: {
+  name: string;
+  onBeforeCapture?: () => void;
+  onAfterCapture?: () => void;
+}) {
   const [busy, setBusy] = useState(false);
   return (
     <Button
@@ -155,7 +174,15 @@ function AnalysisPdfButton({ name }: { name: string }) {
         const el = (e.currentTarget as HTMLElement).closest("[data-pdf-card]") as HTMLElement | null;
         if (!el) return;
         setBusy(true);
-        try { await downloadNodeAsPdf(el, name); } finally { setBusy(false); }
+        onBeforeCapture?.();
+        try {
+          // Dos frames para que el encabezado de PDF ya esté pintado antes de capturar.
+          await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => r(null))));
+          await downloadNodeAsPdf(el, name);
+        } finally {
+          onAfterCapture?.();
+          setBusy(false);
+        }
       }}
     >
       <FileDown className="h-4 w-4 mr-1" /> {busy ? "..." : "PDF"}
@@ -176,6 +203,7 @@ export default function DashboardPage() {
   const [weekStart, setWeekStart] = useState(currentWeekMonday());
   const [weekLocalIds, setWeekLocalIds] = useState<number[]>([]);
   const [weekSource, setWeekSource] = useState<"fudo" | "datalive" | "shares">("fudo");
+  const [weekPdfMode, setWeekPdfMode] = useState(false); // encabezado que sale solo en el PDF
 
   // Top products/categories filters
   const [topDateFrom, setTopDateFrom] = useState(`${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-01`);
@@ -282,6 +310,26 @@ export default function DashboardPage() {
       tickets: filtered.reduce((s, g) => s + (g.ticketsObjetivo || 0), 0),
     };
   }, [goalsData, globalLocalIds]);
+
+  // Rango de la semana elegida y la anterior (lunes a domingo, en UTC como el resto del widget)
+  const weekRange = useMemo(() => {
+    const start = new Date(weekStart + "T00:00:00Z");
+    const currEnd = new Date(start); currEnd.setUTCDate(currEnd.getUTCDate() + 6);
+    const prevStart = new Date(start); prevStart.setUTCDate(prevStart.getUTCDate() - 7);
+    const prevEnd = new Date(start); prevEnd.setUTCDate(prevEnd.getUTCDate() - 1);
+    const fmt = (d: Date) => d.toLocaleDateString("es-AR", { day: "2-digit", month: "2-digit", timeZone: "UTC" });
+    return {
+      start, currEnd, prevStart, prevEnd, fmt,
+      currLabel: `${fmt(start)} al ${fmt(currEnd)}`,
+      prevLabel: `${fmt(prevStart)} al ${fmt(prevEnd)}`,
+    };
+  }, [weekStart]);
+
+  const weekLocalLabel = useMemo(() => {
+    if (weekLocalIds.length === 0) return "Todos los locales";
+    const names = locals.filter((l) => weekLocalIds.includes(l.id)).map((l) => l.name);
+    return names.length > 0 ? names.join(" · ") : "Todos los locales";
+  }, [weekLocalIds, locals]);
 
   // Weekly chart data
   const weekChartData = useMemo(() => {
@@ -604,9 +652,14 @@ export default function DashboardPage() {
             <CardTitle className="text-sm font-semibold flex items-center gap-2">
               <BarChart3 className="h-4 w-4 text-blue-500" />
               Facturación Semanal
-              <AnalysisPdfButton name="facturacion_semanal" />
+              <AnalysisPdfButton
+                name="facturacion_semanal"
+                onBeforeCapture={() => setWeekPdfMode(true)}
+                onAfterCapture={() => setWeekPdfMode(false)}
+              />
             </CardTitle>
-            <div className="flex flex-wrap gap-3 items-end">
+            {/* Los filtros no van al PDF: en su lugar sale el encabezado con local y semanas. */}
+            <div className="flex flex-wrap gap-3 items-end" data-html2canvas-ignore="true">
               <div className="space-y-1">
                 <Label className="text-xs text-muted-foreground">Inicio de semana (lunes)</Label>
                 <Input type="date" value={weekStart} onChange={(e) => setWeekStart(e.target.value)} className="h-8 w-40 text-xs" />
@@ -626,6 +679,17 @@ export default function DashboardPage() {
           </div>
         </CardHeader>
         <CardContent>
+          {weekPdfMode && (
+            <div className="mb-4 border-b pb-3">
+              <p className="text-3xl font-bold leading-tight">{weekLocalLabel}</p>
+              <p className="text-base font-semibold mt-1">
+                Semana actual {weekRange.currLabel} vs Semana anterior {weekRange.prevLabel}
+              </p>
+              <p className="text-xs text-muted-foreground mt-0.5">
+                Facturación semanal · Origen {weekSource.toUpperCase()}
+              </p>
+            </div>
+          )}
           <div className="h-56">
             <ResponsiveContainer width="100%" height="100%">
               <BarChart data={weekChartData} margin={{ top: 4, right: 16, left: 0, bottom: 0 }}>
@@ -634,8 +698,12 @@ export default function DashboardPage() {
                 <YAxis tick={{ fontSize: 10 }} tickFormatter={(v) => v >= 1000000 ? `${(v / 1000000).toFixed(1)}M` : v >= 1000 ? `${(v / 1000).toFixed(0)}k` : String(v)} />
                 <Tooltip content={<CustomTooltipBar />} />
                 <Legend wrapperStyle={{ fontSize: 12 }} />
-                <Bar dataKey="Semana anterior" fill="#93c5fd" radius={[3, 3, 0, 0]} />
-                <Bar dataKey="Semana actual" fill="#3b82f6" radius={[3, 3, 0, 0]} />
+                <Bar dataKey="Semana anterior" fill="#93c5fd" radius={[3, 3, 0, 0]}>
+                  <LabelList dataKey="Semana anterior" position="center" angle={-90} formatter={barAmountLabel} fill="#1e3a5f" fontSize={9} fontWeight={600} />
+                </Bar>
+                <Bar dataKey="Semana actual" fill="#3b82f6" radius={[3, 3, 0, 0]}>
+                  <LabelList dataKey="Semana actual" position="center" angle={-90} formatter={barAmountLabel} fill="#ffffff" fontSize={9} fontWeight={600} />
+                </Bar>
               </BarChart>
             </ResponsiveContainer>
           </div>
@@ -671,11 +739,6 @@ export default function DashboardPage() {
             const curr = cmvSemanaData.current ?? { totalVentas: 0, totalCosto: 0, cmvPct: 0, cmvObjetivo: null, decomisos: 0 };
             const prev = cmvSemanaData.previous ?? { totalVentas: 0, totalCosto: 0, cmvPct: 0, cmvObjetivo: null, decomisos: 0 };
             const cmvEvol = prev.cmvPct > 0 ? curr.cmvPct - prev.cmvPct : null;
-            const startDate = new Date(weekStart + "T00:00:00Z");
-            const fmtDate = (d: Date) => d.toLocaleDateString("es-AR", { day: "2-digit", month: "2-digit", timeZone: "UTC" });
-            const currEnd = new Date(startDate); currEnd.setUTCDate(currEnd.getUTCDate() + 6);
-            const prevStart = new Date(startDate); prevStart.setUTCDate(prevStart.getUTCDate() - 7);
-            const prevEnd = new Date(startDate); prevEnd.setUTCDate(prevEnd.getUTCDate() - 1);
 
             // CMV real vs objetivo (del módulo Objetivos, ponderado por facturación).
             const objetivo: number | null = curr.cmvObjetivo ?? null;
@@ -691,7 +754,7 @@ export default function DashboardPage() {
                 <p className="text-xs font-medium text-muted-foreground mb-2 flex items-center gap-1"><Percent className="h-3 w-3" /> CMV por semana</p>
                 <div className="grid grid-cols-2 gap-3 text-sm">
                   <div className="rounded bg-muted/40 px-3 py-2">
-                    <p className="text-xs text-muted-foreground mb-1">Semana anterior — {fmtDate(prevStart)} al {fmtDate(prevEnd)}</p>
+                    <p className="text-xs text-muted-foreground mb-1">Semana anterior — {weekRange.prevLabel}</p>
                     <div className="flex gap-4 items-end">
                       <div><p className="text-xs text-muted-foreground">Facturación</p><p className="font-semibold">{formatCurrency(prev.totalVentas)}</p></div>
                       <div><p className="text-xs text-muted-foreground">CMV</p><p className="font-semibold">{formatCurrency(prev.totalCosto)}</p></div>
@@ -699,7 +762,7 @@ export default function DashboardPage() {
                     </div>
                   </div>
                   <div className="rounded bg-blue-50/60 dark:bg-blue-950/20 px-3 py-2">
-                    <p className="text-xs text-muted-foreground mb-1">Semana actual — {fmtDate(startDate)} al {fmtDate(currEnd)}</p>
+                    <p className="text-xs text-muted-foreground mb-1">Semana actual — {weekRange.currLabel}</p>
                     <div className="flex gap-4 items-end">
                       <div><p className="text-xs text-muted-foreground">Facturación</p><p className="font-semibold">{formatCurrency(curr.totalVentas)}</p></div>
                       <div><p className="text-xs text-muted-foreground">CMV</p><p className="font-semibold">{formatCurrency(curr.totalCosto)}</p></div>
