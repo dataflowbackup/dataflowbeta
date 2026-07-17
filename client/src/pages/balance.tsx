@@ -216,8 +216,13 @@ export default function BalancePage() {
 
   const num = (n: number) => new Intl.NumberFormat("es-AR", { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(n);
 
-  // Filas del reporte (para PDF y Excel), reflejando la pantalla + el CMV asentado (punto 12).
-  const buildReportRows = () => {
+  /**
+   * Filas del reporte (para PDF y Excel), reflejando la pantalla + el CMV asentado (punto 12).
+   * `expenseDetail` desglosa cada grupo de gasto en sus categorías: el Excel lo quiere (es para
+   * analizar), el PDF no (es un resumen y con el desglose se hacía larguísimo). Los importes de
+   * grupo salen de buildGroupedLines, así que omitir el detalle no cambia ningún total.
+   */
+  const buildReportRows = ({ expenseDetail = true }: { expenseDetail?: boolean } = {}) => {
     const rows: Array<{ label: string; value: string; indent?: boolean; bold?: boolean }> = [];
     rows.push({ label: "Local(es)", value: localsLabel, bold: true });
     rows.push({ label: "Período", value: `${fullMonths[month - 1]} ${selectedYear}`, bold: true });
@@ -228,7 +233,9 @@ export default function BalancePage() {
     rows.push({ label: "GASTOS", value: "" , bold: true });
     for (const g of groupedExpenseLines) {
       rows.push({ label: g.groupName, value: formatCurrency(g.groupAmount), indent: true, bold: true });
-      for (const c of g.categories) rows.push({ label: `   ${c.name}`, value: formatCurrency(c.amount), indent: true });
+      if (expenseDetail) {
+        for (const c of g.categories) rows.push({ label: `   ${c.name}`, value: formatCurrency(c.amount), indent: true });
+      }
     }
     rows.push({ label: "Traslados de Mercadería (no afecta utilidad)", value: formatCurrency(monthlyTraslados), indent: true });
     rows.push({ label: "Gastos Totales", value: formatCurrency(monthlyGastos), bold: true });
@@ -285,7 +292,8 @@ export default function BalancePage() {
     doc.text(localsLabel, marginX, y);
     y += 16;
     doc.setFontSize(10);
-    for (const r of buildReportRows()) {
+    // Sin desglose de categorías: en el PDF solo los totales por grupo de gasto.
+    for (const r of buildReportRows({ expenseDetail: false })) {
       if (y > 800) { doc.addPage(); y = 50; }
       doc.setFont("helvetica", r.bold ? "bold" : "normal");
       doc.text((r.indent ? "    " : "") + r.label, marginX, y);

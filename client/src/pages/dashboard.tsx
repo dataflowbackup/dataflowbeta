@@ -589,7 +589,7 @@ export default function DashboardPage() {
           </CardHeader>
           <CardContent>
             {saldosData.length === 0 ? (
-              <p className="text-sm text-muted-foreground text-center py-4">Sin datos de extractos</p>
+              <p className="text-sm text-muted-foreground text-center py-4">Sin datos de extractos ni de efectivo</p>
             ) : (
               <div className="space-y-2">
                 {saldosData.map((acc: any) => (

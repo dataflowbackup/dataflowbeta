@@ -5344,6 +5344,29 @@ export class DatabaseStorage implements IStorage {
       }
       result.push({ accountId: acc.id, accountName: acc.name, saldo, lastMovementDate: lastDate });
     }
+
+    // El efectivo se guarda sin bankAccountId, así que el loop de cuentas nunca lo alcanza
+    // (bankAccountId = X no matchea NULL) y quedaba fuera del saldo. Va como fila propia.
+    // accountId negativo: sintético y estable, no colisiona con los serial de bankAccounts.
+    const cashRows = await db
+      .select({ amount: transactions.amount, type: transactions.type, date: transactions.transactionDate })
+      .from(transactions)
+      .where(and(
+        eq(transactions.clientId, clientId),
+        eq(transactions.bankSource, "cash"),
+        lte(transactions.transactionDate, toDate),
+      ));
+    if (cashRows.length > 0) {
+      let saldo = 0;
+      let lastDate: string | null = null;
+      for (const r of cashRows) {
+        const amt = parseFloat(String(r.amount)) || 0;
+        saldo += r.type === "income" ? amt : -amt;
+        if (!lastDate || String(r.date) > lastDate) lastDate = String(r.date);
+      }
+      result.push({ accountId: -1, accountName: "Efectivo", saldo, lastMovementDate: lastDate, isCash: true });
+    }
+
     return result;
   }
 
