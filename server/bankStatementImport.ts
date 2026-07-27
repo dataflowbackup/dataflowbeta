@@ -200,7 +200,7 @@ export async function runBankStatementImport(input: BankStatementImportInput): P
           reconciliationRequired: true,
           code: "MP_RECONCILIATION_REQUIRED",
           reason: "sum_mismatch",
-          message: `La suma algebraica de los movimientos a importar (${sum.toFixed(2)}, bruto + comisión + impuesto ± ajuste por fila) no coincide con el «Saldo disponible total» del archivo (${Number(ref).toFixed(2)}). Revisá filas omitidas, duplicados en sistema, o el pie del Excel; las filas mostradas son solo referencia.`,
+          message: `La suma de los movimientos a importar (${sum.toFixed(2)}, bruto − comisión − impuesto) no coincide con la variación del saldo del archivo (${Number(ref).toFixed(2)}, saldo final − saldo inicial de la columna SALDO). Puede haber filas con importes corruptos en el Excel (bruto/neto inconsistentes con el SALDO), filas omitidas o duplicados en el sistema. Las filas mostradas son solo referencia.`,
           saldoDisponibleTotal: ref,
           sumGrossImportable: mpSumGrossForReco,
           sumNetImportable: sum,

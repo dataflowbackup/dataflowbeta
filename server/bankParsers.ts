@@ -890,6 +890,14 @@ class MercadoPagoParser implements BankParser {
     const netDebitIdx = headers.findIndex(
       (h) => h.includes("MONTO NETO DEBITADO") || h === "MONTO NETO DEBITADO",
     );
+    // Columna SALDO (saldo corrido que MP calcula). Es la FUENTE DE VERDAD para reconciliar:
+    // Σ movimientos importados debe igualar (saldo final − saldo inicial) de esta columna.
+    let saldoIdx = headers.findIndex((h) => h === "SALDO");
+    if (saldoIdx === -1) {
+      saldoIdx = headers.findIndex(
+        (h) => h.includes("SALDO") && !h.includes("INICIAL") && !h.includes("FINAL"),
+      );
+    }
 
     if (dateIdx === -1 || grossIdx === -1) {
       console.log("[MP Parser] Missing required columns! All headers:", headers);
@@ -901,14 +909,15 @@ class MercadoPagoParser implements BankParser {
       };
     }
 
-    const saldoDisponibleTotal = extractMpSaldoDisponibleTotal(rawData, grossIdx, netCreditIdx);
-
     const total = rawData.length - 1;
     let openingBalance: number | null = null;
     let closingBalance: number | null = null;
     let periodStart: string | null = null;
     let periodEnd: string | null = null;
     let sumGrossImportable = 0;
+    // Reconciliación por columna SALDO: saldo antes del 1er movimiento y saldo tras el último.
+    let openingSaldo: number | null = null;
+    let lastSaldo: number | null = null;
 
     const summaryDescriptions = [
       "dinero disponible del período anterior",
@@ -1021,24 +1030,19 @@ class MercadoPagoParser implements BankParser {
         });
       }
 
-      let lineSum = 0;
-      if (Math.abs(grossH) > EPS) lineSum += grossH;
-      if (jAbs > EPS) lineSum -= jAbs;
-      if (mAbs > EPS) lineSum -= mAbs;
-      const adjustment = netTarget - lineSum;
-
-      if (Math.abs(adjustment) > 0.005) {
-        rowLines.push({
-          date: dateValue,
-          description:
-            `Ajuste neto Mercado Pago` +
-            (descText ? ` (${descText.slice(0, 120)}${descText.length > 120 ? "…" : ""})` : ""),
-          amount: Math.abs(adjustment),
-          type: adjustment >= 0 ? "income" : "expense",
-          branchName: branchName || undefined,
-          excelRow,
-          mpLineKind: "adjustment",
-        });
+      // Spec definitiva MP (jul-27): se cargan SOLO bruto + comisión + impuesto como movimientos
+      // individuales. NO se crea línea de "Ajuste neto" (antes cuadraba contra MONTO NETO; cuando
+      // ese neto venía corrupto, inyectaba movimientos gigantes espurios). El saldo final se valida
+      // contra la columna SALDO, no contra el neto declarado.
+      const rowNetMovement = (Math.abs(grossH) > EPS ? grossH : 0) - jAbs - mAbs;
+      const saldoHere =
+        saldoIdx !== -1 && row[saldoIdx] != null && String(row[saldoIdx]).trim() !== ""
+          ? this.parseNumber(row[saldoIdx])
+          : null;
+      if (saldoHere !== null) {
+        // Saldo antes del primer movimiento = saldo tras esta fila − movimiento neto de la fila.
+        if (openingSaldo === null) openingSaldo = saldoHere - rowNetMovement;
+        lastSaldo = saldoHere;
       }
 
       for (const tl of rowLines) {
@@ -1053,6 +1057,18 @@ class MercadoPagoParser implements BankParser {
       (s, t) => s + (t.type === "income" ? t.amount : -t.amount),
       0,
     );
+
+    // Reconciliación: referencia = variación del saldo según la columna SALDO de MP (independiente de
+    // bruto/comisión/impuesto). Σ movimientos importados debe igualar (saldo final − saldo inicial).
+    // Si el archivo no trae columna SALDO, se cae al método viejo (fila de totales).
+    let saldoDisponibleTotal: number | null;
+    if (saldoIdx !== -1 && lastSaldo !== null && openingSaldo !== null) {
+      saldoDisponibleTotal = Number((lastSaldo - openingSaldo).toFixed(2));
+      if (openingBalance === null) openingBalance = Number(openingSaldo.toFixed(2));
+      if (closingBalance === null) closingBalance = Number(lastSaldo.toFixed(2));
+    } else {
+      saldoDisponibleTotal = extractMpSaldoDisponibleTotal(rawData, grossIdx, netCreditIdx);
+    }
 
     return {
       transactions,
