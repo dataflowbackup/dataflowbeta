@@ -2710,6 +2710,31 @@ export class DatabaseStorage implements IStorage {
     return updated;
   }
 
+  /**
+   * Actualiza en LOTE muchas transacciones con el mismo cambio (categorización masiva).
+   * Usa un solo UPDATE ... WHERE id IN (...) por chunk en vez de N updates individuales:
+   * con Turso remoto, N round-trips (p.ej. 1296) desborda el timeout de la función (504).
+   */
+  async batchUpdateTransactions(
+    clientId: number,
+    ids: number[],
+    updateData: Partial<InsertTransaction>,
+  ): Promise<number> {
+    if (ids.length === 0) return 0;
+    const CHUNK = 500; // muy por debajo del límite de variables de SQLite
+    let updated = 0;
+    for (let i = 0; i < ids.length; i += CHUNK) {
+      const chunk = ids.slice(i, i + CHUNK);
+      const rows = await db
+        .update(transactions)
+        .set(updateData)
+        .where(and(eq(transactions.clientId, clientId), inArray(transactions.id, chunk)))
+        .returning({ id: transactions.id });
+      updated += rows.length;
+    }
+    return updated;
+  }
+
   async deleteTransaction(clientId: number, id: number): Promise<boolean> {
     // SQLite/libSQL: el resultado del DELETE no garantiza rowCount útil con este driver.
     const deletedRows = await db

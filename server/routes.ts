@@ -3203,15 +3203,12 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         return res.status(400).json({ message: "No hay transacciones para actualizar" });
       }
 
-      let updated = 0;
-      for (const id of idsToUpdate) {
-        const updateData: any = uncategorize
-          ? { categoryId: null }
-          : { categoryId: categoryId || null };
-        if (!uncategorize && localId !== undefined) updateData.localId = localId || null;
-        const result = await storage.updateTransaction(clientId, id, updateData);
-        if (result) updated++;
-      }
+      const updateData: any = uncategorize
+        ? { categoryId: null }
+        : { categoryId: categoryId || null };
+      if (!uncategorize && localId !== undefined) updateData.localId = localId || null;
+      // UPDATE en lote (un solo statement por chunk) para no desbordar el timeout con miles de filas.
+      const updated = await storage.batchUpdateTransactions(clientId, idsToUpdate, updateData);
 
       res.json({
         success: true,
