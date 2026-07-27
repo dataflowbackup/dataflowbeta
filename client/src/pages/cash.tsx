@@ -706,6 +706,15 @@ export default function CashPage() {
     () => (filteredTransactions.length > 0 ? Math.round((categorizedCount / filteredTransactions.length) * 100) : 0),
     [categorizedCount, filteredTransactions.length],
   );
+  // Punto 5 (jul-27): % de movimientos con Local asignado (mismo criterio de vista).
+  const withLocalCount = useMemo(
+    () => filteredTransactions.filter((t) => t.localId).length,
+    [filteredTransactions],
+  );
+  const withLocalPercent = useMemo(
+    () => (filteredTransactions.length > 0 ? Math.round((withLocalCount / filteredTransactions.length) * 100) : 0),
+    [withLocalCount, filteredTransactions.length],
+  );
 
   /**
    * Promedio diario de ingresos: Σ ingresos en la vista ÷ días calendario entre la primera y última fecha
@@ -1172,7 +1181,7 @@ export default function CashPage() {
   const columns: Column<TransactionWithRelations>[] = [
     {
       key: "transactionDate",
-      header: "Fecha",
+      header: "Fecha Acreditación",
       cell: (row) => formatDate(row.transactionDate),
     },
     {
@@ -1340,7 +1349,7 @@ export default function CashPage() {
         }
       />
 
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
         <Card>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
             <div>
@@ -1449,6 +1458,30 @@ export default function CashPage() {
             <Progress value={categorizationPercent} className="mt-2 h-2" />
             <p className="text-xs text-muted-foreground mt-1">
               {categorizedCount} de {filteredTransactions.length} movimientos
+            </p>
+          </CardContent>
+        </Card>
+        <Card className={withLocalPercent === 100 ? "border-green-500/50" : "border-amber-500/50"}>
+          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+            <CardTitle className="text-sm font-medium">Con Local</CardTitle>
+            {withLocalPercent === 100 ? (
+              <CheckCircle className="h-4 w-4 text-green-600" />
+            ) : (
+              <AlertCircle className="h-4 w-4 text-amber-600" />
+            )}
+          </CardHeader>
+          <CardContent>
+            <div
+              className={cn(
+                "text-2xl font-bold font-mono",
+                withLocalPercent === 100 ? "text-green-600" : "text-amber-600",
+              )}
+            >
+              {withLocalPercent}%
+            </div>
+            <Progress value={withLocalPercent} className="mt-2 h-2" />
+            <p className="text-xs text-muted-foreground mt-1">
+              {withLocalCount} de {filteredTransactions.length} movimientos
             </p>
           </CardContent>
         </Card>

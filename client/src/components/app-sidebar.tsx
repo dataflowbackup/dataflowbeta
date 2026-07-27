@@ -29,7 +29,6 @@ import {
   FolderTree,
   Layers,
   Briefcase,
-  Banknote,
   Upload,
   ShoppingCart,
   Truck,
@@ -120,8 +119,7 @@ const menuSections: MenuSection[] = [
     title: "Financiero",
     defaultOpen: false,
     items: [
-      { title: "Extractos", url: "/extractos", icon: Receipt },
-      { title: "Efectivo", url: "/efectivo", icon: Banknote },
+      { title: "Extractos/Efectivo", url: "/extractos-efectivo", icon: Receipt },
       { title: "Categorias Mov.", url: "/categorias-movimientos", icon: Tags },
       { title: "Grupos Financ.", url: "/grupos-financieros", icon: FolderTree },
       { title: "Balances Financieros", url: "/balance", icon: BarChart3 },

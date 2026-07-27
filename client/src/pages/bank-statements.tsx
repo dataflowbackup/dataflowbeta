@@ -433,6 +433,8 @@ export default function BankStatementsPage() {
   const [listFilterLocalId, setListFilterLocalId] = useState<string>("all");
   const [listFilterCategoryId, setListFilterCategoryId] = useState<string>("all");
   const [listFilterGroupId, setListFilterGroupId] = useState<string>("all");
+  // Punto 4 (jul-27): filtro por Cuenta (bank_accounts), distinto de la pestaña de Entidad/banco.
+  const [listFilterAccountId, setListFilterAccountId] = useState<string>("all");
   const [listFilterDateFrom, setListFilterDateFrom] = useState("");
   const [listFilterDateTo, setListFilterDateTo] = useState("");
   const [listFilterType, setListFilterType] = useState<"all" | "income" | "expense">("all");
@@ -1113,7 +1115,10 @@ export default function BankStatementsPage() {
       return;
     }
 
-    const localId = batchLocalId && batchLocalId !== "none" ? parseInt(batchLocalId) : null;
+    // Punto 2 (jul-27): SOLO tocar el local si el usuario eligió uno explícitamente.
+    // Si deja "Sin asignar" (default), NO se envía localId → el backend no pisa el local
+    // previo de los movimientos (antes mandaba null y los dejaba sin local).
+    const localSelected = !!batchLocalId && batchLocalId !== "none";
 
     batchCategorizeMutation.mutate({
       ...(hasDescriptions ? { descriptions: Array.from(selectedDescriptions) } : {}),
@@ -1122,7 +1127,7 @@ export default function BankStatementsPage() {
       ...(hasSelection ? { transactionIds: Array.from(selectedTransactionIds) } : {}),
       ...(uncategorize ? { mode: "uncategorize" as const } : {}),
       categoryId: uncategorize ? null : parseInt(batchCategoryId),
-      localId: uncategorize ? undefined : localId,
+      ...(!uncategorize && localSelected ? { localId: parseInt(batchLocalId) } : {}),
       dateFrom: hasDateRange ? batchDateFrom : undefined,
       dateTo: hasDateRange ? batchDateTo : undefined,
     });
@@ -1373,6 +1378,15 @@ export default function BankStatementsPage() {
     [financialGroups],
   );
 
+  // Punto 4 (jul-27): opciones del filtro por Cuenta (bank_accounts) del listado.
+  const accountFilterItems = useMemo(
+    () =>
+      [...bankAccounts]
+        .sort((a, b) => String(a.name).localeCompare(String(b.name), "es"))
+        .map((a) => ({ id: a.id, name: `${a.name}${a.local?.name ? ` · ${a.local.name}` : ""}` })),
+    [bankAccounts],
+  );
+
   // categoryId -> financialGroupId, para filtrar por grupo a través de la categoría.
   const categoryGroupMap = useMemo(
     () => new Map(categories.map((c) => [c.id, (c as any).financialGroupId as number | null])),
@@ -1450,6 +1464,7 @@ export default function BankStatementsPage() {
     listFilterLocalId !== "all" ||
     listFilterCategoryId !== "all" ||
     listFilterGroupId !== "all" ||
+    listFilterAccountId !== "all" ||
     listFilterType !== "all" ||
     listFilterDateFrom !== "" ||
     listFilterDateTo !== "";
@@ -1458,6 +1473,7 @@ export default function BankStatementsPage() {
     setListFilterLocalId("all");
     setListFilterCategoryId("all");
     setListFilterGroupId("all");
+    setListFilterAccountId("all");
     setListFilterType("all");
     setListFilterDateFrom("");
     setListFilterDateTo("");
@@ -1481,6 +1497,12 @@ export default function BankStatementsPage() {
         rows = rows.filter((t) => t.categoryId != null && categoryGroupMap.get(t.categoryId) === gid);
       }
     }
+    if (listFilterAccountId === "none") {
+      rows = rows.filter((t) => (t as TransactionWithRelations).bankAccountId == null);
+    } else if (listFilterAccountId !== "all") {
+      const aid = parseInt(listFilterAccountId, 10);
+      if (Number.isFinite(aid)) rows = rows.filter((t) => (t as TransactionWithRelations).bankAccountId === aid);
+    }
     if (listFilterType !== "all") {
       rows = rows.filter((t) => t.type === listFilterType);
     }
@@ -1500,6 +1522,7 @@ export default function BankStatementsPage() {
     listFilterLocalId,
     listFilterCategoryId,
     listFilterGroupId,
+    listFilterAccountId,
     categoryGroupMap,
     listFilterType,
     listFilterDateFrom,
@@ -1544,6 +1567,11 @@ export default function BankStatementsPage() {
   const categorizationPercent = kpi.length > 0
     ? Math.round((categorizedCount / kpi.length) * 100)
     : 0;
+  // Punto 5 (jul-27): % de movimientos con Local asignado (mismo criterio de vista que el % categorizado).
+  const withLocalCount = kpi.filter((t) => t.localId).length;
+  const withLocalPercent = kpi.length > 0
+    ? Math.round((withLocalCount / kpi.length) * 100)
+    : 0;
   const totalIncome = kpi
     .filter((t) => t.type === "income")
     .reduce((sum, t) => sum + parseFloat(String(t.amount) || "0"), 0);
@@ -1587,7 +1615,7 @@ export default function BankStatementsPage() {
     },
     {
       key: "transactionDate",
-      header: "Fecha",
+      header: "Fecha Acreditación",
       cell: (row) => formatDate(row.transactionDate),
     },
     {
@@ -1806,7 +1834,7 @@ export default function BankStatementsPage() {
         </Card>
       )}
 
-      <div className="grid gap-4 md:grid-cols-5">
+      <div className="grid gap-4 md:grid-cols-3 lg:grid-cols-6">
         <Card>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2 gap-2">
             <CardTitle className="text-sm font-medium">Movimientos</CardTitle>
@@ -1842,6 +1870,33 @@ export default function BankStatementsPage() {
             />
             <p className="text-xs text-muted-foreground mt-1">
               {categorizedCount} de {kpi.length} movimientos
+            </p>
+          </CardContent>
+        </Card>
+
+        <Card className={withLocalPercent === 100 ? "border-green-500/50" : "border-amber-500/50"}>
+          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2 gap-2">
+            <CardTitle className="text-sm font-medium">Con Local</CardTitle>
+            {withLocalPercent === 100 ? (
+              <CheckCircle className="h-4 w-4 text-green-600" />
+            ) : (
+              <AlertCircle className="h-4 w-4 text-amber-600" />
+            )}
+          </CardHeader>
+          <CardContent>
+            <div className="flex items-center gap-2">
+              <div className={`text-2xl font-bold font-mono ${
+                withLocalPercent === 100 ? "text-green-600" : "text-amber-600"
+              }`} data-testid="stat-with-local">
+                {withLocalPercent}%
+              </div>
+            </div>
+            <Progress
+              value={withLocalPercent}
+              className="mt-2 h-2"
+            />
+            <p className="text-xs text-muted-foreground mt-1">
+              {withLocalCount} de {kpi.length} movimientos
             </p>
           </CardContent>
         </Card>
@@ -2079,6 +2134,17 @@ export default function BankStatementsPage() {
                     allLabel="Todos los grupos"
                     items={groupFilterItems}
                     searchPlaceholder="Buscar grupo…"
+                  />
+                </div>
+                <div className="space-y-1 sm:col-span-2">
+                  <Label className="text-xs">Cuenta</Label>
+                  <FilterSearchableSelect
+                    value={listFilterAccountId}
+                    onChange={setListFilterAccountId}
+                    allLabel="Todas las cuentas"
+                    items={accountFilterItems}
+                    searchPlaceholder="Buscar cuenta…"
+                    extraOptions={[{ value: "none", label: "Sin cuenta" }]}
                   />
                 </div>
                 <div className="space-y-1">
@@ -2978,6 +3044,7 @@ export default function BankStatementsPage() {
 
                 <div className="space-y-2">
                   <p className="text-sm font-medium">4. Local a asignar (opcional)</p>
+                  <p className="text-xs text-muted-foreground">Si dejás "Sin asignar", no se modifica el local que ya tienen los movimientos.</p>
                   <BatchLocalCombobox locals={locals} value={batchLocalId} onChange={setBatchLocalId} />
                 </div>
               </>
