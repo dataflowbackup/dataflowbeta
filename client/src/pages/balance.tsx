@@ -149,11 +149,13 @@ export default function BalancePage() {
   const month = parseInt(selectedMonth);
 
   const monthlyVentas = spreadsheet?.summary.income[month] ?? 0;
-  const monthlyGastos = spreadsheet?.summary.expenses[month] ?? 0;
-  const monthlyUtilidad = monthlyVentas - monthlyGastos;
-  // Punto 6: Traslados de Mercadería del mes (recibidos − enviados). No afecta Utilidad ni saldos;
-  // solo se resta en el "Movimiento neto (caja)".
+  const monthlyGastosOperativos = spreadsheet?.summary.expenses[month] ?? 0;
+  // Traslados de Mercadería del mes (recibidos − enviados).
   const monthlyTraslados = spreadsheet?.summary.traslados?.[month] ?? 0;
+  // Punto 7 (jul-27): los Traslados ahora INTEGRAN los Gastos Totales y afectan la rentabilidad.
+  // Antes quedaban fuera de la utilidad y solo se restaban en el neto de caja.
+  const monthlyGastos = monthlyGastosOperativos + monthlyTraslados;
+  const monthlyUtilidad = monthlyVentas - monthlyGastos;
   const trasladosPercent = monthlyVentas > 0 ? (monthlyTraslados / monthlyVentas) * 100 : 0;
 
   const prevMonth = month === 1 ? 12 : month - 1;
@@ -237,11 +239,11 @@ export default function BalancePage() {
         for (const c of g.categories) rows.push({ label: `   ${c.name}`, value: formatCurrency(c.amount), indent: true });
       }
     }
-    rows.push({ label: "Traslados de Mercadería (no afecta utilidad)", value: formatCurrency(monthlyTraslados), indent: true });
+    rows.push({ label: "Traslados de Mercadería (incluido en Gastos Totales)", value: formatCurrency(monthlyTraslados), indent: true });
     rows.push({ label: "Gastos Totales", value: formatCurrency(monthlyGastos), bold: true });
     rows.push({ label: "Utilidad", value: formatCurrency(monthlyUtilidad), bold: true });
     rows.push({ label: "Utilidad %", value: `${utilidadPercent.toFixed(2)}%`, bold: true });
-    if (otrosMovGroups.length > 0 || monthlyTraslados !== 0) {
+    if (otrosMovGroups.length > 0) {
       rows.push({ label: "MOVIMIENTOS FINANCIEROS (no afectan rentabilidad)", value: "", bold: true });
       for (const g of otrosMovGroups) {
         const signed = g.specialSignedMonthlyTotals?.[month]
@@ -249,10 +251,7 @@ export default function BalancePage() {
         rows.push({ label: g.name, value: formatCurrency(signed), indent: true });
       }
       rows.push({ label: "Total Movimientos Financieros", value: formatCurrency(spreadsheet?.summary.otrosMovimientos?.[month] ?? 0), bold: true });
-      if (monthlyTraslados !== 0) {
-        rows.push({ label: "− Traslados de Mercadería", value: formatCurrency(monthlyTraslados), indent: true });
-      }
-      rows.push({ label: "Movimiento neto del período (caja)", value: formatCurrency(monthlyUtilidad + (spreadsheet?.summary.otrosMovimientos?.[month] ?? 0) - monthlyTraslados), bold: true });
+      rows.push({ label: "Movimiento neto del período (caja)", value: formatCurrency(monthlyUtilidad + (spreadsheet?.summary.otrosMovimientos?.[month] ?? 0)), bold: true });
     }
     if (matchedCmv) {
       rows.push({ label: "CMV DEL PERÍODO (dato asentado)", value: "", bold: true });
@@ -276,29 +275,115 @@ export default function BalancePage() {
     XLSX.writeFile(wb, `balance_${selectedYear}_${String(selectedMonth).padStart(2, "0")}.xlsx`);
   };
 
+  /**
+   * Filas para el PDF cuadriculado (puntos 3 y 11, jul-27): tabla con grilla y 3 columnas
+   * Concepto | Importe | % (sobre ventas), a nivel grupos de gasto/venta y totales — sin
+   * desglose por categoría. `section` = encabezado de bloque (fila sombreada a todo el ancho).
+   */
+  const buildPdfRows = () => {
+    type PdfRow = { label: string; importe?: string; pct?: string; bold?: boolean; section?: boolean; indent?: boolean };
+    const rows: PdfRow[] = [];
+    const pct = (n: number) => `${n.toFixed(2)}%`;
+
+    rows.push({ label: "Ventas", importe: formatCurrency(monthlyVentas), pct: pct(100), bold: true });
+    for (const g of groupedVentaLines) {
+      rows.push({ label: g.groupName, importe: formatCurrency(g.groupAmount), pct: pct(g.groupPercent), indent: true });
+    }
+    rows.push({ label: "GASTOS", section: true, bold: true });
+    for (const g of groupedExpenseLines) {
+      rows.push({ label: g.groupName, importe: formatCurrency(g.groupAmount), pct: pct(g.groupPercent), indent: true, bold: true });
+    }
+    rows.push({ label: "Traslados de Mercadería", importe: formatCurrency(monthlyTraslados), pct: pct(trasladosPercent), indent: true });
+    rows.push({ label: "Gastos Totales", importe: formatCurrency(monthlyGastos), pct: pct(totalGastosPercent), bold: true });
+    rows.push({ label: "Utilidad", importe: formatCurrency(monthlyUtilidad), pct: pct(utilidadPercent), bold: true });
+
+    if (otrosMovGroups.length > 0) {
+      rows.push({ label: "MOVIMIENTOS FINANCIEROS (no afectan rentabilidad)", section: true, bold: true });
+      for (const g of otrosMovGroups) {
+        const signed = g.specialSignedMonthlyTotals?.[month]
+          ?? g.signedMonthlyTotals?.[month] ?? g.monthlyTotals[month] ?? 0;
+        rows.push({ label: g.name, importe: formatCurrency(signed), indent: true });
+      }
+      rows.push({ label: "Total Movimientos Financieros", importe: formatCurrency(spreadsheet?.summary.otrosMovimientos?.[month] ?? 0), bold: true });
+      rows.push({ label: "Movimiento neto del período (caja)", importe: formatCurrency(monthlyUtilidad + (spreadsheet?.summary.otrosMovimientos?.[month] ?? 0)), bold: true });
+    }
+
+    if (matchedCmv) {
+      rows.push({ label: "CMV DEL PERÍODO (dato asentado)", section: true, bold: true });
+      rows.push({ label: "Stock inicial", importe: formatCurrency(parseFloat(String(matchedCmv.stockInicial)) || 0), indent: true });
+      rows.push({ label: "+ Compras", importe: formatCurrency(parseFloat(String(matchedCmv.compras)) || 0), indent: true });
+      rows.push({ label: "− Stock final", importe: formatCurrency(parseFloat(String(matchedCmv.stockFinal)) || 0), indent: true });
+      rows.push({ label: "CMV", importe: formatCurrency(parseFloat(String(matchedCmv.cmv)) || 0), indent: true, bold: true });
+      rows.push({ label: "Venta base CMV", importe: formatCurrency(parseFloat(String(matchedCmv.ventaNeta)) || 0), indent: true });
+      rows.push({ label: "CMV %", pct: pct(parseFloat(String(matchedCmv.cmvPct)) || 0), indent: true, bold: true });
+    }
+    return rows;
+  };
+
   const exportPdf = () => {
     if (!spreadsheet) return;
     const doc = new jsPDF({ unit: "pt", format: "a4" });
     const marginX = 40;
-    const rightX = 555;
+    const tableLeft = marginX;
+    const tableRight = 555;
+    // Columnas: Concepto [40..380] | Importe [380..470] | % [470..555].
+    const xConcepto = marginX;
+    const divConceptoImporte = 380;
+    const divImportePct = 470;
+    const xImporteR = divImportePct - 6;  // texto Importe alineado a la derecha dentro de su columna
+    const xPctR = tableRight - 4;          // texto % alineado a la derecha
+    const rowH = 18;
+    const pageBottom = 800;
+
     let y = 50;
     doc.setFontSize(14);
     doc.setFont("helvetica", "bold");
     doc.text("Balance Financiero", marginX, y);
-    doc.text(`${fullMonths[month - 1]} ${selectedYear}`, rightX, y, { align: "right" });
+    doc.text(`${fullMonths[month - 1]} ${selectedYear}`, tableRight, y, { align: "right" });
     y += 18;
     doc.setFontSize(9);
     doc.setFont("helvetica", "normal");
     doc.text(localsLabel, marginX, y);
-    y += 16;
-    doc.setFontSize(10);
-    // Sin desglose de categorías: en el PDF solo los totales por grupo de gasto.
-    for (const r of buildReportRows({ expenseDetail: false })) {
-      if (y > 800) { doc.addPage(); y = 50; }
+    y += 18;
+
+    // Encabezado de la tabla (repetible por página).
+    const drawTableHeader = () => {
+      doc.setFillColor(60, 60, 60);
+      doc.setDrawColor(180, 180, 180);
+      doc.setLineWidth(0.5);
+      doc.rect(tableLeft, y, tableRight - tableLeft, rowH, "FD");
+      doc.setTextColor(255, 255, 255);
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(9);
+      doc.text("Concepto", xConcepto + 4, y + 12);
+      doc.text("Importe", xImporteR, y + 12, { align: "right" });
+      doc.text("%", xPctR, y + 12, { align: "right" });
+      doc.setTextColor(0, 0, 0);
+      y += rowH;
+    };
+
+    drawTableHeader();
+    doc.setFontSize(9);
+
+    for (const r of buildPdfRows()) {
+      if (y + rowH > pageBottom) { doc.addPage(); y = 50; drawTableHeader(); }
+      // Fondo: encabezados de bloque en gris medio, filas bold en gris claro.
+      if (r.section) doc.setFillColor(225, 225, 225);
+      else if (r.bold) doc.setFillColor(243, 243, 243);
+      else doc.setFillColor(255, 255, 255);
+      doc.setDrawColor(200, 200, 200);
+      doc.setLineWidth(0.5);
+      doc.rect(tableLeft, y, tableRight - tableLeft, rowH, "FD");
+      // Divisorias de columnas (solo en filas de datos, no en las secciones a todo el ancho).
+      if (!r.section) {
+        doc.line(divConceptoImporte, y, divConceptoImporte, y + rowH);
+        doc.line(divImportePct, y, divImportePct, y + rowH);
+      }
       doc.setFont("helvetica", r.bold ? "bold" : "normal");
-      doc.text((r.indent ? "    " : "") + r.label, marginX, y);
-      if (r.value) doc.text(r.value, rightX, y, { align: "right" });
-      y += 15;
+      doc.text((r.indent ? "   " : "") + r.label, xConcepto + 4, y + 12);
+      if (r.importe) doc.text(r.importe, xImporteR, y + 12, { align: "right" });
+      if (r.pct) doc.text(r.pct, xPctR, y + 12, { align: "right" });
+      y += rowH;
     }
     doc.save(`balance_${selectedYear}_${String(selectedMonth).padStart(2, "0")}.pdf`);
   };
@@ -423,12 +508,11 @@ export default function BalancePage() {
                     ))}
                 </div>
               ))}
-              {/* Punto 6: Traslados de Mercadería — última fila, debajo del último grupo (RRHH).
-                  No suma a Gastos Totales ni a la Utilidad; solo se resta del neto de caja. */}
+              {/* Punto 7 (jul-27): Traslados de Mercadería — ahora integran Gastos Totales y afectan la utilidad. */}
               <div className="grid grid-cols-1 gap-2 sm:grid-cols-[1fr_auto] text-sm font-semibold border-t pt-2">
                 <span className="inline-flex items-center gap-2">
                   Traslados de Mercadería
-                  <span className="text-[10px] font-normal text-muted-foreground">(no afecta la utilidad)</span>
+                  <span className="text-[10px] font-normal text-muted-foreground">(incluido en Gastos Totales)</span>
                 </span>
                 <span className="font-mono text-right" data-testid="text-traslados-mercaderia">{formatCurrency(monthlyTraslados)}</span>
               </div>
@@ -486,11 +570,11 @@ export default function BalancePage() {
                     ))}
                 </div>
               ))}
-              {/* Punto 6: Traslados de Mercadería en % (sobre ventas). */}
+              {/* Punto 7 (jul-27): Traslados de Mercadería en % (sobre ventas), ya dentro de Gastos Totales. */}
               <div className="grid grid-cols-1 gap-2 sm:grid-cols-[1fr_auto] text-sm font-semibold border-t pt-2">
                 <span className="inline-flex items-center gap-2">
                   Traslados de Mercadería
-                  <span className="text-[10px] font-normal text-muted-foreground">(no afecta la utilidad)</span>
+                  <span className="text-[10px] font-normal text-muted-foreground">(incluido en Gastos Totales)</span>
                 </span>
                 <span className="font-mono text-right">{trasladosPercent.toFixed(2)}%</span>
               </div>
@@ -507,7 +591,7 @@ export default function BalancePage() {
               </span>
             </div>
 
-            {(otrosMovGroups.length > 0 || monthlyTraslados !== 0) && (
+            {otrosMovGroups.length > 0 && (
               <div className="space-y-2 border-t-2 pt-4" data-testid="section-movimientos-financieros">
                 <div className="grid grid-cols-1 gap-2 sm:grid-cols-[1fr_auto]">
                   <span className="font-bold uppercase">Movimientos Financieros</span>
@@ -567,26 +651,19 @@ export default function BalancePage() {
                   </span>
                 </div>
 
-                {monthlyTraslados !== 0 && (
-                  <div className="grid grid-cols-1 gap-2 sm:grid-cols-[1fr_auto] text-sm">
-                    <span className="font-semibold">− Traslados de Mercadería</span>
-                    <span className="font-mono text-right font-semibold">{formatCurrency(monthlyTraslados)}</span>
-                  </div>
-                )}
-
                 <div className="grid grid-cols-1 gap-2 sm:grid-cols-[1fr_auto] border-t-2 pt-2">
                   <span className="font-bold uppercase">Movimiento neto del período (caja)</span>
                   <span
                     className="font-mono text-right font-bold"
                     data-testid="text-movimiento-neto-caja"
                   >
-                    {formatCurrency(monthlyUtilidad + (spreadsheet.summary.otrosMovimientos?.[month] ?? 0) - monthlyTraslados)}
+                    {formatCurrency(monthlyUtilidad + (spreadsheet.summary.otrosMovimientos?.[month] ?? 0))}
                   </span>
                 </div>
                 <p className="text-xs text-muted-foreground">
-                  Utilidad (rentabilidad) + Movimientos Financieros − Traslados de Mercadería. Los traslados
-                  ajustan la rentabilidad final (mercadería que un local pagó pero no usó, o usó pero no pagó)
-                  sin tocar los saldos de caja/cuentas.
+                  Utilidad + Movimientos Financieros. La Utilidad ya incluye los Traslados de Mercadería dentro
+                  de los Gastos Totales, así que este neto equivale a Ventas − Gastos − Traslados + Movimientos
+                  Financieros (la variación de caja del período).
                 </p>
               </div>
             )}

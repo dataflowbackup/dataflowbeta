@@ -35,6 +35,7 @@ import {
   Truck,
   Target,
   Trash2,
+  LineChart,
 } from "lucide-react";
 import { useAuth } from "@/hooks/useAuth";
 import { usePermissions } from "@/hooks/usePermissions";
@@ -124,6 +125,7 @@ const menuSections: MenuSection[] = [
       { title: "Categorias Mov.", url: "/categorias-movimientos", icon: Tags },
       { title: "Grupos Financ.", url: "/grupos-financieros", icon: FolderTree },
       { title: "Balances Financieros", url: "/balance", icon: BarChart3 },
+      { title: "Balances Economicos", url: "/balances-economicos", icon: LineChart },
       { title: "CMC", url: "/cmc", icon: ShoppingCart, permission: "cmc.view" },
       { title: "PAP", url: "/pap", icon: Truck, permission: "pap.view" },
       { title: "Valorizar Stock", url: "/valorizar-stock", icon: Package, permission: "stock_valuation.view" },
