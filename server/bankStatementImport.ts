@@ -26,6 +26,12 @@ export type BankStatementImportInput = {
   skipContinuityCheck: boolean;
   mpGrossOverrides: Record<string, number>;
   /**
+   * Mercado Pago: si viene true y la conciliación NO cuadra, en vez de bloquear se asienta la
+   * diferencia (saldo del archivo − suma de movimientos) como una única línea "Comisión Mercado
+   * Pago (diferencia de conciliación)" para que cuadre y se pueda avanzar con la importación.
+   */
+  mpAbsorbResidualAsCommission?: boolean;
+  /**
    * Mapeo de columnas ad-hoc para extracto genérico (import del momento). Si viene, se usa
    * para parsear ESTE archivo y NO se toca ningún banco configurado (clientBanks).
    */
@@ -67,6 +73,13 @@ export function parseStoredImportParams(paramsJson: string): Omit<BankStatementI
     String(skipRaw) === "1" ||
     String(skipRaw).toLowerCase() === "on";
   const mpRaw = typeof o.mpGrossOverridesJson === "string" ? o.mpGrossOverridesJson : undefined;
+  const absorbRaw = o.mpAbsorbResidualAsCommission;
+  const mpAbsorbResidualAsCommission =
+    absorbRaw === true ||
+    absorbRaw === 1 ||
+    String(absorbRaw).toLowerCase() === "true" ||
+    String(absorbRaw) === "1" ||
+    String(absorbRaw).toLowerCase() === "on";
   const bankId = String(o.bankId ?? "generic").trim() || "generic";
   const defaultLocalParsed = z
     .union([z.coerce.number().int().positive(), z.null(), z.literal(""), z.literal("none")])
@@ -83,6 +96,7 @@ export function parseStoredImportParams(paramsJson: string): Omit<BankStatementI
     closingBalanceRaw: o.closingBalance != null ? String(o.closingBalance) : undefined,
     skipContinuityCheck: skipContinuity,
     mpGrossOverrides: mpGrossOverridesFromJson(mpRaw),
+    mpAbsorbResidualAsCommission,
   };
 }
 
@@ -98,6 +112,7 @@ export async function runBankStatementImport(input: BankStatementImportInput): P
     closingBalanceRaw,
     skipContinuityCheck,
     mpGrossOverrides,
+    mpAbsorbResidualAsCommission,
   } = input;
 
   if (defaultLocalId != null) {
@@ -192,6 +207,28 @@ export async function runBankStatementImport(input: BankStatementImportInput): P
       };
     }
     if (!mpAmountsMatchCent(sum, Number(ref))) {
+      // Opción del usuario: absorber la diferencia como una comisión y continuar.
+      if (mpAbsorbResidualAsCommission) {
+        const residual = Number((Number(ref) - sum).toFixed(2)); // lo que falta para cuadrar
+        if (Math.abs(residual) > 0.005) {
+          const residualDate =
+            parseResult.periodEnd ??
+            parseResult.periodStart ??
+            parseResult.transactions[parseResult.transactions.length - 1]?.date ??
+            null;
+          if (residualDate) {
+            parseResult.transactions.push({
+              date: residualDate,
+              description: "Comisión Mercado Pago (diferencia de conciliación)",
+              amount: Math.abs(residual),
+              type: residual >= 0 ? "income" : "expense",
+              commission: residual < 0 ? Math.abs(residual) : undefined,
+              mpLineKind: "commission",
+            });
+          }
+        }
+        // No return: cae al insert normal con la diferencia ya absorbida (sum == ref).
+      } else {
       const candidates = pickMercadoPagoReconciliationCandidates(parseResult.transactions, 10);
       return {
         kind: "reconciliation",
@@ -217,6 +254,7 @@ export async function runBankStatementImport(input: BankStatementImportInput): P
           bankUsed: parser.bankName,
         },
       };
+      }
     }
   }
 

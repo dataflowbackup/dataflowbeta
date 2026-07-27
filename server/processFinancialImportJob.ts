@@ -34,6 +34,7 @@ export async function processFinancialImportJobBody(jobToken: string, triggerKey
       closingBalanceRaw: params.closingBalanceRaw,
       skipContinuityCheck: params.skipContinuityCheck,
       mpGrossOverrides: params.mpGrossOverrides,
+      mpAbsorbResidualAsCommission: params.mpAbsorbResidualAsCommission,
     });
 
     if (result.kind === "success" || result.kind === "reconciliation") {

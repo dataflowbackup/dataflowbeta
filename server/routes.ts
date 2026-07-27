@@ -2783,6 +2783,13 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         skipContinuityRaw?.toLowerCase() === "true" ||
         skipContinuityRaw?.toLowerCase() === "on";
 
+      // Mercado Pago: absorber la diferencia de conciliación como "Comisión Mercado Pago" y avanzar.
+      const mpAbsorbRaw = pickMultipartOrQueryString(req, "mpAbsorbResidualAsCommission");
+      const mpAbsorbResidual =
+        mpAbsorbRaw === "1" ||
+        mpAbsorbRaw?.toLowerCase() === "true" ||
+        mpAbsorbRaw?.toLowerCase() === "on";
+
       // Mapeo de columnas ad-hoc (extracto genérico del momento): se usa solo para ESTE archivo,
       // sin guardar nada ni tocar bancos configurados. Se ignora si es inválido.
       const columnMappingRaw = pickMultipartOrQueryString(req, "columnMapping");
@@ -2819,6 +2826,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
             closingBalance: pickMultipartOrQueryString(req, "closingBalance") ?? "",
             skipContinuityCheck: skipContinuity,
             mpGrossOverridesJson: JSON.stringify(mpOv),
+            mpAbsorbResidualAsCommission: mpAbsorbResidual,
           }),
         } as any);
         console.log(`[IMPORT] MP encolado async jobToken=${jobToken}`);
@@ -2836,6 +2844,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         closingBalanceRaw: pickMultipartOrQueryString(req, "closingBalance"),
         skipContinuityCheck: skipContinuity,
         mpGrossOverrides: parseMpGrossOverridesFromRequest(req),
+        mpAbsorbResidualAsCommission: mpAbsorbResidual,
         columnMapping: adHocColumnMapping,
       });
 

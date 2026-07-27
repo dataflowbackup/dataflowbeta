@@ -983,7 +983,9 @@ export default function BankStatementsPage() {
     },
   });
 
-  const buildUploadPayload = (): { formData: FormData; queryString: string } | null => {
+  const buildUploadPayload = (
+    opts?: { absorbResidual?: boolean },
+  ): { formData: FormData; queryString: string } | null => {
     if (!file || !uploadBankAccountId) return null;
     const formData = new FormData();
     formData.append("file", file);
@@ -1014,6 +1016,10 @@ export default function BankStatementsPage() {
     if (uploadSkipContinuityCheck) {
       formData.append("skipContinuityCheck", "1");
       qs.set("skipContinuityCheck", "1");
+    }
+    if (opts?.absorbResidual) {
+      formData.append("mpAbsorbResidualAsCommission", "1");
+      qs.set("mpAbsorbResidualAsCommission", "1");
     }
     return { formData, queryString: `?${qs.toString()}` };
   };
@@ -1049,6 +1055,19 @@ export default function BankStatementsPage() {
         duration: 8000,
       });
     }
+  };
+
+  // Reintenta la importación absorbiendo la diferencia de conciliación como una "Comisión Mercado Pago".
+  const handleAbsorbResidualAndImport = () => {
+    if (!file) {
+      toast({ title: "Volvé a seleccionar el archivo", variant: "destructive" });
+      return;
+    }
+    const payload = buildUploadPayload({ absorbResidual: true });
+    if (!payload) return;
+    mpSilentDismissRef.current = true;
+    setMpReconciliationOpen(false);
+    uploadMutation.mutate(payload);
   };
 
   useEffect(() => {
@@ -2602,10 +2621,10 @@ export default function BankStatementsPage() {
           <DialogHeader>
             <DialogTitle>Conciliar extracto Mercado Pago</DialogTitle>
             <DialogDescription>
-              La suma algebraica de todas las líneas que se importarían (bruto, comisión Mercado Pago, impuestos y
-              ajustes por fila) no coincide con el «Saldo disponible total» del archivo. La tabla muestra hasta 10
-              filas de referencia (típicamente montos bruto sospechosos); corregí el Excel o el flujo de datos y volvé a
-              importar, o suspendé esta carga.
+              La suma de los movimientos a importar (bruto − comisión − impuesto) no coincide con la variación del
+              saldo del archivo (columna SALDO). Podés cargar la diferencia como una "Comisión Mercado Pago" para que
+              cuadre y avanzar, corregir el Excel y volver a importar, o suspender la carga. La tabla muestra hasta 10
+              filas de referencia (típicamente montos bruto sospechosos).
             </DialogDescription>
           </DialogHeader>
           {mpReconciliation && (
@@ -2633,10 +2652,10 @@ export default function BankStatementsPage() {
                   </div>
                 </div>
                 <p className="text-xs text-muted-foreground pt-1 border-t border-amber-500/20 mt-2">
-                  Cada fila del Excel puede generar varias líneas en el sistema; el ajuste por fila reparte la
-                  diferencia entre bruto, comisión e impuestos para cerrar al neto de columnas F−G. La discordancia con
-                  el pie suele deberse a filas omitidas, importaciones duplicadas o un valor de saldo mal detectado en
-                  el archivo.
+                  Cada fila del Excel genera hasta 3 movimientos (bruto, comisión, impuesto). Si la suma no cuadra con
+                  la variación del SALDO, suele deberse a filas con importes corruptos en el Excel, filas omitidas o
+                  importaciones duplicadas. Con "Cargar diferencia como Comisión Mercado Pago" se asienta la diferencia
+                  como una única línea para cerrar el saldo y avanzar.
                 </p>
               </div>
               <p className="text-xs text-muted-foreground">
@@ -2683,10 +2702,20 @@ export default function BankStatementsPage() {
               </ScrollArea>
             </>
           )}
-          <DialogFooter>
+          <DialogFooter className="flex-col sm:flex-row gap-2">
             <Button type="button" variant="outline" onClick={handleSuspendMpReconciliation}>
               Suspender importación
             </Button>
+            {mpReconciliation && (
+              <Button
+                type="button"
+                onClick={handleAbsorbResidualAndImport}
+                disabled={uploadMutation.isPending}
+                data-testid="button-absorb-mp-residual"
+              >
+                Cargar diferencia ({formatCurrency(Math.abs(mpReconciliation.delta))}) como Comisión Mercado Pago y continuar
+              </Button>
+            )}
           </DialogFooter>
         </DialogContent>
       </Dialog>
