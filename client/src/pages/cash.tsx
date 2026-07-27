@@ -2,6 +2,7 @@ import { useMemo, useState, useCallback, useRef, useEffect } from "react";
 import * as XLSX from "xlsx";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { PageHeader } from "@/components/page-header";
+import { InternalLoanButton } from "@/components/internal-loan-button";
 import { DataTable, Column } from "@/components/data-table";
 import { Button } from "@/components/ui/button";
 import {
@@ -1265,6 +1266,7 @@ export default function CashPage() {
             <Pencil className="h-3.5 w-3.5 shrink-0" />
             <span className="text-xs font-medium">Editar</span>
           </Button>
+          <InternalLoanButton transaction={row} />
           <Button
             type="button"
             size="icon"

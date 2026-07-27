@@ -915,6 +915,33 @@ export type InsertCashRegister = z.infer<typeof insertCashRegisterSchema>;
 export type CashRegister = typeof cashRegisters.$inferSelect;
 
 // ==========================================
+// PRÉSTAMOS INTERNOS ENTRE LOCALES (jul-27)
+// Registra la operación de "un local pagó un gasto de otro": el movimiento de origen
+// se recategoriza a "Préstamo" y en el local destino se crean un "Préstamo a favor"
+// (ingreso) y el gasto real (egreso), que netean 0. Esta tabla enlaza los 3 movimientos
+// y guarda la categoría original del origen para poder DESHACER la operación.
+// ==========================================
+export const internalLoans = pgTable("internal_loans", {
+  id: serial("id").primaryKey(),
+  clientId: integer("client_id").notNull().references(() => clients.id, { onDelete: "cascade" }),
+  fromLocalId: integer("from_local_id").references(() => locals.id),        // local que prestó (origen)
+  toLocalId: integer("to_local_id").references(() => locals.id),            // local que recibió (destino)
+  amount: decimal("amount", { precision: 12, scale: 2 }).notNull(),
+  originTransactionId: integer("origin_transaction_id").notNull(),         // movimiento origen recategorizado a Préstamo
+  originalCategoryId: integer("original_category_id"),                     // categoría previa del origen (para deshacer)
+  receivableTransactionId: integer("receivable_transaction_id"),           // "Préstamo a favor" creado en destino
+  expenseTransactionId: integer("expense_transaction_id"),                 // gasto real creado en destino
+  expenseCategoryId: integer("expense_category_id"),                       // categoría del gasto elegida
+  cashRegisterId: integer("cash_register_id"),                             // caja destino de los 2 movimientos nuevos
+  status: varchar("status", { length: 20 }).default("active"),            // active | reversed
+  createdBy: varchar("created_by").references(() => users.id),
+  createdAt: timestamp("created_at").defaultNow(),
+});
+export const insertInternalLoanSchema = createInsertSchema(internalLoans).omit({ id: true, createdAt: true });
+export type InsertInternalLoan = z.infer<typeof insertInternalLoanSchema>;
+export type InternalLoan = typeof internalLoans.$inferSelect;
+
+// ==========================================
 // MONTHLY BALANCES
 // ==========================================
 export const monthlyBalances = pgTable("monthly_balances", {

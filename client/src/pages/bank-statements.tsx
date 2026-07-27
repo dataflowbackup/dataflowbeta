@@ -1,6 +1,7 @@
 import { useState, useMemo, useEffect, useRef } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { PageHeader } from "@/components/page-header";
+import { InternalLoanButton } from "@/components/internal-loan-button";
 import { DataTable, Column } from "@/components/data-table";
 import { Button } from "@/components/ui/button";
 import {
@@ -1726,6 +1727,7 @@ export default function BankStatementsPage() {
               Dividido — no computa
             </Badge>
           )}
+          <InternalLoanButton transaction={row} />
         </div>
       ),
     },

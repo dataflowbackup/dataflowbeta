@@ -3405,6 +3405,56 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
   });
 
+  // ---- Préstamos internos entre locales (jul-27) ----
+  app.get("/api/internal-loans", isAuthenticated, async (req, res) => {
+    try {
+      const clientId = await getClientId(req);
+      const status = req.query.status === "all" ? "all" : "active";
+      const data = await storage.getInternalLoans(clientId, status);
+      res.json(data);
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
+  app.post("/api/internal-loans", isAuthenticated, async (req, res) => {
+    try {
+      const clientId = await getClientId(req);
+      const session = req.session as any;
+      const userId = session?.userId || (req.user as any)?.claims?.sub;
+
+      const originTransactionId = parseInt(String(req.body?.originTransactionId), 10);
+      const toLocalId = parseInt(String(req.body?.toLocalId), 10);
+      const cashRegisterId = parseInt(String(req.body?.cashRegisterId), 10);
+      const expenseCategoryId = parseInt(String(req.body?.expenseCategoryId), 10);
+      if (![originTransactionId, toLocalId, cashRegisterId, expenseCategoryId].every(Number.isFinite)) {
+        return res.status(400).json({ message: "Faltan datos: movimiento de origen, local destino, caja y categoría de gasto." });
+      }
+
+      const loan = await storage.createInternalLoan(clientId, userId, {
+        originTransactionId,
+        toLocalId,
+        cashRegisterId,
+        expenseCategoryId,
+      });
+      res.status(201).json(loan);
+    } catch (e: any) {
+      res.status(400).json({ message: e.message || "No se pudo crear el préstamo interno." });
+    }
+  });
+
+  app.delete("/api/internal-loans/:id", isAuthenticated, async (req, res) => {
+    try {
+      const clientId = await getClientId(req);
+      const id = parseInt(req.params.id, 10);
+      if (!Number.isFinite(id)) return res.status(400).json({ message: "ID inválido" });
+      await storage.reverseInternalLoan(clientId, id);
+      res.json({ success: true });
+    } catch (e: any) {
+      res.status(400).json({ message: e.message || "No se pudo deshacer el préstamo interno." });
+    }
+  });
+
   app.get("/api/monthly-balances", isAuthenticated, async (req, res) => {
     try {
       const clientId = await getClientId(req);

@@ -28,6 +28,7 @@ import {
   transactionCategories,
   bankAccounts,
   cashRegisters,
+  internalLoans,
   financialImportBatches,
   financialImportJobs,
   financialSavedViews,
@@ -139,6 +140,8 @@ import {
   type CounterpartyIdentifier,
   type InsertTransaction,
   type Transaction,
+  type InternalLoan,
+  type InsertInternalLoan,
   type InsertMonthlyBalance,
   type MonthlyBalance,
   type Sale,
@@ -2727,6 +2730,176 @@ export class DatabaseStorage implements IStorage {
       .where(and(eq(transactions.clientId, clientId), eq(transactions.importBatchId, importBatchId)))
       .returning({ id: transactions.id });
     return deleted.length;
+  }
+
+  // ==========================================
+  // PRÉSTAMOS INTERNOS ENTRE LOCALES (jul-27)
+  // ==========================================
+  async getInternalLoans(clientId: number, status: "active" | "all" = "active"): Promise<InternalLoan[]> {
+    const whereClause =
+      status === "active"
+        ? and(eq(internalLoans.clientId, clientId), eq(internalLoans.status, "active"))
+        : eq(internalLoans.clientId, clientId);
+    return await db.select().from(internalLoans).where(whereClause).orderBy(desc(internalLoans.id));
+  }
+
+  /**
+   * Crea un préstamo interno: el movimiento de origen se recategoriza a "Préstamo" y en el local
+   * destino se crean un "Préstamo a favor" (ingreso) y el gasto real (egreso), que netean 0.
+   * Los importes se guardan SIEMPRE en positivo (la dirección la da `type`), igual que el resto
+   * de los movimientos en producción.
+   */
+  async createInternalLoan(
+    clientId: number,
+    userId: string | undefined,
+    params: {
+      originTransactionId: number;
+      toLocalId: number;
+      cashRegisterId: number;
+      expenseCategoryId: number;
+    },
+  ): Promise<InternalLoan> {
+    const { originTransactionId, toLocalId, cashRegisterId, expenseCategoryId } = params;
+
+    // Categoría "Préstamo" (specialType = "loan").
+    const cats = await this.getTransactionCategories(clientId);
+    const loanCat =
+      cats.find((c) => c.specialType === "loan" && c.active !== false) ??
+      cats.find((c) => c.specialType === "loan");
+    if (!loanCat) {
+      throw new Error('No existe una categoría de tipo "Préstamo" para este cliente. Creá una antes de continuar.');
+    }
+    const expenseCat = cats.find((c) => c.id === expenseCategoryId);
+    if (!expenseCat) throw new Error("Categoría de gasto inválida.");
+
+    // Movimiento de origen.
+    const [origin] = await db
+      .select()
+      .from(transactions)
+      .where(and(eq(transactions.id, originTransactionId), eq(transactions.clientId, clientId)));
+    if (!origin) throw new Error("Movimiento de origen no encontrado.");
+    if (origin.source === "internal_loan") {
+      throw new Error("Este movimiento ya forma parte de un préstamo interno.");
+    }
+    if (origin.parentTransactionId != null) {
+      throw new Error("No se puede usar un movimiento que es parte de una división.");
+    }
+    const existing = await this.getInternalLoans(clientId, "active");
+    if (existing.some((l) => l.originTransactionId === originTransactionId)) {
+      throw new Error("Este movimiento ya fue convertido en un préstamo interno.");
+    }
+
+    // Validaciones de destino.
+    const localsList = await this.getLocals(clientId);
+    const toLocal = localsList.find((l) => l.id === toLocalId);
+    if (!toLocal) throw new Error("Local destino inválido.");
+    const cajas = await this.listCashRegisters(clientId, true);
+    if (!cajas.some((c) => c.id === cashRegisterId)) throw new Error("Caja destino inválida.");
+
+    const amount = Math.abs(parseFloat(String(origin.amount)) || 0);
+    if (!(amount > 0)) throw new Error("El importe del movimiento de origen no es válido.");
+
+    const originalCategoryId = origin.categoryId ?? null;
+    const fromLocalId = origin.localId ?? null;
+    const fromLocalName = fromLocalId ? localsList.find((l) => l.id === fromLocalId)?.name ?? "" : "";
+    const baseDesc = (origin.description || "Préstamo interno").trim();
+
+    return await db.transaction(async (tx) => {
+      // 1) Recategorizar el origen a "Préstamo".
+      await tx
+        .update(transactions)
+        .set({ categoryId: loanCat.id })
+        .where(and(eq(transactions.id, originTransactionId), eq(transactions.clientId, clientId)));
+
+      // 2) "Préstamo a favor" (ingreso) en el local destino.
+      const [receivable] = await tx
+        .insert(transactions)
+        .values({
+          clientId,
+          localId: toLocalId,
+          cashRegisterId,
+          categoryId: loanCat.id,
+          transactionDate: origin.transactionDate,
+          description: `Préstamo a favor${fromLocalName ? ` (de ${fromLocalName})` : ""} — ${baseDesc}`,
+          amount: String(amount),
+          type: "income",
+          source: "internal_loan",
+          bankSource: "cash",
+          createdBy: userId ?? undefined,
+        })
+        .returning();
+
+      // 3) Gasto real en el local destino.
+      const [expense] = await tx
+        .insert(transactions)
+        .values({
+          clientId,
+          localId: toLocalId,
+          cashRegisterId,
+          categoryId: expenseCategoryId,
+          transactionDate: origin.transactionDate,
+          description: `${baseDesc}${fromLocalName ? ` (préstamo de ${fromLocalName})` : ""}`,
+          amount: String(amount),
+          type: "expense",
+          source: "internal_loan",
+          bankSource: "cash",
+          createdBy: userId ?? undefined,
+        })
+        .returning();
+
+      // 4) Registrar la operación (para mostrarla enlazada y poder deshacerla).
+      const [loan] = await tx
+        .insert(internalLoans)
+        .values({
+          clientId,
+          fromLocalId,
+          toLocalId,
+          amount: String(amount),
+          originTransactionId,
+          originalCategoryId,
+          receivableTransactionId: receivable.id,
+          expenseTransactionId: expense.id,
+          expenseCategoryId,
+          cashRegisterId,
+          status: "active",
+          createdBy: userId ?? undefined,
+        })
+        .returning();
+
+      return loan;
+    });
+  }
+
+  /** Deshace un préstamo interno: borra los 2 movimientos del destino y restaura la categoría del origen. */
+  async reverseInternalLoan(clientId: number, id: number): Promise<boolean> {
+    const [loan] = await db
+      .select()
+      .from(internalLoans)
+      .where(and(eq(internalLoans.id, id), eq(internalLoans.clientId, clientId)));
+    if (!loan) throw new Error("Préstamo interno no encontrado.");
+    if (loan.status === "reversed") throw new Error("Este préstamo interno ya fue revertido.");
+
+    return await db.transaction(async (tx) => {
+      if (loan.receivableTransactionId != null) {
+        await tx
+          .delete(transactions)
+          .where(and(eq(transactions.id, loan.receivableTransactionId), eq(transactions.clientId, clientId)));
+      }
+      if (loan.expenseTransactionId != null) {
+        await tx
+          .delete(transactions)
+          .where(and(eq(transactions.id, loan.expenseTransactionId), eq(transactions.clientId, clientId)));
+      }
+      await tx
+        .update(transactions)
+        .set({ categoryId: loan.originalCategoryId ?? null })
+        .where(and(eq(transactions.id, loan.originTransactionId), eq(transactions.clientId, clientId)));
+      await tx
+        .update(internalLoans)
+        .set({ status: "reversed" })
+        .where(and(eq(internalLoans.id, id), eq(internalLoans.clientId, clientId)));
+      return true;
+    });
   }
 
   async getImportBatches(clientId: number): Promise<
