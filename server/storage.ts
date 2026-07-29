@@ -2769,8 +2769,9 @@ export class DatabaseStorage implements IStorage {
   }
 
   /**
-   * Crea un préstamo interno: el movimiento de origen se recategoriza a "Préstamo" y en el local
-   * destino se crean un "Préstamo a favor" (ingreso) y el gasto real (egreso), que netean 0.
+   * Crea un préstamo interno: el movimiento de origen se recategoriza a "Préstamo" y en la cuenta
+   * destino se crean un "Préstamo a favor" (ingreso) y el gasto real (egreso), que netean 0 (jul-29:
+   * antes caían en una caja de efectivo; ahora van a una Cuenta, igual que la división por locales).
    * Los importes se guardan SIEMPRE en positivo (la dirección la da `type`), igual que el resto
    * de los movimientos en producción.
    */
@@ -2780,11 +2781,11 @@ export class DatabaseStorage implements IStorage {
     params: {
       originTransactionId: number;
       toLocalId: number;
-      cashRegisterId: number;
+      bankAccountId: number;
       expenseCategoryId: number;
     },
   ): Promise<InternalLoan> {
-    const { originTransactionId, toLocalId, cashRegisterId, expenseCategoryId } = params;
+    const { originTransactionId, toLocalId, bankAccountId, expenseCategoryId } = params;
 
     // Categoría "Préstamo" (specialType = "loan").
     const cats = await this.getTransactionCategories(clientId);
@@ -2818,8 +2819,9 @@ export class DatabaseStorage implements IStorage {
     const localsList = await this.getLocals(clientId);
     const toLocal = localsList.find((l) => l.id === toLocalId);
     if (!toLocal) throw new Error("Local destino inválido.");
-    const cajas = await this.listCashRegisters(clientId, true);
-    if (!cajas.some((c) => c.id === cashRegisterId)) throw new Error("Caja destino inválida.");
+    const destAccount = await this.getBankAccount(clientId, bankAccountId);
+    if (!destAccount) throw new Error("Cuenta destino inválida.");
+    const destBankSource = destAccount.bankId ?? null;
 
     const amount = Math.abs(parseFloat(String(origin.amount)) || 0);
     if (!(amount > 0)) throw new Error("El importe del movimiento de origen no es válido.");
@@ -2842,14 +2844,14 @@ export class DatabaseStorage implements IStorage {
         .values({
           clientId,
           localId: toLocalId,
-          cashRegisterId,
+          bankAccountId,
           categoryId: loanCat.id,
           transactionDate: origin.transactionDate,
           description: `Préstamo a favor${fromLocalName ? ` (de ${fromLocalName})` : ""} — ${baseDesc}`,
           amount: String(amount),
           type: "income",
           source: "internal_loan",
-          bankSource: "cash",
+          bankSource: destBankSource,
           createdBy: userId ?? undefined,
         })
         .returning();
@@ -2860,14 +2862,14 @@ export class DatabaseStorage implements IStorage {
         .values({
           clientId,
           localId: toLocalId,
-          cashRegisterId,
+          bankAccountId,
           categoryId: expenseCategoryId,
           transactionDate: origin.transactionDate,
           description: `${baseDesc}${fromLocalName ? ` (préstamo de ${fromLocalName})` : ""}`,
           amount: String(amount),
           type: "expense",
           source: "internal_loan",
-          bankSource: "cash",
+          bankSource: destBankSource,
           createdBy: userId ?? undefined,
         })
         .returning();
@@ -2885,7 +2887,8 @@ export class DatabaseStorage implements IStorage {
           receivableTransactionId: receivable.id,
           expenseTransactionId: expense.id,
           expenseCategoryId,
-          cashRegisterId,
+          bankAccountId,
+          direction: "expense",
           status: "active",
           createdBy: userId ?? undefined,
         })
@@ -2924,6 +2927,332 @@ export class DatabaseStorage implements IStorage {
         .set({ status: "reversed" })
         .where(and(eq(internalLoans.id, id), eq(internalLoans.clientId, clientId)));
       return true;
+    });
+  }
+
+  // ==========================================
+  // DIVISIÓN DE UN MOVIMIENTO ENTRE VARIOS LOCALES (jul-29)
+  // ==========================================
+
+  /** Partes hijas de un movimiento dividido entre locales. */
+  async getLocalSplitParts(clientId: number, originTransactionId: number): Promise<Transaction[]> {
+    return await db
+      .select()
+      .from(transactions)
+      .where(
+        and(
+          eq(transactions.clientId, clientId),
+          eq(transactions.parentTransactionId, originTransactionId),
+        ),
+      )
+      .orderBy(transactions.id);
+  }
+
+  /**
+   * Divide un movimiento entre varios locales generando los préstamos internos correspondientes.
+   *
+   * INVARIANTE: el saldo de la cuenta del movimiento original no se mueve un peso. El original queda
+   * como PADRE (sigue asentado en su cuenta pero deja de computar — ya lo excluye `splitParentIds`)
+   * y se descompone en partes hijas DENTRO DE SU MISMA CUENTA, cuya suma es exactamente el importe
+   * original:
+   *   - la parte propia del local de origen (su gasto/ingreso real; puede ser 0 si solo prestó), y
+   *   - una parte por cada local destino, categorizada como "Préstamo".
+   * En la cuenta destino de cada local se crean 2 movimientos que netean 0 (no mueven ese saldo):
+   *   - original GASTO:   "Préstamo a favor" (ingreso) + el gasto real (egreso)
+   *   - original INGRESO: el ingreso real (ingreso) + la contrapartida del préstamo (egreso)
+   * Los importes se guardan SIEMPRE en positivo; la dirección la da `type`.
+   */
+  async createLocalSplit(
+    clientId: number,
+    userId: string | undefined,
+    params: {
+      originTransactionId: number;
+      originLocalId?: number | null;
+      originShareAmount?: number;
+      originCategoryId?: number | null;
+      parts: Array<{ localId: number; amount: number; categoryId: number; bankAccountId: number }>;
+    },
+  ): Promise<{ splitGroupId: string; loans: number; parts: number; destinationMovements: number }> {
+    const { originTransactionId, parts } = params;
+    const toCents = (n: number) => Math.round((Number(n) || 0) * 100);
+    const fromCents = (c: number) => (c / 100).toFixed(2);
+
+    if (!Array.isArray(parts) || parts.length === 0) {
+      throw new Error("Elegí al menos un local destino para dividir el movimiento.");
+    }
+
+    // --- Movimiento de origen y sus candados ---
+    const [origin] = await db
+      .select()
+      .from(transactions)
+      .where(and(eq(transactions.id, originTransactionId), eq(transactions.clientId, clientId)));
+    if (!origin) throw new Error("Movimiento de origen no encontrado.");
+    if (origin.parentTransactionId != null) {
+      throw new Error("Este movimiento ya es una parte de otra división.");
+    }
+    if (origin.source === "internal_loan" || origin.source === "local_split") {
+      throw new Error("Este movimiento fue generado por un préstamo o una división: no se puede dividir.");
+    }
+    const existingParts = await this.getLocalSplitParts(clientId, originTransactionId);
+    if (existingParts.length > 0) {
+      throw new Error("Este movimiento ya está dividido. Deshacé la división antes de rehacerla.");
+    }
+    const activeLoans = await this.getInternalLoans(clientId, "active");
+    if (activeLoans.some((l) => l.originTransactionId === originTransactionId)) {
+      throw new Error("Este movimiento ya forma parte de un préstamo interno.");
+    }
+
+    const originType = origin.type === "income" ? "income" : "expense";
+    const totalCents = toCents(Math.abs(parseFloat(String(origin.amount)) || 0));
+    if (totalCents <= 0) throw new Error("El importe del movimiento no es válido.");
+
+    // --- Local de origen (se puede asignar en la misma operación si el movimiento no tenía) ---
+    const localsList = await this.getLocals(clientId);
+    const originLocalId = origin.localId ?? params.originLocalId ?? null;
+    if (originLocalId == null) {
+      throw new Error("El movimiento no tiene local asignado: elegí el local de origen.");
+    }
+    if (!localsList.some((l) => l.id === originLocalId)) throw new Error("Local de origen inválido.");
+
+    // --- Partes destino ---
+    const seen = new Set<number>();
+    for (const p of parts) {
+      if (!localsList.some((l) => l.id === p.localId)) throw new Error("Hay un local destino inválido.");
+      if (p.localId === originLocalId) {
+        throw new Error("El local de origen no puede estar entre los destinos: su parte se carga aparte.");
+      }
+      if (seen.has(p.localId)) throw new Error("Hay un local destino repetido.");
+      seen.add(p.localId);
+      if (toCents(p.amount) <= 0) throw new Error("Todas las partes deben tener un importe mayor a cero.");
+    }
+
+    // --- Categorías ---
+    const cats = await this.getTransactionCategories(clientId);
+    const loanCat =
+      cats.find((c) => c.specialType === "loan" && c.active !== false) ??
+      cats.find((c) => c.specialType === "loan");
+    if (!loanCat) {
+      throw new Error('No existe una categoría de tipo "Préstamo" para este cliente. Creá una antes de continuar.');
+    }
+    for (const p of parts) {
+      if (!cats.some((c) => c.id === p.categoryId)) throw new Error("Hay una categoría inválida en las partes.");
+    }
+
+    // --- Cuentas destino ---
+    const accounts = await this.getBankAccounts(clientId);
+    const accountById = new Map(accounts.map((a) => [a.id, a]));
+    for (const p of parts) {
+      if (!accountById.has(p.bankAccountId)) throw new Error("Hay una cuenta destino inválida.");
+    }
+
+    // --- La suma tiene que dar EXACTO al centavo (es el candado del saldo) ---
+    const originShareCents = toCents(params.originShareAmount ?? 0);
+    if (originShareCents < 0) throw new Error("La parte del local de origen no puede ser negativa.");
+    const partsCents = parts.map((p) => toCents(p.amount));
+    const sumCents = partsCents.reduce((a, b) => a + b, 0) + originShareCents;
+    if (sumCents !== totalCents) {
+      throw new Error(
+        `La suma de las partes (${fromCents(sumCents)}) no coincide exactamente con el importe original (${fromCents(totalCents)}).`,
+      );
+    }
+    const originCategoryId = params.originCategoryId ?? null;
+    if (originShareCents > 0) {
+      if (originCategoryId == null || !cats.some((c) => c.id === originCategoryId)) {
+        throw new Error("Elegí la categoría de la parte que absorbe el local de origen.");
+      }
+    }
+
+    const localNameById = new Map(localsList.map((l) => [l.id, l.name]));
+    const originLocalName = localNameById.get(originLocalId) ?? "";
+    const baseDesc = (origin.description || "Movimiento dividido").trim();
+    const splitGroupId = `split_${originTransactionId}_${Date.now()}`;
+    // Las partes del origen viven en la MISMA cuenta/caja que el original: por eso el saldo no cambia.
+    const originPlacement = {
+      bankAccountId: origin.bankAccountId ?? null,
+      cashRegisterId: origin.cashRegisterId ?? null,
+      bankSource: origin.bankSource ?? null,
+    };
+
+    return await db.transaction(async (tx) => {
+      // Si el movimiento no tenía local, se lo asignamos en la misma operación.
+      if (origin.localId == null) {
+        await tx
+          .update(transactions)
+          .set({ localId: originLocalId })
+          .where(and(eq(transactions.id, originTransactionId), eq(transactions.clientId, clientId)));
+      }
+
+      let partsCreated = 0;
+
+      // 1) Parte propia del local de origen (su gasto/ingreso real). Puede no existir.
+      if (originShareCents > 0) {
+        await tx.insert(transactions).values({
+          clientId,
+          localId: originLocalId,
+          ...originPlacement,
+          categoryId: originCategoryId,
+          transactionDate: origin.transactionDate,
+          description: `${baseDesc} — parte ${originLocalName}`,
+          description2: origin.description2 ?? null,
+          amount: fromCents(originShareCents),
+          type: originType,
+          source: "local_split",
+          parentTransactionId: originTransactionId,
+          createdBy: userId ?? undefined,
+        });
+        partsCreated++;
+      }
+
+      // 2) Una parte "Préstamo" en la cuenta de origen + los 2 movimientos del destino, por local.
+      let loansCreated = 0;
+      let destinationMovements = 0;
+      for (let i = 0; i < parts.length; i++) {
+        const p = parts[i];
+        const amountStr = fromCents(partsCents[i]);
+        const toLocalName = localNameById.get(p.localId) ?? "";
+        const destAccount = accountById.get(p.bankAccountId)!;
+        const destBankSource = destAccount.bankId ?? null;
+
+        // 2.a) En la cuenta de origen: la parte prestada.
+        const [originPart] = await tx
+          .insert(transactions)
+          .values({
+            clientId,
+            localId: originLocalId,
+            ...originPlacement,
+            categoryId: loanCat.id,
+            transactionDate: origin.transactionDate,
+            description:
+              originType === "expense"
+                ? `Préstamo a ${toLocalName} — ${baseDesc}`
+                : `Préstamo de ${toLocalName} — ${baseDesc}`,
+            description2: origin.description2 ?? null,
+            amount: amountStr,
+            type: originType,
+            source: "local_split",
+            parentTransactionId: originTransactionId,
+            createdBy: userId ?? undefined,
+          })
+          .returning();
+        partsCreated++;
+
+        // 2.b) En la cuenta destino: contrapartida del préstamo + el gasto/ingreso real. Netean 0.
+        const [loanLeg] = await tx
+          .insert(transactions)
+          .values({
+            clientId,
+            localId: p.localId,
+            bankAccountId: p.bankAccountId,
+            bankSource: destBankSource,
+            categoryId: loanCat.id,
+            transactionDate: origin.transactionDate,
+            description:
+              originType === "expense"
+                ? `Préstamo a favor${originLocalName ? ` (de ${originLocalName})` : ""} — ${baseDesc}`
+                : `Préstamo otorgado${originLocalName ? ` (a ${originLocalName})` : ""} — ${baseDesc}`,
+            amount: amountStr,
+            // Gasto: el destino recibe el préstamo (ingreso). Ingreso: el destino lo otorga (egreso).
+            type: originType === "expense" ? "income" : "expense",
+            source: "internal_loan",
+            createdBy: userId ?? undefined,
+          })
+          .returning();
+
+        const [realLeg] = await tx
+          .insert(transactions)
+          .values({
+            clientId,
+            localId: p.localId,
+            bankAccountId: p.bankAccountId,
+            bankSource: destBankSource,
+            categoryId: p.categoryId,
+            transactionDate: origin.transactionDate,
+            description: `${baseDesc}${originLocalName ? ` (vía ${originLocalName})` : ""}`,
+            description2: origin.description2 ?? null,
+            amount: amountStr,
+            type: originType,
+            source: "internal_loan",
+            createdBy: userId ?? undefined,
+          })
+          .returning();
+        destinationMovements += 2;
+
+        // 2.c) Registro del préstamo (enlaza todo y permite deshacer la división completa).
+        // Convención: fromLocal = quien puso la plata, toLocal = quien absorbe el gasto/ingreso.
+        await tx.insert(internalLoans).values({
+          clientId,
+          fromLocalId: originType === "expense" ? originLocalId : p.localId,
+          toLocalId: originType === "expense" ? p.localId : originLocalId,
+          amount: amountStr,
+          originTransactionId,
+          originalCategoryId: origin.categoryId ?? null,
+          originPartTransactionId: originPart.id,
+          receivableTransactionId: loanLeg.id,
+          expenseTransactionId: realLeg.id,
+          expenseCategoryId: p.categoryId,
+          bankAccountId: p.bankAccountId,
+          splitGroupId,
+          direction: originType,
+          status: "active",
+          createdBy: userId ?? undefined,
+        });
+        loansCreated++;
+      }
+
+      return { splitGroupId, loans: loansCreated, parts: partsCreated, destinationMovements };
+    });
+  }
+
+  /**
+   * Deshace la división completa: borra las partes de la cuenta de origen y los 2 movimientos de
+   * cada local destino, y el movimiento original vuelve a ser el único, tal como estaba.
+   */
+  async reverseLocalSplit(
+    clientId: number,
+    originTransactionId: number,
+  ): Promise<{ deletedParts: number; deletedDestination: number; reversedLoans: number }> {
+    const parts = await this.getLocalSplitParts(clientId, originTransactionId);
+    const loans = (await this.getInternalLoans(clientId, "active")).filter(
+      (l) => l.originTransactionId === originTransactionId && l.splitGroupId != null,
+    );
+    if (parts.length === 0 && loans.length === 0) {
+      throw new Error("Este movimiento no está dividido.");
+    }
+
+    return await db.transaction(async (tx) => {
+      let deletedDestination = 0;
+      for (const loan of loans) {
+        for (const txId of [loan.receivableTransactionId, loan.expenseTransactionId]) {
+          if (txId == null) continue;
+          const deleted = await tx
+            .delete(transactions)
+            .where(and(eq(transactions.id, txId), eq(transactions.clientId, clientId)))
+            .returning({ id: transactions.id });
+          deletedDestination += deleted.length;
+        }
+        await tx
+          .update(internalLoans)
+          .set({ status: "reversed" })
+          .where(and(eq(internalLoans.id, loan.id), eq(internalLoans.clientId, clientId)));
+      }
+
+      const deletedParts = await tx
+        .delete(transactions)
+        .where(
+          and(
+            eq(transactions.clientId, clientId),
+            eq(transactions.parentTransactionId, originTransactionId),
+          ),
+        )
+        .returning({ id: transactions.id });
+
+      // `invoiced` lo usaba la división vieja como marca de "ya dividido": lo dejamos limpio.
+      await tx
+        .update(transactions)
+        .set({ invoiced: false })
+        .where(and(eq(transactions.id, originTransactionId), eq(transactions.clientId, clientId)));
+
+      return { deletedParts: deletedParts.length, deletedDestination, reversedLoans: loans.length };
     });
   }
 
@@ -5527,15 +5856,28 @@ export class DatabaseStorage implements IStorage {
       .from(bankAccounts)
       .where(eq(bankAccounts.clientId, clientId));
 
+    // Movimientos divididos entre locales: el original queda asentado pero no computa (sus partes,
+    // que viven en la misma cuenta, ya suman lo mismo). Sin esto el saldo de la cuenta se duplicaría.
+    const parentIdsOf = (rows: Array<{ parentTransactionId: number | null }>) =>
+      new Set(rows.filter((r) => r.parentTransactionId != null).map((r) => r.parentTransactionId as number));
+
     const result = [];
     for (const acc of allAccounts) {
       const rows = await db
-        .select({ amount: transactions.amount, type: transactions.type, date: transactions.transactionDate })
+        .select({
+          id: transactions.id,
+          amount: transactions.amount,
+          type: transactions.type,
+          date: transactions.transactionDate,
+          parentTransactionId: transactions.parentTransactionId,
+        })
         .from(transactions)
         .where(and(eq(transactions.clientId, clientId), eq(transactions.bankAccountId, acc.id), lte(transactions.transactionDate, toDate)));
+      const splitParents = parentIdsOf(rows);
       let saldo = 0;
       let lastDate: string | null = null;
       for (const r of rows) {
+        if (splitParents.has(r.id)) continue;
         const amt = parseFloat(String(r.amount)) || 0;
         saldo += r.type === "income" ? amt : -amt;
         if (!lastDate || String(r.date) > lastDate) lastDate = String(r.date);
@@ -5547,7 +5889,13 @@ export class DatabaseStorage implements IStorage {
     // (bankAccountId = X no matchea NULL) y quedaba fuera del saldo. Va como fila propia.
     // accountId negativo: sintético y estable, no colisiona con los serial de bankAccounts.
     const cashRows = await db
-      .select({ amount: transactions.amount, type: transactions.type, date: transactions.transactionDate })
+      .select({
+        id: transactions.id,
+        amount: transactions.amount,
+        type: transactions.type,
+        date: transactions.transactionDate,
+        parentTransactionId: transactions.parentTransactionId,
+      })
       .from(transactions)
       .where(and(
         eq(transactions.clientId, clientId),
@@ -5555,9 +5903,11 @@ export class DatabaseStorage implements IStorage {
         lte(transactions.transactionDate, toDate),
       ));
     if (cashRows.length > 0) {
+      const splitParentsCash = parentIdsOf(cashRows);
       let saldo = 0;
       let lastDate: string | null = null;
       for (const r of cashRows) {
+        if (splitParentsCash.has(r.id)) continue;
         const amt = parseFloat(String(r.amount)) || 0;
         saldo += r.type === "income" ? amt : -amt;
         if (!lastDate || String(r.date) > lastDate) lastDate = String(r.date);

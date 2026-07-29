@@ -932,7 +932,13 @@ export const internalLoans = pgTable("internal_loans", {
   receivableTransactionId: integer("receivable_transaction_id"),           // "Préstamo a favor" creado en destino
   expenseTransactionId: integer("expense_transaction_id"),                 // gasto real creado en destino
   expenseCategoryId: integer("expense_category_id"),                       // categoría del gasto elegida
-  cashRegisterId: integer("cash_register_id"),                             // caja destino de los 2 movimientos nuevos
+  cashRegisterId: integer("cash_register_id"),                             // caja destino (flujo viejo, jul-27)
+  bankAccountId: integer("bank_account_id"),                               // cuenta destino de los 2 movimientos nuevos
+  // jul-29: división de un movimiento entre varios locales. Todos los préstamos generados por una
+  // misma división comparten splitGroupId, para poder deshacer la operación completa de una.
+  splitGroupId: varchar("split_group_id", { length: 60 }),
+  originPartTransactionId: integer("origin_part_transaction_id"),          // parte "Préstamo" creada en la cuenta de origen
+  direction: varchar("direction", { length: 20 }).default("expense"),      // expense | income (el tipo del movimiento original)
   status: varchar("status", { length: 20 }).default("active"),            // active | reversed
   createdBy: varchar("created_by").references(() => users.id),
   createdAt: timestamp("created_at").defaultNow(),

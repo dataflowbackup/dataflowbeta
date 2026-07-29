@@ -3309,105 +3309,77 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
   });
 
-  app.post("/api/transactions/:id/split", isAuthenticated, async (req, res) => {
-    try {
-      const clientId = await getClientId(req);
-      const parentId = parseInt(req.params.id);
-      const { splits } = req.body;
-
-      if (!splits || !Array.isArray(splits) || splits.length < 2) {
-        return res.status(400).json({ message: "Se requieren al menos 2 splits" });
-      }
-
-      const allTransactions = await storage.getTransactions(clientId);
-      const parent = allTransactions.find(t => t.id === parentId);
-      
-      if (!parent) {
-        return res.status(404).json({ message: "Transaccion no encontrada" });
-      }
-
-      if (parent.parentTransactionId) {
-        return res.status(400).json({ message: "No se puede dividir una transaccion que ya es un split" });
-      }
-
-      const totalSplit = splits.reduce((sum: number, s: any) => sum + parseFloat(s.amount), 0);
-      const parentAmount = Math.abs(parseFloat(String(parent.amount)));
-      
-      if (Math.abs(totalSplit - parentAmount) > 0.01) {
-        return res.status(400).json({ 
-          message: `La suma de los splits (${totalSplit}) no coincide con el monto original (${parentAmount})`
-        });
-      }
-
-      const createdSplits = [];
-      for (const split of splits) {
-        const newSplit = await storage.createTransaction({
-          clientId,
-          transactionDate: parent.transactionDate,
-          description: `${parent.description} (${split.localName || 'Split'})`,
-          amount: parent.type === "expense" 
-            ? String(-Math.abs(parseFloat(split.amount))) 
-            : String(Math.abs(parseFloat(split.amount))),
-          type: parent.type,
-          source: "split",
-          categoryId: split.categoryId || parent.categoryId,
-          localId: split.localId || null,
-          parentTransactionId: parentId,
-        });
-        createdSplits.push(newSplit);
-      }
-
-      await storage.updateTransaction(clientId, parentId, { invoiced: true });
-
-      res.json({ 
-        success: true, 
-        splits: createdSplits,
-        message: `Transaccion dividida en ${createdSplits.length} partes`
-      });
-    } catch (e: any) {
-      res.status(500).json({ message: e.message });
-    }
-  });
-
   app.get("/api/transactions/:id/splits", isAuthenticated, async (req, res) => {
     try {
       const clientId = await getClientId(req);
       const parentId = parseInt(req.params.id);
-      
-      const allTransactions = await storage.getTransactions(clientId);
-      const splits = allTransactions.filter(t => t.parentTransactionId === parentId);
-      
-      res.json(splits);
+      res.json(await storage.getLocalSplitParts(clientId, parentId));
     } catch (e: any) {
       res.status(500).json({ message: e.message });
     }
   });
 
-  app.delete("/api/transactions/:id/splits", isAuthenticated, async (req, res) => {
+  // ---- División de un movimiento entre varios locales con préstamos automáticos (jul-29) ----
+  // Reemplaza a la división vieja (POST /split), que creaba las partes sin cuenta y con importe
+  // negativo, y no generaba los préstamos.
+  app.post("/api/transactions/:id/split-locals", isAuthenticated, async (req, res) => {
     try {
       const clientId = await getClientId(req);
-      const parentId = parseInt(req.params.id);
-      
-      const allTransactions = await storage.getTransactions(clientId);
-      const splits = allTransactions.filter(t => t.parentTransactionId === parentId);
-      
-      if (splits.length === 0) {
-        return res.status(404).json({ message: "No hay splits para esta transaccion" });
+      const session = req.session as any;
+      const userId = session?.userId || (req.user as any)?.claims?.sub;
+      const originTransactionId = parseInt(req.params.id, 10);
+      if (!Number.isFinite(originTransactionId)) {
+        return res.status(400).json({ message: "ID de movimiento inválido" });
       }
 
-      for (const split of splits) {
-        await storage.deleteTransaction(clientId, split.id);
+      const rawParts = Array.isArray(req.body?.parts) ? req.body.parts : [];
+      const parts = rawParts.map((p: any) => ({
+        localId: parseInt(String(p?.localId), 10),
+        amount: Number(p?.amount),
+        categoryId: parseInt(String(p?.categoryId), 10),
+        bankAccountId: parseInt(String(p?.bankAccountId), 10),
+      }));
+      if (
+        parts.length === 0 ||
+        parts.some(
+          (p: { localId: number; amount: number; categoryId: number; bankAccountId: number }) =>
+            !Number.isFinite(p.localId) ||
+            !Number.isFinite(p.amount) ||
+            !Number.isFinite(p.categoryId) ||
+            !Number.isFinite(p.bankAccountId),
+        )
+      ) {
+        return res.status(400).json({ message: "Faltan datos en las partes: local, importe, categoría y cuenta destino." });
       }
 
-      await storage.updateTransaction(clientId, parentId, { invoiced: false });
-
-      res.json({ 
-        success: true, 
-        deleted: splits.length,
-        message: `Se eliminaron ${splits.length} splits`
+      const originLocalIdRaw = req.body?.originLocalId;
+      const originCategoryIdRaw = req.body?.originCategoryId;
+      const result = await storage.createLocalSplit(clientId, userId, {
+        originTransactionId,
+        originLocalId:
+          originLocalIdRaw == null || originLocalIdRaw === "" ? null : parseInt(String(originLocalIdRaw), 10),
+        originShareAmount: Number(req.body?.originShareAmount ?? 0),
+        originCategoryId:
+          originCategoryIdRaw == null || originCategoryIdRaw === "" ? null : parseInt(String(originCategoryIdRaw), 10),
+        parts,
       });
+      res.status(201).json({ success: true, ...result });
     } catch (e: any) {
-      res.status(500).json({ message: e.message });
+      res.status(400).json({ message: e.message || "No se pudo dividir el movimiento." });
+    }
+  });
+
+  app.delete("/api/transactions/:id/split-locals", isAuthenticated, async (req, res) => {
+    try {
+      const clientId = await getClientId(req);
+      const originTransactionId = parseInt(req.params.id, 10);
+      if (!Number.isFinite(originTransactionId)) {
+        return res.status(400).json({ message: "ID de movimiento inválido" });
+      }
+      const result = await storage.reverseLocalSplit(clientId, originTransactionId);
+      res.json({ success: true, ...result });
+    } catch (e: any) {
+      res.status(400).json({ message: e.message || "No se pudo deshacer la división." });
     }
   });
 
@@ -3431,16 +3403,16 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
       const originTransactionId = parseInt(String(req.body?.originTransactionId), 10);
       const toLocalId = parseInt(String(req.body?.toLocalId), 10);
-      const cashRegisterId = parseInt(String(req.body?.cashRegisterId), 10);
+      const bankAccountId = parseInt(String(req.body?.bankAccountId), 10);
       const expenseCategoryId = parseInt(String(req.body?.expenseCategoryId), 10);
-      if (![originTransactionId, toLocalId, cashRegisterId, expenseCategoryId].every(Number.isFinite)) {
-        return res.status(400).json({ message: "Faltan datos: movimiento de origen, local destino, caja y categoría de gasto." });
+      if (![originTransactionId, toLocalId, bankAccountId, expenseCategoryId].every(Number.isFinite)) {
+        return res.status(400).json({ message: "Faltan datos: movimiento de origen, local destino, cuenta y categoría de gasto." });
       }
 
       const loan = await storage.createInternalLoan(clientId, userId, {
         originTransactionId,
         toLocalId,
-        cashRegisterId,
+        bankAccountId,
         expenseCategoryId,
       });
       res.status(201).json(loan);

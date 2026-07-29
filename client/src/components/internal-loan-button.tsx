@@ -25,16 +25,20 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { formatCurrency } from "@/lib/formatters";
-import type { Transaction, Local, CashRegister, TransactionCategory, InternalLoan } from "@shared/schema";
+import type { Transaction, Local, BankAccount, TransactionCategory, InternalLoan } from "@shared/schema";
 
 type RowTx = Pick<Transaction, "id" | "source" | "localId" | "amount" | "description" | "type" | "parentTransactionId">;
 
 /**
  * Punto 10 (jul-27): acción por fila "Préstamo interno a otro local".
  * Sobre un movimiento (Cabildo pagó un gasto de Córdoba) permite: elegir local destino,
- * caja destino y categoría del gasto; el backend recategoriza el origen a "Préstamo" y crea
+ * cuenta destino y categoría del gasto; el backend recategoriza el origen a "Préstamo" y crea
  * en el destino un "Préstamo a favor" + el gasto real (netean 0). Si el movimiento ya es el
  * origen de un préstamo interno activo, ofrece deshacerlo.
+ *
+ * jul-29: los 2 movimientos del destino pasaron de caer en una caja de efectivo a caer en una
+ * Cuenta (bank_accounts), igual que la división por locales. Como netean 0, el saldo de esa
+ * cuenta no cambia.
  */
 export function InternalLoanButton({ transaction }: { transaction: RowTx }) {
   const { toast } = useToast();
@@ -42,11 +46,11 @@ export function InternalLoanButton({ transaction }: { transaction: RowTx }) {
   const [open, setOpen] = useState(false);
   const [confirmUndo, setConfirmUndo] = useState(false);
   const [toLocalId, setToLocalId] = useState<string>("");
-  const [cashRegisterId, setCashRegisterId] = useState<string>("");
+  const [bankAccountId, setBankAccountId] = useState<string>("");
   const [expenseCategoryId, setExpenseCategoryId] = useState<string>("");
 
   const { data: locals = [] } = useQuery<Local[]>({ queryKey: ["/api/locals"] });
-  const { data: cashRegisters = [] } = useQuery<CashRegister[]>({ queryKey: ["/api/cash-registers"] });
+  const { data: bankAccounts = [] } = useQuery<BankAccount[]>({ queryKey: ["/api/bank-accounts"] });
   const { data: categories = [] } = useQuery<TransactionCategory[]>({ queryKey: ["/api/transaction-categories"] });
   const { data: internalLoans = [] } = useQuery<InternalLoan[]>({ queryKey: ["/api/internal-loans"] });
 
@@ -63,10 +67,18 @@ export function InternalLoanButton({ transaction }: { transaction: RowTx }) {
     [categories],
   );
 
-  const activeCajas = useMemo(
-    () => cashRegisters.filter((c) => c.active !== false),
-    [cashRegisters],
+  const activeAccounts = useMemo(
+    () => bankAccounts.filter((a) => a.active !== false),
+    [bankAccounts],
   );
+
+  // Al elegir el local destino, se sugiere su propia cuenta.
+  const suggestedAccountId = useMemo(() => {
+    if (!toLocalId) return "";
+    const lid = parseInt(toLocalId, 10);
+    const own = activeAccounts.find((a) => a.localId === lid);
+    return own ? String(own.id) : "";
+  }, [toLocalId, activeAccounts]);
 
   const invalidate = () => {
     queryClient.invalidateQueries({ queryKey: ["/api/transactions"] });
@@ -78,7 +90,7 @@ export function InternalLoanButton({ transaction }: { transaction: RowTx }) {
       const res = await apiRequest("POST", "/api/internal-loans", {
         originTransactionId: transaction.id,
         toLocalId: parseInt(toLocalId, 10),
-        cashRegisterId: parseInt(cashRegisterId, 10),
+        bankAccountId: parseInt(bankAccountId || suggestedAccountId, 10),
         expenseCategoryId: parseInt(expenseCategoryId, 10),
       });
       return res.json();
@@ -87,7 +99,7 @@ export function InternalLoanButton({ transaction }: { transaction: RowTx }) {
       toast({ title: "Préstamo interno creado" });
       setOpen(false);
       setToLocalId("");
-      setCashRegisterId("");
+      setBankAccountId("");
       setExpenseCategoryId("");
       invalidate();
     },
@@ -115,7 +127,8 @@ export function InternalLoanButton({ transaction }: { transaction: RowTx }) {
 
   const amount = Math.abs(parseFloat(String(transaction.amount)) || 0);
   const sameLocalSelected = toLocalId !== "" && transaction.localId != null && parseInt(toLocalId, 10) === transaction.localId;
-  const canSubmit = toLocalId !== "" && cashRegisterId !== "" && expenseCategoryId !== "" && !sameLocalSelected;
+  const effectiveAccountId = bankAccountId || suggestedAccountId;
+  const canSubmit = toLocalId !== "" && effectiveAccountId !== "" && expenseCategoryId !== "" && !sameLocalSelected;
 
   if (existingLoan) {
     return (
@@ -209,21 +222,25 @@ export function InternalLoanButton({ transaction }: { transaction: RowTx }) {
             </div>
 
             <div className="space-y-1.5">
-              <Label className="text-xs">Caja destino (donde caen los dos movimientos)</Label>
-              <Select value={cashRegisterId} onValueChange={setCashRegisterId}>
-                <SelectTrigger data-testid="select-internal-loan-caja">
-                  <SelectValue placeholder="Elegí la caja destino" />
+              <Label className="text-xs">Cuenta destino (donde caen los dos movimientos)</Label>
+              <Select value={effectiveAccountId} onValueChange={setBankAccountId}>
+                <SelectTrigger data-testid="select-internal-loan-cuenta">
+                  <SelectValue placeholder="Elegí la cuenta destino" />
                 </SelectTrigger>
                 <SelectContent>
-                  {activeCajas.map((c) => (
-                    <SelectItem key={c.id} value={String(c.id)}>
-                      {c.name}
+                  {activeAccounts.map((a) => (
+                    <SelectItem key={a.id} value={String(a.id)}>
+                      {a.name}
                     </SelectItem>
                   ))}
                 </SelectContent>
               </Select>
-              {activeCajas.length === 0 && (
-                <p className="text-xs text-muted-foreground">No hay cajas. Creá una en la vista de Efectivo.</p>
+              {activeAccounts.length === 0 ? (
+                <p className="text-xs text-muted-foreground">No hay cuentas. Creá una en Extractos.</p>
+              ) : (
+                <p className="text-xs text-muted-foreground">
+                  Los dos movimientos netean $0: el saldo de esta cuenta no cambia.
+                </p>
               )}
             </div>
 

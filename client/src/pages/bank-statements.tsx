@@ -2,6 +2,7 @@ import { useState, useMemo, useEffect, useRef } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { PageHeader } from "@/components/page-header";
 import { InternalLoanButton } from "@/components/internal-loan-button";
+import { SplitLocalsButton } from "@/components/split-locals-button";
 import { DataTable, Column } from "@/components/data-table";
 import { Button } from "@/components/ui/button";
 import {
@@ -59,7 +60,6 @@ import {
   AlertCircle,
   Percent,
   ListChecks,
-  Split,
   Plus,
   Trash2,
   Landmark,
@@ -85,13 +85,6 @@ interface TransactionWithRelations extends Transaction {
   bankAccount?: BankAccount | null;
   category?: TransactionCategory | null;
   local?: Local | null;
-}
-
-interface SplitItem {
-  localId: number | null;
-  localName: string;
-  amount: string;
-  categoryId?: number;
 }
 
 interface BranchMapping {
@@ -401,17 +394,12 @@ export default function BankStatementsPage() {
   const [isCategorizeOpen, setIsCategorizeOpen] = useState(false);
   const [isBatchCategorizeOpen, setIsBatchCategorizeOpen] = useState(false);
   const [batchMode, setBatchMode] = useState<"categorize" | "uncategorize">("categorize");
-  const [isSplitOpen, setIsSplitOpen] = useState(false);
   const [selectedTransaction, setSelectedTransaction] = useState<TransactionWithRelations | null>(null);
   const [selectedCategoryId, setSelectedCategoryId] = useState<string>("");
   const [batchCategoryId, setBatchCategoryId] = useState<string>("");
   const [selectedTransactionIds, setSelectedTransactionIds] = useState<Set<number>>(new Set());
   const [batchDateFrom, setBatchDateFrom] = useState<string>("");
   const [batchDateTo, setBatchDateTo] = useState<string>("");
-  const [splitItems, setSplitItems] = useState<SplitItem[]>([
-    { localId: null, localName: "", amount: "" },
-    { localId: null, localName: "", amount: "" },
-  ]);
   const [file, setFile] = useState<File | null>(null);
   const [selectedBankId, setSelectedBankId] = useState<string>("galicia");
   const [filterTab, setFilterTab] = useState<FilterTab>("all");
@@ -961,28 +949,6 @@ export default function BankStatementsPage() {
     },
   });
 
-  const splitMutation = useMutation({
-    mutationFn: async ({ id, splits }: { id: number; splits: SplitItem[] }) => {
-      return apiRequest("POST", `/api/transactions/${id}/split`, { splits });
-    },
-    onSuccess: (data: any) => {
-      queryClient.invalidateQueries({ queryKey: ["/api/transactions"] });
-      toast({ 
-        title: "Transaccion dividida", 
-        description: data.message || `Se crearon ${data.splits?.length || 0} sub-movimientos`
-      });
-      setIsSplitOpen(false);
-      setSelectedTransaction(null);
-      setSplitItems([
-        { localId: null, localName: "", amount: "" },
-        { localId: null, localName: "", amount: "" },
-      ]);
-    },
-    onError: (error: Error) => {
-      toast({ title: "Error al dividir", description: error.message, variant: "destructive" });
-    },
-  });
-
   const buildUploadPayload = (
     opts?: { absorbResidual?: boolean },
   ): { formData: FormData; queryString: string } | null => {
@@ -1255,43 +1221,6 @@ export default function BankStatementsPage() {
     setIsCategorizeOpen(true);
   };
 
-  const openSplitDialog = (transaction: TransactionWithRelations) => {
-    setSelectedTransaction(transaction);
-    const amount = Math.abs(parseFloat(String(transaction.amount) || "0"));
-    setSplitItems([
-      { localId: null, localName: "", amount: String(Math.floor(amount / 2)) },
-      { localId: null, localName: "", amount: String(Math.ceil(amount / 2)) },
-    ]);
-    setIsSplitOpen(true);
-  };
-
-  const handleSplit = () => {
-    if (!selectedTransaction) return;
-    
-    const validSplits = splitItems.filter(s => s.amount && parseFloat(s.amount) > 0);
-    if (validSplits.length < 2) {
-      toast({ title: "Se requieren al menos 2 partes con monto", variant: "destructive" });
-      return;
-    }
-
-    const totalSplit = validSplits.reduce((sum, s) => sum + parseFloat(s.amount), 0);
-    const parentAmount = Math.abs(parseFloat(String(selectedTransaction.amount) || "0"));
-    
-    if (Math.abs(totalSplit - parentAmount) > 0.01) {
-      toast({ 
-        title: "Los montos no coinciden", 
-        description: `Suma: ${formatCurrency(totalSplit)} vs Original: ${formatCurrency(parentAmount)}`,
-        variant: "destructive" 
-      });
-      return;
-    }
-
-    splitMutation.mutate({
-      id: selectedTransaction.id,
-      splits: validSplits,
-    });
-  };
-
   const handleSaveBranchMappings = () => {
     const validMappings = branchMappings
       .filter(m => m.localId !== null)
@@ -1311,26 +1240,6 @@ export default function BankStatementsPage() {
 
   const updateBranchMapping = (index: number, localId: number | null) => {
     setBranchMappings(prev => prev.map((m, i) => i === index ? { ...m, localId } : m));
-  };
-
-  const addSplitItem = () => {
-    setSplitItems([...splitItems, { localId: null, localName: "", amount: "" }]);
-  };
-
-  const removeSplitItem = (index: number) => {
-    if (splitItems.length <= 2) return;
-    setSplitItems(splitItems.filter((_, i) => i !== index));
-  };
-
-  const updateSplitItem = (index: number, field: keyof SplitItem, value: any) => {
-    setSplitItems(prev => prev.map((item, i) => {
-      if (i !== index) return item;
-      if (field === "localId") {
-        const local = locals.find(l => l.id === value);
-        return { ...item, localId: value, localName: local?.name || "" };
-      }
-      return { ...item, [field]: value };
-    }));
   };
 
   // Métricas GLOBALES (todo el dataset) — para el banner "tenés N sin categorizar".
@@ -1725,20 +1634,9 @@ export default function BankStatementsPage() {
           >
             <Tag className="h-4 w-4" />
           </Button>
-          {!row.parentTransactionId && !row.invoiced && (
-            <Button
-              size="icon"
-              variant="ghost"
-              onClick={() => openSplitDialog(row)}
-              data-testid={`button-split-${row.id}`}
-              title="Dividir por local"
-            >
-              <Split className="h-4 w-4" />
-            </Button>
-          )}
           {row.parentTransactionId && (
             <Badge variant="outline" className="text-xs text-muted-foreground">
-              Split
+              Parte
             </Badge>
           )}
           {splitParentIds.has(row.id) && (
@@ -1746,7 +1644,8 @@ export default function BankStatementsPage() {
               Dividido — no computa
             </Badge>
           )}
-          <InternalLoanButton transaction={row} />
+          <SplitLocalsButton transaction={row} isSplitParent={splitParentIds.has(row.id)} />
+          {!splitParentIds.has(row.id) && <InternalLoanButton transaction={row} />}
         </div>
       ),
     },
@@ -3124,117 +3023,6 @@ export default function BankStatementsPage() {
                 : "Aplicar Clasificacion"}
             </Button>
           </div>
-        </DialogContent>
-      </Dialog>
-
-      <Dialog open={isSplitOpen} onOpenChange={setIsSplitOpen}>
-        <DialogContent className="sm:max-w-lg">
-          <DialogHeader>
-            <DialogTitle>Dividir Movimiento por Local</DialogTitle>
-            <DialogDescription>
-              Divide este movimiento en partes asignadas a diferentes locales
-            </DialogDescription>
-          </DialogHeader>
-          {selectedTransaction && (
-            <div className="space-y-4">
-              <div className="p-3 rounded-lg bg-muted/50">
-                <p className="text-sm text-muted-foreground">Movimiento original</p>
-                <p className="font-medium truncate">{selectedTransaction.description}</p>
-                <div className="flex items-center justify-between mt-2">
-                  <span className="text-sm text-muted-foreground">
-                    {formatDate(selectedTransaction.transactionDate)}
-                  </span>
-                  <span className={`font-mono font-medium ${
-                    selectedTransaction.type === "income" ? "text-green-600" : "text-red-600"
-                  }`}>
-                    {formatCurrency(Math.abs(parseFloat(String(selectedTransaction.amount) || "0")))}
-                  </span>
-                </div>
-              </div>
-
-              <div className="space-y-3">
-                <div className="flex items-center justify-between">
-                  <Label>Partes del movimiento</Label>
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    onClick={addSplitItem}
-                    data-testid="button-add-split"
-                  >
-                    <Plus className="h-3 w-3 mr-1" />
-                    Agregar
-                  </Button>
-                </div>
-                
-                {splitItems.map((item, index) => (
-                  <div key={index} className="flex gap-2 items-center">
-                    <DataEntryCombobox
-                      options={localsOnlyComboOptions}
-                      value={item.localId != null ? String(item.localId) : ""}
-                      onValueChange={(v) =>
-                        updateSplitItem(index, "localId", v ? parseInt(v, 10) : null)
-                      }
-                      placeholder="Seleccionar local..."
-                      searchPlaceholder="Buscar local…"
-                      emptyOptionLabel="Sin local"
-                      triggerClassName="flex-1 min-w-0"
-                      data-testid={`select-split-local-${index}`}
-                    />
-                    <Input
-                      type="number"
-                      placeholder="Monto"
-                      value={item.amount}
-                      onChange={(e) => updateSplitItem(index, "amount", e.target.value)}
-                      className="w-32 font-mono"
-                      data-testid={`input-split-amount-${index}`}
-                    />
-                    {splitItems.length > 2 && (
-                      <Button
-                        size="icon"
-                        variant="ghost"
-                        onClick={() => removeSplitItem(index)}
-                        data-testid={`button-remove-split-${index}`}
-                      >
-                        <Trash2 className="h-4 w-4 text-muted-foreground" />
-                      </Button>
-                    )}
-                  </div>
-                ))}
-
-                <div className="flex items-center justify-between pt-2 border-t">
-                  <span className="text-sm text-muted-foreground">Total asignado</span>
-                  <span className={`font-mono font-medium ${
-                    Math.abs(splitItems.reduce((sum, s) => sum + (parseFloat(s.amount) || 0), 0) - 
-                      Math.abs(parseFloat(String(selectedTransaction.amount) || "0"))) < 0.01
-                      ? "text-green-600"
-                      : "text-amber-600"
-                  }`}>
-                    {formatCurrency(splitItems.reduce((sum, s) => sum + (parseFloat(s.amount) || 0), 0))}
-                  </span>
-                </div>
-              </div>
-
-              <div className="flex justify-end gap-2">
-                <Button 
-                  variant="outline" 
-                  onClick={() => {
-                    setIsSplitOpen(false);
-                    setSelectedTransaction(null);
-                  }} 
-                  data-testid="button-cancel-split"
-                >
-                  Cancelar
-                </Button>
-                <Button
-                  onClick={handleSplit}
-                  disabled={splitMutation.isPending}
-                  data-testid="button-apply-split"
-                >
-                  {splitMutation.isPending ? "Procesando..." : "Dividir Movimiento"}
-                </Button>
-              </div>
-            </div>
-          )}
         </DialogContent>
       </Dialog>
 
