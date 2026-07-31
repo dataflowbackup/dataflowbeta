@@ -22,10 +22,18 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { CategorySelectOptions, buildCategoryOptionGroups } from "@/components/category-select-options";
 import { apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { formatCurrency } from "@/lib/formatters";
-import type { Transaction, Local, BankAccount, TransactionCategory, InternalLoan } from "@shared/schema";
+import type {
+  Transaction,
+  Local,
+  BankAccount,
+  TransactionCategory,
+  InternalLoan,
+  FinancialGroup,
+} from "@shared/schema";
 
 type RowTx = Pick<Transaction, "id" | "source" | "localId" | "amount" | "description" | "type" | "parentTransactionId">;
 
@@ -53,18 +61,17 @@ export function InternalLoanButton({ transaction }: { transaction: RowTx }) {
   const { data: bankAccounts = [] } = useQuery<BankAccount[]>({ queryKey: ["/api/bank-accounts"] });
   const { data: categories = [] } = useQuery<TransactionCategory[]>({ queryKey: ["/api/transaction-categories"] });
   const { data: internalLoans = [] } = useQuery<InternalLoan[]>({ queryKey: ["/api/internal-loans"] });
+  const { data: financialGroups = [] } = useQuery<FinancialGroup[]>({ queryKey: ["/api/financial-groups"] });
 
   const existingLoan = useMemo(
     () => internalLoans.find((l) => l.originTransactionId === transaction.id && l.status === "active"),
     [internalLoans, transaction.id],
   );
 
-  const expenseCategories = useMemo(
-    () =>
-      [...categories]
-        .filter((c) => c.active !== false && c.type === "expense" && c.specialType == null)
-        .sort((a, b) => String(a.name).localeCompare(String(b.name), "es")),
-    [categories],
+  // Todas las categorías activas (ventas, gastos y movimientos financieros), agrupadas.
+  const categoryGroupsForSelect = useMemo(
+    () => buildCategoryOptionGroups(categories, financialGroups, transaction.type === "income" ? "income" : "expense"),
+    [categories, financialGroups, transaction.type],
   );
 
   const activeAccounts = useMemo(
@@ -245,17 +252,13 @@ export function InternalLoanButton({ transaction }: { transaction: RowTx }) {
             </div>
 
             <div className="space-y-1.5">
-              <Label className="text-xs">Categoría del gasto (ej. Luz)</Label>
+              <Label className="text-xs">Categoría (ej. Luz)</Label>
               <Select value={expenseCategoryId} onValueChange={setExpenseCategoryId}>
                 <SelectTrigger data-testid="select-internal-loan-categoria">
-                  <SelectValue placeholder="Elegí la categoría del gasto" />
+                  <SelectValue placeholder="Elegí la categoría" />
                 </SelectTrigger>
                 <SelectContent>
-                  {expenseCategories.map((c) => (
-                    <SelectItem key={c.id} value={String(c.id)}>
-                      {c.name}
-                    </SelectItem>
-                  ))}
+                  <CategorySelectOptions groups={categoryGroupsForSelect} />
                 </SelectContent>
               </Select>
             </div>

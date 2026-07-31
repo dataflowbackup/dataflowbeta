@@ -25,10 +25,11 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { CategorySelectOptions, buildCategoryOptionGroups } from "@/components/category-select-options";
 import { apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { formatCurrency } from "@/lib/formatters";
-import type { Transaction, Local, BankAccount, TransactionCategory } from "@shared/schema";
+import type { Transaction, Local, BankAccount, TransactionCategory, FinancialGroup } from "@shared/schema";
 
 type RowTx = Pick<
   Transaction,
@@ -78,21 +79,15 @@ export function SplitLocalsButton({
   const { data: locals = [] } = useQuery<Local[]>({ queryKey: ["/api/locals"] });
   const { data: bankAccounts = [] } = useQuery<BankAccount[]>({ queryKey: ["/api/bank-accounts"] });
   const { data: categories = [] } = useQuery<TransactionCategory[]>({ queryKey: ["/api/transaction-categories"] });
+  const { data: financialGroups = [] } = useQuery<FinancialGroup[]>({ queryKey: ["/api/financial-groups"] });
 
   const isIncome = transaction.type === "income";
   const totalCentsOriginal = toCents(Math.abs(parseFloat(String(transaction.amount)) || 0));
 
-  const realCategories = useMemo(
-    () =>
-      [...categories]
-        .filter(
-          (c) =>
-            c.active !== false &&
-            c.specialType == null &&
-            (c.type === (isIncome ? "income" : "expense") || c.type === "both"),
-        )
-        .sort((a, b) => String(a.name).localeCompare(String(b.name), "es")),
-    [categories, isIncome],
+  // Todas las categorías activas (ventas, gastos y movimientos financieros), agrupadas.
+  const categoryGroupsForSelect = useMemo(
+    () => buildCategoryOptionGroups(categories, financialGroups, isIncome ? "income" : "expense"),
+    [categories, financialGroups, isIncome],
   );
 
   const activeAccounts = useMemo(
@@ -381,17 +376,13 @@ export function SplitLocalsButton({
 
             <div className="grid gap-3 sm:grid-cols-2">
               <div className="space-y-1.5">
-                <Label className="text-xs">Categoría {isIncome ? "del ingreso" : "del gasto"} (para todos)</Label>
+                <Label className="text-xs">Categoría (para todos)</Label>
                 <Select value={mainCategoryId} onValueChange={setMainCategoryId}>
                   <SelectTrigger data-testid="select-split-main-category">
                     <SelectValue placeholder="Elegí la categoría" />
                   </SelectTrigger>
                   <SelectContent>
-                    {realCategories.map((c) => (
-                      <SelectItem key={c.id} value={String(c.id)}>
-                        {c.name}
-                      </SelectItem>
-                    ))}
+                    <CategorySelectOptions groups={categoryGroupsForSelect} />
                   </SelectContent>
                 </Select>
                 <p className="text-xs text-muted-foreground">Se puede pisar local por local.</p>
@@ -462,11 +453,7 @@ export function SplitLocalsButton({
                       <SelectValue placeholder="Categoría general" />
                     </SelectTrigger>
                     <SelectContent>
-                      {realCategories.map((c) => (
-                        <SelectItem key={c.id} value={String(c.id)}>
-                          {c.name}
-                        </SelectItem>
-                      ))}
+                      <CategorySelectOptions groups={categoryGroupsForSelect} />
                     </SelectContent>
                   </Select>
                   <span className="text-xs text-muted-foreground">Queda en la cuenta del movimiento original</span>
@@ -517,11 +504,7 @@ export function SplitLocalsButton({
                               <SelectValue placeholder="Categoría general" />
                             </SelectTrigger>
                             <SelectContent>
-                              {realCategories.map((c) => (
-                                <SelectItem key={c.id} value={String(c.id)}>
-                                  {c.name}
-                                </SelectItem>
-                              ))}
+                              <CategorySelectOptions groups={categoryGroupsForSelect} />
                             </SelectContent>
                           </Select>
                           <Select value={r.accountId} onValueChange={(v) => setRow(l.id, { accountId: v })}>
