@@ -429,7 +429,7 @@ export default function BalancePage() {
       rows.push({ label: "Diferencia (deuda generada / cancelada)", value: formatCurrency(cmvVsPagado), indent: true, bold: true });
       for (const r of cmvBalance.rows) {
         rows.push({
-          label: `   ${localName(r.localId)} · ${r.pct.toFixed(2)}%${r.ivaAdjusted ? " (ajustado por IVA)" : ""}`,
+          label: `   ${localName(r.localId)} · ${r.pct.toFixed(2)}%`,
           value: formatCurrency(r.cmvAmount),
           indent: true,
         });
@@ -523,7 +523,7 @@ export default function BalancePage() {
       });
       for (const r of cmvBalance.rows) {
         rows.push({
-          label: `${localName(r.localId)}${r.ivaAdjusted ? " (ajustado por IVA)" : ""}`,
+          label: localName(r.localId),
           importe: formatCurrency(r.cmvAmount),
           pct: pct(r.pct),
           indent: true,
@@ -971,21 +971,12 @@ export default function BalancePage() {
                             <tr key={`cmvrow-${r.localId}`} className="border-t">
                               <td className="py-1">
                                 <span>{localName(r.localId)}</span>
-                                {r.ivaAdjusted && (
-                                  <Badge variant="outline" className="ml-2 text-[10px] font-normal">
-                                    ajustado por IVA
-                                  </Badge>
-                                )}
                                 <span className="block text-[10px] text-muted-foreground">
                                   {r.periodFrom} → {r.periodTo} · ventas base: {r.salesSource}
+                                  {r.computedWithoutIva ? " · calculado sin IVA" : ""}
                                 </span>
                               </td>
-                              <td className="text-right font-mono py-1">
-                                {r.pct.toFixed(2)}%
-                                {r.ivaAdjusted && (
-                                  <span className="block text-[10px] text-muted-foreground">guardado: {r.rawPct.toFixed(2)}%</span>
-                                )}
-                              </td>
+                              <td className="text-right font-mono py-1">{r.pct.toFixed(2)}%</td>
                               <td className="text-right font-mono py-1">{formatCurrency(r.ventas)}</td>
                               <td className="text-right font-mono py-1">{formatCurrency(r.cmvAmount)}</td>
                             </tr>
@@ -993,13 +984,10 @@ export default function BalancePage() {
                         </tbody>
                       </table>
                     </div>
-                    {cmvBalance.rows.some((r) => r.ivaAdjusted) && (
-                      <p className="text-[11px] text-muted-foreground pt-2">
-                        "Ajustado por IVA": ese CMV se guardó sin IVA incluido, así que su % estaba medido contra una
-                        venta neta. Se llevó a la misma base que las ventas del balance (÷ 1,21) para poder sumarlo
-                        con el resto.
-                      </p>
-                    )}
+                    <p className="text-[11px] text-muted-foreground pt-2">
+                      El CMV % de cada local es el que quedó guardado en su cálculo, aplicado sobre la facturación
+                      del balance de ese local.
+                    </p>
                   </div>
                 )}
               </div>

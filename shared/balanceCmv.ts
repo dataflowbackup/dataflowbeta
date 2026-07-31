@@ -6,20 +6,18 @@
  * haya consumido igual. En modo CMV los grupos marcados como mercadería dejan de computar en la
  * utilidad y su lugar lo toma el CMV calculado: un criterio devengado, independiente de si se pagó.
  *
- * Regla del importe: se toma el CMV% del cálculo guardado y se lo lleva a pesos contra la
- * FACTURACIÓN DEL BALANCE de ese local ("pasar el % a económico"), no el CMV en pesos original.
- * Así todas las líneas del estado de resultados quedan sobre el mismo denominador.
+ * Regla del importe: se toma el CMV% del cálculo guardado, TAL CUAL quedó guardado, y se lo lleva a
+ * pesos contra la FACTURACIÓN DEL BALANCE de ese local ("pasar el % a económico"), no el CMV en
+ * pesos original. Así todas las líneas del estado de resultados quedan sobre el mismo denominador.
  *
- * Bases de IVA: `computeCmv` calcula el % contra `ventaNeta = ivaIncluded ? bruto : bruto / 1.21`.
- * Las ventas del balance vienen de extractos, o sea brutas. Un CMV guardado SIN "IVA incluido"
- * tiene el % medido contra una base más chica, así que su porcentaje es ~21% más alto y sumarlo
- * crudo al resto inflaría el costo. Se normaliza a base bruta antes de usarlo (y se marca la fila).
+ * Sobre el IVA: `computeCmv` calcula el % contra `ventaNeta = ivaIncluded ? bruto : bruto / 1.21`,
+ * así que un CMV guardado sin "IVA incluido" tiene el % medido contra una base más chica. Aun así
+ * el balance usa ese porcentaje sin convertirlo: es el CMV% que el usuario calculó y validó para el
+ * local, y es el que quiere ver aplicado sobre la facturación (decisión explícita, 31-jul-2026).
+ * Los cálculos hechos sin IVA quedan igualmente identificados en la fila, como referencia.
  */
 
 import { pickCmvForMonth, type CmvPeriodLike, type CmvMonthMatch } from "./cmvMonthMatch";
-
-/** Mismo 21% que usa `computeCmv` para pasar de venta bruta a venta neta. */
-export const IVA_FACTOR = 1.21;
 
 export interface CmvCalculationLike extends CmvPeriodLike {
   cmv?: string | number | null;
@@ -31,12 +29,10 @@ export interface CmvCalculationLike extends CmvPeriodLike {
 
 export interface CmvBalanceRow {
   localId: number;
-  /** CMV% ya normalizado a base bruta (comparable con las ventas del balance). */
+  /** CMV% tal cual se guardó. Es el que se aplica sobre la facturación del balance. */
   pct: number;
-  /** % tal cual quedó guardado (para explicar el ajuste cuando hubo que normalizar). */
-  rawPct: number;
-  /** true si el CMV se guardó sin IVA incluido y hubo que llevar el % a base bruta. */
-  ivaAdjusted: boolean;
+  /** true si ese CMV se calculó sin IVA incluido (informativo: no cambia el importe). */
+  computedWithoutIva: boolean;
   /** Ventas del balance de ese local en el mes. */
   ventas: number;
   /** Costo de mercadería en pesos que entra al balance: pct × ventas del balance. */
@@ -76,15 +72,9 @@ const toNum = (v: unknown): number => {
   return Number.isFinite(n) ? n : 0;
 };
 
-/**
- * CMV% llevado a base de venta BRUTA, que es la de las ventas del balance.
- * Guardado con IVA incluido → ya está sobre el bruto. Guardado sin IVA → el denominador era
- * bruto/1.21, así que el % se divide por 1.21 para volver a la misma base.
- */
-export function normalizedCmvPct(cmv: CmvCalculationLike): { pct: number; rawPct: number; adjusted: boolean } {
-  const rawPct = toNum(cmv.cmvPct);
-  const adjusted = !cmv.ivaIncluded;
-  return { pct: adjusted ? rawPct / IVA_FACTOR : rawPct, rawPct, adjusted };
+/** CMV% que se asienta en el balance: el guardado, sin convertir. */
+export function balanceCmvPct(cmv: CmvCalculationLike): number {
+  return toNum(cmv.cmvPct);
 }
 
 /**
@@ -114,12 +104,11 @@ export function buildCmvForBalance(
     }
 
     const c = match.matched;
-    const { pct, rawPct, adjusted } = normalizedCmvPct(c);
+    const pct = balanceCmvPct(c);
     rows.push({
       localId,
       pct,
-      rawPct,
-      ivaAdjusted: adjusted,
+      computedWithoutIva: !c.ivaIncluded,
       ventas,
       cmvAmount: (pct / 100) * ventas,
       cmvReal: toNum(c.cmv),
