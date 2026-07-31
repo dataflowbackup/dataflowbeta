@@ -37,6 +37,12 @@ const getOidcConfig = memoize(
   { maxAge: 3600 * 1000 }
 );
 
+/**
+ * Lo máximo que el arranque espera al discovery OIDC antes de pasar a inicialización lazy.
+ * Corto a propósito: mientras se espera, la API entera no responde (ver `setupAuth`).
+ */
+const STARTUP_DISCOVERY_TIMEOUT_MS = 2500;
+
 export function getSession() {
   const sessionTtl = 7 * 24 * 60 * 60 * 1000; // 1 week
   const pgStore = connectPg(session);
@@ -87,7 +93,27 @@ export async function setupAuth(app: Express) {
 
   let config: Awaited<ReturnType<typeof getOidcConfig>>;
   try {
-    config = await getOidcConfig();
+    /*
+     * El discovery NO puede bloquear el arranque. `setupAuth` se await-ea dentro de
+     * `registerRoutes` → `createApiApp`, así que hasta que esto termine la función serverless no
+     * puede contestar NINGUNA request. Con `discoverOidcWithRetry` reintentando 5 veces con
+     * esperas escalonadas (2+4+6+8s), un arranque en frío con replit.com lento se comía más de
+     * 20s y superaba el timeout de 26s de Netlify: el usuario veía 502 al intentar ingresar
+     * (31-jul-2026). Si no contesta rápido se sigue por el camino lazy de abajo, que registra
+     * las mismas rutas e inicializa el OIDC recién cuando alguien usa "Replit Auth".
+     */
+    const discovery = getOidcConfig();
+    discovery.catch(() => {}); // si falla después del timeout, que no sea un unhandledRejection
+    config = await Promise.race([
+      discovery,
+      new Promise<never>((_, reject) => {
+        const t = setTimeout(
+          () => reject(new Error(`OIDC discovery tardó más de ${STARTUP_DISCOVERY_TIMEOUT_MS}ms`)),
+          STARTUP_DISCOVERY_TIMEOUT_MS,
+        );
+        if (typeof t.unref === "function") t.unref();
+      }),
+    ]);
   } catch (error: any) {
     console.error("OIDC discovery failed during startup:", error?.message || error);
     console.log("Auth routes will attempt lazy initialization on first request.");
