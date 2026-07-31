@@ -626,6 +626,12 @@ export const financialGroups = pgTable("financial_groups", {
   type: varchar("type", { length: 20 }).notNull(),
   displayOrder: integer("display_order").default(0),
   isSystem: boolean("is_system").default(false),
+  /**
+   * Grupo de MERCADERÍA: en el balance en modo CMV deja de computar en la rentabilidad y su lugar
+   * lo toma el costo de mercadería calculado (CMV). Se sigue mostrando como "pagado" y sigue
+   * computando en la caja del período. Configurable por cliente (cada uno agrupa distinto).
+   */
+  isMerchandise: boolean("is_merchandise").default(false),
   active: boolean("active").default(true),
   createdAt: timestamp("created_at").defaultNow(),
 });

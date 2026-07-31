@@ -449,6 +449,8 @@ export interface IStorage {
       income: Record<number, number>;
       expenses: Record<number, number>;
       net: Record<number, number>;
+      /** Ventas por local y mes (misma composición que `income`). Base del CMV por local. */
+      incomeByLocal: Record<number, Record<number, number>>;
       totalIncome: number;
       totalExpenses: number;
       totalNet: number;
@@ -3486,6 +3488,19 @@ export class DatabaseStorage implements IStorage {
     // total por su tipo para no cambiar la Utilidad, aunque no aparezcan en ningún grupo.
     const orphanIncome: Record<number, number> = {};
     const orphanExpense: Record<number, number> = {};
+    // Ventas por LOCAL y mes, con la misma composición que summaryIncome (neto por dirección de
+    // grupo + huérfanos). Lo necesita el balance en modo CMV: el CMV% es por local, así que el
+    // costo de mercadería se pasa a pesos contra las ventas DE ESE local y recién después se suma.
+    // Movimientos sin local caen en la clave 0 (no se le pueden asignar a ningún CMV).
+    const incomeByLocal: Record<number, Record<number, number>> = {};
+    const addIncomeByLocal = (lid: number | null | undefined, month: number, val: number) => {
+      const key = lid ?? 0;
+      if (!incomeByLocal[key]) {
+        incomeByLocal[key] = {};
+        for (let m = 1; m <= 12; m++) incomeByLocal[key][m] = 0;
+      }
+      incomeByLocal[key][month] += val;
+    };
 
     for (let m = 1; m <= 12; m++) {
       summaryIncome[m] = 0;
@@ -3537,10 +3552,13 @@ export class DatabaseStorage implements IStorage {
           for (let m = 1; m <= 12; m++) categoryNetMonthly[tx.categoryId][m] = 0;
         }
         categoryNetMonthly[tx.categoryId][month] += net;
+        if (gType === "income") addIncomeByLocal(tx.localId, month, net);
       } else {
         // Sin grupo income/expense: huérfano. Entra al total por su tipo (preserva la Utilidad).
-        if (tx.type === "income") orphanIncome[month] += amount;
-        else if (tx.type === "expense") orphanExpense[month] += amount;
+        if (tx.type === "income") {
+          orphanIncome[month] += amount;
+          addIncomeByLocal(tx.localId, month, amount);
+        } else if (tx.type === "expense") orphanExpense[month] += amount;
       }
     }
     
@@ -3622,6 +3640,8 @@ export class DatabaseStorage implements IStorage {
         name: group.name,
         type: group.type,
         isSpecial: groupIsSpecial,
+        // Grupo de mercadería: en modo CMV deja de computar en la rentabilidad (lo reemplaza el CMV).
+        isMerchandise: !!group.isMerchandise,
         specialType: groupSpecialType,
         categories,
         monthlyTotals: groupMonthlyTotals,
@@ -3693,6 +3713,8 @@ export class DatabaseStorage implements IStorage {
         otrosMovimientos,
         // Punto 6: Traslados de Mercadería (recibidos − enviados). Solo resta en el neto de caja.
         traslados,
+        // Ventas por local y mes (misma composición que income). Base del CMV por local.
+        incomeByLocal,
         totalIncome,
         totalExpenses,
         totalNet,
