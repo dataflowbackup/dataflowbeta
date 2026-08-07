@@ -124,7 +124,7 @@ type DraftRow = {
 };
 
 // ---- Importación por Excel ----
-const CASH_IMPORT_HEADERS = ["Fecha", "Descripción", "Tipo", "Importe", "Categoría"] as const;
+const CASH_IMPORT_HEADERS = ["Fecha", "Descripción", "Tipo", "Importe", "Categoría", "Caja"] as const;
 
 const pad2 = (s: string | number) => String(s).padStart(2, "0");
 
@@ -177,6 +177,10 @@ type ImportRow = {
   amount: number;
   categoryName: string;
   categoryId: number | null;
+  /** Columna "Caja" del Excel, tal cual vino (vacía = se resuelve con la caja por defecto del diálogo). */
+  cajaName: string;
+  /** Caja resuelta por nombre; null si la celda estaba vacía o el nombre no existe. */
+  cashRegisterId: number | null;
   error: string | null;
 };
 
@@ -497,18 +501,17 @@ export default function CashPage() {
     () => [...cashRegisters].sort((a, b) => String(a.name).localeCompare(String(b.name), "es")).map((c) => ({ id: c.id, name: c.name })),
     [cashRegisters],
   );
+  // Picker de caja del diálogo de edición: sin opción "Sin caja", porque la caja es obligatoria
+  // en efectivo. Un movimiento viejo sin caja abre el picker vacío y obliga a elegir una.
   const cajaPickComboOptions = useMemo(
-    () => [
-      { value: "none", label: "Sin caja" },
-      ...cajaComboItems.map((c) => ({ value: String(c.id), label: c.name })),
-    ],
+    () => cajaComboItems.map((c) => ({ value: String(c.id), label: c.name })),
     [cajaComboItems],
   );
   const [filterCajaId, setFilterCajaId] = useState<string>("all");
   const [batchCajaId, setBatchCajaId] = useState<string>("");
   const [isCajasOpen, setIsCajasOpen] = useState(false);
   const [newCajaName, setNewCajaName] = useState("");
-  const [editCajaId, setEditCajaId] = useState<string>("none");
+  const [editCajaId, setEditCajaId] = useState<string>("");
 
   // Clasificación Masiva en Efectivo (modo: categorizar / descategorizar / borrar)
   type MasivaMode = "categorize" | "uncategorize" | "delete";
@@ -921,12 +924,18 @@ export default function CashPage() {
   const importFileRef = useRef<HTMLInputElement>(null);
   const [importOpen, setImportOpen] = useState(false);
   const [importLocalId, setImportLocalId] = useState<string>("");
+  /** Caja por defecto: se aplica a las filas del Excel que vengan con la columna "Caja" vacía. */
+  const [importCajaId, setImportCajaId] = useState<string>("");
   const [importFileName, setImportFileName] = useState("");
   const [importRows, setImportRows] = useState<ImportRow[]>([]);
 
   const importLocalOptions = useMemo(
     () => localsSorted.map((l) => ({ value: String(l.id), label: l.name })),
     [localsSorted],
+  );
+  const importCajaOptions = useMemo(
+    () => cajaComboItems.map((c) => ({ value: String(c.id), label: c.name })),
+    [cajaComboItems],
   );
 
   const categoryGroupNameById = useMemo(() => {
@@ -946,8 +955,9 @@ export default function CashPage() {
       Grupo: t.categoryId ? (categoryGroupNameById.get(t.categoryId) ?? "") : "",
       Categoría: t.category?.name ?? "",
       Local: t.local?.name ?? "",
+      Caja: (t as any).cashRegisterId != null ? (cajasById.get((t as any).cashRegisterId) ?? "") : "",
     }));
-    const ws = XLSX.utils.json_to_sheet(rows, { header: ["Fecha", "Descripción", "Tipo", "Importe", "Grupo", "Categoría", "Local"] });
+    const ws = XLSX.utils.json_to_sheet(rows, { header: ["Fecha", "Descripción", "Tipo", "Importe", "Grupo", "Categoría", "Local", "Caja"] });
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, "Efectivo");
     XLSX.writeFile(wb, `efectivo_${toISODate(new Date())}.xlsx`);
@@ -955,7 +965,16 @@ export default function CashPage() {
 
   const downloadTemplate = () => {
     const ws = XLSX.utils.json_to_sheet(
-      [{ Fecha: "2026-06-10", Descripción: "Ej: venta mostrador", Tipo: "Ingreso", Importe: 1500.5, Categoría: "Ventas" }],
+      [
+        {
+          Fecha: "2026-06-10",
+          Descripción: "Ej: venta mostrador",
+          Tipo: "Ingreso",
+          Importe: 1500.5,
+          Categoría: "Ventas",
+          Caja: cajaComboItems[0]?.name ?? "Caja Mayor",
+        },
+      ],
       { header: [...CASH_IMPORT_HEADERS] as string[] },
     );
     const wb = XLSX.utils.book_new();
@@ -965,6 +984,7 @@ export default function CashPage() {
 
   const openImport = () => {
     setImportLocalId("");
+    setImportCajaId(cashRegisters.length === 1 ? String(cashRegisters[0].id) : "");
     setImportFileName("");
     setImportRows([]);
     if (importFileRef.current) importFileRef.current.value = "";
@@ -983,6 +1003,7 @@ export default function CashPage() {
         const type = parseCellType(cellByHeader(r, "Tipo"));
         const amount = parseCellAmount(cellByHeader(r, "Importe", "Monto"));
         const categoryName = String(cellByHeader(r, "Categoría", "Categoria") ?? "").trim();
+        const cajaName = String(cellByHeader(r, "Caja") ?? "").trim();
 
         let categoryId: number | null = null;
         if (type && categoryName) {
@@ -995,14 +1016,22 @@ export default function CashPage() {
           categoryId = match?.id ?? null;
         }
 
+        // La caja de la fila se busca por nombre; si la celda viene vacía, se resuelve más abajo
+        // con la "caja por defecto" del diálogo (ver importRowsResolved).
+        const cajaMatch = cajaName
+          ? cashRegisters.find((c) => normalizeName(String(c.name)) === normalizeName(cajaName))
+          : undefined;
+        const cashRegisterId = cajaMatch?.id ?? null;
+
         let error: string | null = null;
         if (!transactionDate) error = "Fecha inválida";
         else if (!description) error = "Falta descripción";
         else if (!type) error = "Tipo debe ser Ingreso o Egreso";
         else if (!Number.isFinite(amount) || amount <= 0) error = "Importe inválido";
         else if (categoryName && categoryId == null) error = `Categoría "${categoryName}" no encontrada (se importará sin categoría)`;
+        else if (cajaName && cashRegisterId == null) error = `Caja "${cajaName}" no encontrada`;
 
-        return { idx: i + 2, transactionDate, description, type, amount, categoryName, categoryId, error };
+        return { idx: i + 2, transactionDate, description, type, amount, categoryName, categoryId, cajaName, cashRegisterId, error };
       });
       setImportRows(parsed);
       setImportFileName(file.name);
@@ -1011,8 +1040,29 @@ export default function CashPage() {
     }
   };
 
-  const importValidRows = useMemo(() => importRows.filter((r) => r.error == null), [importRows]);
-  const importErrorRows = useMemo(() => importRows.filter((r) => r.error != null), [importRows]);
+  /**
+   * Resuelve la caja definitiva de cada fila: la de la columna "Caja" y, si vino vacía, la caja por
+   * defecto del diálogo. Se recalcula al cambiar ese defecto, así el preview queda siempre al día.
+   * Sin caja no se importa: importar sin caja era lo que dejaba movimientos "colgados".
+   */
+  const importRowsResolved = useMemo(() => {
+    const parsed = parseInt(importCajaId, 10);
+    const fallbackId = Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+    // Salvedad: si el cliente no creó ninguna caja no se le puede exigir una en el Excel.
+    const cajaRequerida = cashRegisters.length > 0;
+    return importRows.map((r) => {
+      const cashRegisterId = r.cashRegisterId ?? fallbackId;
+      const error =
+        r.error ??
+        (cajaRequerida && cashRegisterId == null
+          ? "Falta la caja (completá la columna o elegí una caja por defecto)"
+          : null);
+      return { ...r, cashRegisterId, error };
+    });
+  }, [importRows, importCajaId, cashRegisters.length]);
+
+  const importValidRows = useMemo(() => importRowsResolved.filter((r) => r.error == null), [importRowsResolved]);
+  const importErrorRows = useMemo(() => importRowsResolved.filter((r) => r.error != null), [importRowsResolved]);
 
   const importMutation = useMutation({
     mutationFn: async () => {
@@ -1023,6 +1073,7 @@ export default function CashPage() {
           description: r.description,
           categoryId: r.categoryId ?? null,
           localId,
+          cashRegisterId: r.cashRegisterId,
           type: r.type as "income" | "expense",
           amount: r.amount,
         })),
@@ -1054,6 +1105,10 @@ export default function CashPage() {
       const amt = parseEsArAmount(String(editAmount));
       if (!Number.isFinite(amt) || amt <= 0) {
         throw new Error("Importe inválido");
+      }
+      // Caja obligatoria, salvo que el cliente todavía no tenga ninguna creada.
+      if (cashRegisters.length > 0 && (editCajaId === "none" || !editCajaId)) {
+        throw new Error("Elegí una caja: es obligatoria en los movimientos de efectivo.");
       }
       await apiRequest("PATCH", `/api/transactions/${editRow.id}`, {
         transactionDate: editTransactionDate.trim(),
@@ -1176,7 +1231,8 @@ export default function CashPage() {
     setEditAmount(formatNumber(Math.abs(parseFloat(String(row.amount) || "0")), 2));
     setEditCategoryId(row.categoryId != null ? String(row.categoryId) : "");
     setEditLocalId(row.localId != null ? String(row.localId) : "none");
-    setEditCajaId((row as any).cashRegisterId != null ? String((row as any).cashRegisterId) : "none");
+    // Sin caja abre vacío (no "none"): el picker ya no ofrece "Sin caja" y hay que elegir una.
+    setEditCajaId((row as any).cashRegisterId != null ? String((row as any).cashRegisterId) : "");
   };
 
   const columns: Column<TransactionWithRelations>[] = [
@@ -1759,7 +1815,9 @@ export default function CashPage() {
           <DialogHeader>
             <DialogTitle>Editar movimiento en efectivo</DialogTitle>
             <DialogDescription>
-              Podés corregir fecha, descripción, tipo, importe, categoría y local. Solo aplica a movimientos cargados como efectivo.
+              Podés corregir fecha, descripción, tipo, importe, categoría, local y caja. Solo aplica a movimientos
+              cargados como efectivo. La caja es obligatoria: sirve para asignarle una a los movimientos viejos que
+              se importaron sin caja.
             </DialogDescription>
           </DialogHeader>
           {editRow && (
@@ -1823,14 +1881,19 @@ export default function CashPage() {
                 />
               </div>
               <div className="space-y-1">
-                <Label>Caja</Label>
+                <Label>Caja (obligatoria)</Label>
                 <DataEntryCombobox
                   options={cajaPickComboOptions}
                   value={editCajaId}
                   onValueChange={setEditCajaId}
-                  placeholder="Caja"
+                  placeholder="Elegí la caja"
                   searchPlaceholder="Buscar caja…"
                 />
+                {!editCajaId && cashRegisters.length > 0 && (
+                  <p className="text-xs text-destructive">
+                    Este movimiento no tiene caja asignada. Elegí una para guardar.
+                  </p>
+                )}
               </div>
             </div>
           )}
@@ -2085,8 +2148,9 @@ export default function CashPage() {
             <DialogTitle>Importar efectivo desde Excel</DialogTitle>
             <DialogDescription>
               Elegí el local, descargá la plantilla si querés, y subí el archivo. Columnas:
-              Fecha, Descripción, Tipo (Ingreso/Egreso), Importe, Categoría. La categoría se
-              busca por nombre. Todos los movimientos se cargan en el local elegido.
+              Fecha, Descripción, Tipo (Ingreso/Egreso), Importe, Categoría, Caja. La categoría y la
+              caja se buscan por nombre. Todos los movimientos se cargan en el local elegido; las filas
+              que vengan con la columna Caja vacía usan la caja por defecto.
             </DialogDescription>
           </DialogHeader>
 
@@ -2104,12 +2168,27 @@ export default function CashPage() {
                 />
               </div>
               <div className="space-y-1">
-                <Label className="text-xs">Plantilla</Label>
-                <Button variant="outline" className="w-full justify-start" onClick={downloadTemplate}>
-                  <FileSpreadsheet className="h-4 w-4 mr-2" />
-                  Descargar plantilla
-                </Button>
+                <Label className="text-xs">Caja por defecto</Label>
+                <DataEntryCombobox
+                  options={importCajaOptions}
+                  value={importCajaId}
+                  onValueChange={setImportCajaId}
+                  placeholder="Elegí la caja"
+                  searchPlaceholder="Buscar caja…"
+                  data-testid="select-import-caja"
+                />
+                <p className="text-xs text-muted-foreground">
+                  Se aplica a las filas sin columna Caja. Ningún movimiento se importa sin caja.
+                </p>
               </div>
+            </div>
+
+            <div className="space-y-1">
+              <Label className="text-xs">Plantilla</Label>
+              <Button variant="outline" className="w-full justify-start sm:w-auto" onClick={downloadTemplate}>
+                <FileSpreadsheet className="h-4 w-4 mr-2" />
+                Descargar plantilla
+              </Button>
             </div>
 
             <div className="space-y-1">
@@ -2142,11 +2221,12 @@ export default function CashPage() {
                         <th className="px-2 py-1 text-left font-medium border-b">Tipo</th>
                         <th className="px-2 py-1 text-right font-medium border-b">Importe</th>
                         <th className="px-2 py-1 text-left font-medium border-b">Categoría</th>
+                        <th className="px-2 py-1 text-left font-medium border-b">Caja</th>
                         <th className="px-2 py-1 text-left font-medium border-b">Estado</th>
                       </tr>
                     </thead>
                     <tbody>
-                      {importRows.map((r) => (
+                      {importRowsResolved.map((r) => (
                         <tr key={r.idx} className={cn("border-b", r.error && "bg-destructive/5")}>
                           <td className="px-2 py-1 text-muted-foreground">{r.idx}</td>
                           <td className="px-2 py-1 whitespace-nowrap">{r.transactionDate ?? "—"}</td>
@@ -2154,6 +2234,9 @@ export default function CashPage() {
                           <td className="px-2 py-1">{r.type === "income" ? "Ingreso" : r.type === "expense" ? "Egreso" : "—"}</td>
                           <td className="px-2 py-1 text-right font-mono">{Number.isFinite(r.amount) ? formatCurrency(r.amount) : "—"}</td>
                           <td className="px-2 py-1 max-w-[140px] truncate">{r.categoryName || "—"}</td>
+                          <td className="px-2 py-1 max-w-[140px] truncate">
+                            {r.cashRegisterId != null ? (cajasById.get(r.cashRegisterId) ?? "—") : (r.cajaName || "—")}
+                          </td>
                           <td className="px-2 py-1">
                             {r.error ? (
                               <span className="text-destructive">{r.error}</span>

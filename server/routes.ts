@@ -100,13 +100,16 @@ const updateTransactionSchema = z.object({
     return null;
   }),
   invoiced: z.union([z.boolean(), z.coerce.boolean()]).optional(),
+  // OJO: preserva `undefined` ("el campo no vino") y lo distingue de `null` ("sacar la caja").
+  // Si colapsara ambos a null, un PATCH que solo categoriza (extractos) borraria la caja del movimiento.
   cashRegisterId: z.union([
     z.coerce.number().int().positive(),
     z.null(),
     z.literal("none"),
     z.literal(""),
   ]).optional().transform(val => {
-    if (val === "none" || val === null || val === "" || val === undefined) return null;
+    if (val === undefined) return undefined;
+    if (val === "none" || val === null || val === "") return null;
     if (typeof val === "number" && val > 0) return val;
     return null;
   }),
@@ -3016,6 +3019,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const safeUpdate: {
         categoryId?: number | null;
         localId?: number | null;
+        cashRegisterId?: number | null;
         invoiced?: boolean;
         transactionDate?: string;
         description?: string;
@@ -3027,6 +3031,11 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       }
       if (patch.localId !== undefined) {
         safeUpdate.localId = patch.localId ?? null;
+      }
+      // Faltaba: el schema validaba cashRegisterId pero nunca se persistia, asi que asignar una
+      // caja desde "Editar" respondia 200 y no cambiaba nada (movimientos importados sin caja).
+      if (patch.cashRegisterId !== undefined) {
+        safeUpdate.cashRegisterId = patch.cashRegisterId ?? null;
       }
       if (patch.invoiced !== undefined) {
         safeUpdate.invoiced = patch.invoiced;
@@ -3042,6 +3051,26 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       }
       if (patch.amount !== undefined) {
         safeUpdate.amount = String(Math.abs(patch.amount));
+      }
+
+      // La caja es obligatoria en efectivo: al editar el movimiento (o al tocar su caja) tiene que
+      // quedar con una asignada, para no volver a dejar movimientos "colgados" sin caja. No se exige
+      // en el PATCH que solo categoriza desde extractos, que ni siquiera manda el campo.
+      const cashRegisterTouch =
+        existing.bankSource === "cash" && (hasCorePatch || patch.cashRegisterId !== undefined);
+      if (cashRegisterTouch) {
+        const nextCashRegisterId =
+          patch.cashRegisterId !== undefined ? patch.cashRegisterId : existing.cashRegisterId;
+        if (nextCashRegisterId == null) {
+          // Salvedad: si el cliente todavia no creo ninguna caja no se le puede exigir una, o se
+          // quedaria sin poder editar sus movimientos de efectivo.
+          const cajas = await storage.listCashRegisters(clientId);
+          if (cajas.length > 0) {
+            return res
+              .status(400)
+              .json({ message: "La caja es obligatoria en movimientos de efectivo." });
+          }
+        }
       }
 
       const cashClassifyTouch =
