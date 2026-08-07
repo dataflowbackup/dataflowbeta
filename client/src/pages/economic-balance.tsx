@@ -13,6 +13,7 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Skeleton } from "@/components/ui/skeleton";
 import { formatCurrency } from "@/lib/formatters";
 import { cn } from "@/lib/utils";
+import jsPDF from "jspdf";
 import {
   ChevronDown,
   ChevronRight,
@@ -22,6 +23,7 @@ import {
   TrendingUp,
   TrendingDown,
   Minus,
+  Download,
 } from "lucide-react";
 import type { Local, CmvCalculation, FinancialGroup } from "@shared/schema";
 import { buildCmvForBalance } from "@shared/balanceCmv";
@@ -187,6 +189,153 @@ export default function EconomicBalancePage() {
 
   const localName = (id: number) => locals.find((l) => l.id === id)?.name ?? `Local #${id}`;
 
+  const localsLabel =
+    selectedLocalIds.length === 0
+      ? "Todos los locales"
+      : selectedLocalIds.map(localName).join(", ");
+
+  /**
+   * Filas del PDF. Mismo criterio y mismo orden que la pantalla, para que el PDF no cuente una
+   * historia distinta: si en pantalla hay un aviso que cambia cómo leer la utilidad, va también acá.
+   */
+  const buildPdfRows = () => {
+    const rows: { label: string; importe?: string; pct?: string; bold?: boolean; section?: boolean; indent?: boolean }[] = [];
+    const pct = (v: number) => `${v.toFixed(1)}%`;
+
+    rows.push({ label: `VENTAS (${sourceLabel})`, importe: formatCurrency(ventasMes), bold: true });
+    for (const c of data?.ventas.composition ?? []) {
+      const v = c.monthlyTotals[month] ?? 0;
+      if (v === 0) continue;
+      rows.push({
+        label: c.label,
+        importe: formatCurrency(v),
+        pct: ventasMes > 0 ? pct((v / ventasMes) * 100) : "",
+        indent: true,
+      });
+    }
+
+    rows.push({ label: "CMV", importe: formatCurrency(cmvMes), bold: true, section: false });
+    for (const r of cmvBalance.rows) {
+      rows.push({
+        label: `${localName(r.localId)} · ${r.pct.toFixed(2)}%`,
+        importe: formatCurrency(r.cmvAmount),
+        indent: true,
+      });
+    }
+    if (cmvBalance.hasMissing) {
+      rows.push({
+        label: `Sin CMV: ${cmvBalance.missing.map((m) => localName(m.localId)).join(", ")} — ${formatCurrency(cmvBalance.ventasSinCmv)} de ventas sin costo`,
+        indent: true,
+      });
+    }
+
+    rows.push({ label: "GASTOS", importe: formatCurrency(gastosMes), bold: true });
+    for (const g of computingGroups
+      .filter((g) => (g.monthlyTotals[month] ?? 0) !== 0)
+      .sort((a, b) => (b.monthlyTotals[month] ?? 0) - (a.monthlyTotals[month] ?? 0))) {
+      const v = g.monthlyTotals[month] ?? 0;
+      rows.push({
+        label: g.name,
+        importe: formatCurrency(v),
+        pct: ventasMes > 0 ? pct((v / ventasMes) * 100) : "",
+        indent: true,
+      });
+    }
+
+    rows.push({
+      label: "UTILIDAD ECONÓMICA",
+      importe: formatCurrency(utilidadMes),
+      pct: pct(margenPct),
+      bold: true,
+      section: true,
+    });
+
+    if (localsSinVentas.length > 0) {
+      rows.push({
+        label: `Sin ventas de ${sourceLabel}: ${localsSinVentas.map(localName).join(", ")}. Sus gastos igual computan.`,
+      });
+    }
+    if (excludedGroups.length > 0) {
+      rows.push({ label: `No computan: ${excludedGroups.map((g) => g.name).join(", ")}.` });
+    }
+    return rows;
+  };
+
+  const exportPdf = () => {
+    if (!data) return;
+    const doc = new jsPDF({ unit: "pt", format: "a4" });
+    const marginX = 40;
+    const tableLeft = marginX;
+    const tableRight = 555;
+    const xConcepto = marginX;
+    const divConceptoImporte = 380;
+    const divImportePct = 470;
+    const xImporteR = divImportePct - 6;
+    const xPctR = tableRight - 4;
+    const rowH = 18;
+    const pageBottom = 800;
+
+    let y = 50;
+    doc.setFontSize(14);
+    doc.setFont("helvetica", "bold");
+    doc.text("Balance Económico", marginX, y);
+    doc.text(`${MONTH_NAMES_ES[month - 1]} ${year}`, tableRight, y, { align: "right" });
+    y += 18;
+    doc.setFontSize(9);
+    doc.setFont("helvetica", "normal");
+    doc.text(localsLabel, marginX, y);
+    doc.text(`Ventas: ${sourceLabel} · Gastos por mes económico`, tableRight, y, { align: "right" });
+    y += 18;
+
+    const drawTableHeader = () => {
+      doc.setFillColor(60, 60, 60);
+      doc.setDrawColor(180, 180, 180);
+      doc.setLineWidth(0.5);
+      doc.rect(tableLeft, y, tableRight - tableLeft, rowH, "FD");
+      doc.setTextColor(255, 255, 255);
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(9);
+      doc.text("Concepto", xConcepto + 4, y + 12);
+      doc.text("Importe", xImporteR, y + 12, { align: "right" });
+      doc.text("% s/ventas", xPctR, y + 12, { align: "right" });
+      doc.setTextColor(0, 0, 0);
+      y += rowH;
+    };
+
+    drawTableHeader();
+    doc.setFontSize(9);
+
+    for (const r of buildPdfRows()) {
+      if (y + rowH > pageBottom) {
+        doc.addPage();
+        y = 50;
+        drawTableHeader();
+      }
+      if (r.section) doc.setFillColor(225, 225, 225);
+      else if (r.bold) doc.setFillColor(243, 243, 243);
+      else doc.setFillColor(255, 255, 255);
+      doc.setDrawColor(200, 200, 200);
+      doc.setLineWidth(0.5);
+      doc.rect(tableLeft, y, tableRight - tableLeft, rowH, "FD");
+      if (!r.section) {
+        doc.line(divConceptoImporte, y, divConceptoImporte, y + rowH);
+        doc.line(divImportePct, y, divImportePct, y + rowH);
+      }
+      doc.setFont("helvetica", r.bold ? "bold" : "normal");
+      // El label se recorta al ancho de su columna para que no pise la de Importe.
+      doc.text(
+        doc.splitTextToSize((r.indent ? "   " : "") + r.label, divConceptoImporte - xConcepto - 10)[0] ?? "",
+        xConcepto + 4,
+        y + 12,
+      );
+      if (r.importe) doc.text(r.importe, xImporteR, y + 12, { align: "right" });
+      if (r.pct) doc.text(r.pct, xPctR, y + 12, { align: "right" });
+      y += rowH;
+    }
+
+    doc.save(`balance_economico_${year}_${String(month).padStart(2, "0")}.pdf`);
+  };
+
   const toggleGroup = (id: number) =>
     setExpandedGroupIds((prev) => (prev.includes(id) ? prev.filter((g) => g !== id) : [...prev, id]));
 
@@ -209,6 +358,12 @@ export default function EconomicBalancePage() {
       <PageHeader
         title="Balances Económicos"
         description="Rentabilidad devengada: ventas del sistema y gastos por mes económico"
+        actions={
+          <Button variant="outline" onClick={exportPdf} disabled={!data} data-testid="button-econ-export-pdf">
+            <Download className="h-4 w-4 mr-2" />
+            Exportar PDF
+          </Button>
+        }
       />
 
       {/* ---------- Filtros ---------- */}
