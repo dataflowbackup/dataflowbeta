@@ -3,6 +3,9 @@ import { useQuery, useMutation } from "@tanstack/react-query";
 import { PageHeader } from "@/components/page-header";
 import { InternalLoanButton } from "@/components/internal-loan-button";
 import { SplitLocalsButton } from "@/components/split-locals-button";
+import { EconomicMonthCell, EconomicMonthHeader } from "@/components/economic-month-cell";
+import { EconomicMonthBulkDialog } from "@/components/economic-month-bulk-dialog";
+import { resolveEconomicMonth, economicMonthLabelWithYear, economicMonthRange } from "@shared/economicMonth";
 import { DataTable, Column } from "@/components/data-table";
 import { Button } from "@/components/ui/button";
 import {
@@ -426,6 +429,8 @@ export default function BankStatementsPage() {
   const [listFilterAccountId, setListFilterAccountId] = useState<string>("all");
   const [listFilterDateFrom, setListFilterDateFrom] = useState("");
   const [listFilterDateTo, setListFilterDateTo] = useState("");
+  /** Filtro por Mes Económico: "all" o un "YYYY-MM". */
+  const [listFilterEconMonth, setListFilterEconMonth] = useState<string>("all");
   const [listFilterType, setListFilterType] = useState<"all" | "income" | "expense">("all");
   const [listSearch, setListSearch] = useState("");
   const [uploadBankAccountId, setUploadBankAccountId] = useState("");
@@ -1395,6 +1400,7 @@ export default function BankStatementsPage() {
     listFilterGroupId !== "all" ||
     listFilterAccountId !== "all" ||
     listFilterType !== "all" ||
+    listFilterEconMonth !== "all" ||
     listFilterDateFrom !== "" ||
     listFilterDateTo !== "";
 
@@ -1404,9 +1410,28 @@ export default function BankStatementsPage() {
     setListFilterGroupId("all");
     setListFilterAccountId("all");
     setListFilterType("all");
+    setListFilterEconMonth("all");
     setListFilterDateFrom("");
     setListFilterDateTo("");
   };
+
+  /**
+   * Opciones del filtro por Mes Económico: los meses que realmente existen entre los movimientos
+   * cargados (resueltos, o sea contemplando las correcciones a mano), del más nuevo al más viejo.
+   */
+  const econMonthFilterOptions = useMemo(() => {
+    const present = new Set<string>();
+    for (const t of transactions) {
+      const m = resolveEconomicMonth(t as any);
+      if (m) present.add(m);
+    }
+    return [
+      { value: "all", label: "Todos los meses" },
+      ...Array.from(present)
+        .sort((a, b) => b.localeCompare(a))
+        .map((m) => ({ value: m, label: economicMonthLabelWithYear(m) })),
+    ];
+  }, [transactions]);
 
   const listFilteredTransactions = useMemo(() => {
     let rows = tabFilteredTransactions;
@@ -1435,6 +1460,9 @@ export default function BankStatementsPage() {
     if (listFilterType !== "all") {
       rows = rows.filter((t) => t.type === listFilterType);
     }
+    if (listFilterEconMonth !== "all") {
+      rows = rows.filter((t) => resolveEconomicMonth(t as any) === listFilterEconMonth);
+    }
     if (listFilterDateFrom) {
       rows = rows.filter(
         (t) => String(t.transactionDate ?? "").slice(0, 10) >= listFilterDateFrom,
@@ -1454,6 +1482,7 @@ export default function BankStatementsPage() {
     listFilterAccountId,
     categoryGroupMap,
     listFilterType,
+    listFilterEconMonth,
     listFilterDateFrom,
     listFilterDateTo,
   ]);
@@ -1599,6 +1628,11 @@ export default function BankStatementsPage() {
         ),
     },
     {
+      key: "economicMonth",
+      header: <EconomicMonthHeader />,
+      cell: (row) => <EconomicMonthCell row={row as any} />,
+    },
+    {
       key: "local",
       header: "Local",
       cell: (row) => (
@@ -1714,6 +1748,7 @@ export default function BankStatementsPage() {
               <ListChecks className="h-4 w-4 mr-2" />
               Descategorizar Masivo
             </Button>
+            <EconomicMonthBulkDialog transactions={transactions as any} locals={locals} />
             <Button variant="outline" onClick={() => setIsAccountsDialogOpen(true)} data-testid="button-bank-accounts">
               <Landmark className="h-4 w-4 mr-2" />
               Cuentas
@@ -2075,6 +2110,16 @@ export default function BankStatementsPage() {
                     onValueChange={(v) => setListFilterType(v as "all" | "income" | "expense")}
                     placeholder="Tipo"
                     searchPlaceholder="Buscar…"
+                  />
+                </div>
+                <div className="space-y-1 sm:col-span-2">
+                  <Label className="text-xs">Mes Económico</Label>
+                  <DataEntryCombobox
+                    options={econMonthFilterOptions}
+                    value={listFilterEconMonth}
+                    onValueChange={setListFilterEconMonth}
+                    placeholder="Todos los meses"
+                    searchPlaceholder="Buscar mes…"
                   />
                 </div>
                 <div className="space-y-1 sm:col-span-2">

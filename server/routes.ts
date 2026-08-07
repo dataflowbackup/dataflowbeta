@@ -25,6 +25,7 @@ import type {
   User,
 } from "@shared/schema";
 import { computeInvoiceTaxes } from "@shared/invoiceTaxComputation";
+import { isEconomicMonth } from "@shared/economicMonth";
 import { registerBulkInvoiceImportRoutes } from "./routesBulkInvoiceImport";
 import { db } from "./db";
 import { users, userCredentials, clients } from "@shared/schema";
@@ -113,6 +114,16 @@ const updateTransactionSchema = z.object({
     if (typeof val === "number" && val > 0) return val;
     return null;
   }),
+  // Mes economico "YYYY-MM". null / "" = volver al automatico (el mes de la fecha de acreditacion).
+  // Igual que cashRegisterId, preserva `undefined` para no pisarlo en PATCHes que no lo mandan.
+  economicMonth: z
+    .union([z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/), z.null(), z.literal("")])
+    .optional()
+    .transform((v) => {
+      if (v === undefined) return undefined;
+      if (v === null || v === "") return null;
+      return v;
+    }),
   transactionDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
   description: z.string().trim().min(1).max(2000).optional(),
   type: z.enum(["income", "expense"]).optional(),
@@ -3020,12 +3031,18 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         categoryId?: number | null;
         localId?: number | null;
         cashRegisterId?: number | null;
+        economicMonth?: string | null;
         invoiced?: boolean;
         transactionDate?: string;
         description?: string;
         type?: string;
         amount?: string;
       } = {};
+      // Mes economico: se puede corregir tanto en extractos como en efectivo, asi que NO cuenta
+      // como "core patch" (que esta restringido a efectivo).
+      if (patch.economicMonth !== undefined) {
+        safeUpdate.economicMonth = patch.economicMonth;
+      }
       if (patch.categoryId !== undefined) {
         safeUpdate.categoryId = patch.categoryId ?? null;
       }
@@ -3255,6 +3272,57 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         message: uncategorize
           ? `Se descategorizaron ${updated} de ${idsToUpdate.length} transacciones`
           : `Se categorizaron ${updated} de ${idsToUpdate.length} transacciones`,
+      });
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
+  /**
+   * Asignación masiva del MES ECONÓMICO (ago-2026). Recibe los ids ya seleccionados en pantalla y
+   * les pone el mismo "YYYY-MM". `economicMonth: null` los devuelve al automático (el mes de la
+   * fecha de acreditación), que es como vuelven atrás una corrección.
+   */
+  app.post("/api/transactions/batch-economic-month", isAuthenticated, async (req, res) => {
+    try {
+      const clientId = await getClientId(req);
+      const { transactionIds, economicMonth } = req.body;
+
+      const raw = economicMonth == null || economicMonth === "" ? null : String(economicMonth);
+      if (raw !== null && !isEconomicMonth(raw)) {
+        return res.status(400).json({ message: "Mes económico inválido (se espera YYYY-MM)" });
+      }
+
+      if (!Array.isArray(transactionIds) || transactionIds.length === 0) {
+        return res.status(400).json({ message: "No hay movimientos seleccionados" });
+      }
+      const requestedIds = transactionIds
+        .map((id: any) => parseInt(String(id), 10))
+        .filter((n: number) => Number.isFinite(n));
+      if (requestedIds.length === 0) {
+        return res.status(400).json({ message: "No hay movimientos seleccionados" });
+      }
+
+      // Solo se tocan movimientos de ESTE cliente: los ajenos ni se ignoran en silencio, se rechaza.
+      const allTransactions = await storage.getTransactions(clientId);
+      const tenantTxIds = new Set(allTransactions.map((t) => t.id));
+      const idsToUpdate = requestedIds.filter((id: number) => tenantTxIds.has(id));
+      if (idsToUpdate.length !== requestedIds.length) {
+        return res.status(403).json({ message: "Algunos movimientos no pertenecen a este cliente" });
+      }
+
+      const updated = await storage.batchUpdateTransactions(clientId, idsToUpdate, {
+        economicMonth: raw,
+      } as any);
+
+      res.json({
+        success: true,
+        updated,
+        total: idsToUpdate.length,
+        message:
+          raw === null
+            ? `Se devolvieron ${updated} movimiento(s) al mes de acreditación`
+            : `Se asignó el mes económico a ${updated} movimiento(s)`,
       });
     } catch (e: any) {
       res.status(500).json({ message: e.message });

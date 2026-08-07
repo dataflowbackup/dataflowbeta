@@ -876,6 +876,12 @@ export const transactions = pgTable("transactions", {
   cashRegisterId: integer("cash_register_id"),
   categoryId: integer("category_id").references(() => transactionCategories.id),
   transactionDate: date("transaction_date").notNull(),
+  // Mes al que el movimiento pertenece ECONOMICAMENTE, en formato "YYYY-MM" (ago-2026).
+  // NULL = usa el mes de transactionDate. Se guarda solo cuando el usuario lo corrige a mano, asi
+  // no hace falta backfillear las transacciones existentes y "fue corregido" es exactamente
+  // `economic_month IS NOT NULL`. Lleva el año porque un movimiento acreditado el 03/01/2026 puede
+  // pertenecer economicamente a 2025-12.
+  economicMonth: varchar("economic_month", { length: 7 }),
   description: text("description"),
   description2: text("description_2"),
   counterpartyRef: varchar("counterparty_ref", { length: 255 }),

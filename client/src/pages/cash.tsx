@@ -4,6 +4,9 @@ import { useQuery, useMutation } from "@tanstack/react-query";
 import { PageHeader } from "@/components/page-header";
 import { InternalLoanButton } from "@/components/internal-loan-button";
 import { SplitLocalsButton } from "@/components/split-locals-button";
+import { EconomicMonthCell, EconomicMonthHeader } from "@/components/economic-month-cell";
+import { EconomicMonthBulkDialog } from "@/components/economic-month-bulk-dialog";
+import { resolveEconomicMonth, economicMonthLabelWithYear } from "@shared/economicMonth";
 import { DataTable, Column } from "@/components/data-table";
 import { Button } from "@/components/ui/button";
 import {
@@ -482,6 +485,8 @@ export default function CashPage() {
   const [filterCategoryId, setFilterCategoryId] = useState<string>("all");
   const [filterDateFrom, setFilterDateFrom] = useState("");
   const [filterDateTo, setFilterDateTo] = useState("");
+  /** Filtro por Mes Económico: "all" o un "YYYY-MM". */
+  const [filterEconMonth, setFilterEconMonth] = useState<string>("all");
 
   const { data: categories = [] } = useQuery<TransactionCategory[]>({
     queryKey: ["/api/transaction-categories"],
@@ -658,6 +663,7 @@ export default function CashPage() {
       }
       if (filterDateFrom && String(t.transactionDate) < filterDateFrom) return false;
       if (filterDateTo && String(t.transactionDate) > filterDateTo) return false;
+      if (filterEconMonth !== "all" && resolveEconomicMonth(t as any) !== filterEconMonth) return false;
       if (q) {
         const desc = String(t.description ?? "").toLowerCase();
         let match = desc.includes(q);
@@ -681,9 +687,25 @@ export default function CashPage() {
     filterLocalId,
     filterCategoryId,
     filterCajaId,
+    filterEconMonth,
     filterDateFrom,
     filterDateTo,
   ]);
+
+  /** Meses económicos presentes entre los movimientos de efectivo, del más nuevo al más viejo. */
+  const econMonthFilterOptions = useMemo(() => {
+    const present = new Set<string>();
+    for (const t of transactions) {
+      const m = resolveEconomicMonth(t as any);
+      if (m) present.add(m);
+    }
+    return [
+      { value: "all", label: "Todos los meses" },
+      ...Array.from(present)
+        .sort((a, b) => b.localeCompare(a))
+        .map((m) => ({ value: m, label: economicMonthLabelWithYear(m) })),
+    ];
+  }, [transactions]);
 
   /**
    * Originales divididos entre locales: siguen visibles en la tabla (con el badge "Dividido — no
@@ -1316,6 +1338,11 @@ export default function CashPage() {
         ),
     },
     {
+      key: "economicMonth",
+      header: <EconomicMonthHeader />,
+      cell: (row) => <EconomicMonthCell row={row as any} />,
+    },
+    {
       key: "amount",
       header: "Monto",
       className: "text-right",
@@ -1388,6 +1415,7 @@ export default function CashPage() {
     setFilterLocalId("all");
     setFilterCategoryId("all");
     setFilterCajaId("all");
+    setFilterEconMonth("all");
     setFilterDateFrom("");
     setFilterDateTo("");
   };
@@ -1398,6 +1426,7 @@ export default function CashPage() {
     filterLocalId !== "all" ||
     filterCategoryId !== "all" ||
     filterCajaId !== "all" ||
+    filterEconMonth !== "all" ||
     filterDateFrom !== "" ||
     filterDateTo !== "";
 
@@ -1424,6 +1453,7 @@ export default function CashPage() {
               <Trash2 className="h-4 w-4 mr-2" />
               Borrado Masivo
             </Button>
+            <EconomicMonthBulkDialog transactions={transactions as any} locals={locals} />
             <Button variant="outline" onClick={() => { setNewCajaName(""); setIsCajasOpen(true); }} data-testid="button-cajas">
               <Wallet className="h-4 w-4 mr-2" />
               Cajas
@@ -1641,6 +1671,16 @@ export default function CashPage() {
                 items={cajaComboItems}
                 searchPlaceholder="Buscar caja…"
                 extraOptions={[{ value: "none", label: "Sin caja" }]}
+              />
+            </div>
+            <div className="space-y-1">
+              <Label className="text-xs">Mes Económico</Label>
+              <DataEntryCombobox
+                options={econMonthFilterOptions}
+                value={filterEconMonth}
+                onValueChange={setFilterEconMonth}
+                placeholder="Todos los meses"
+                searchPlaceholder="Buscar mes…"
               />
             </div>
             <div className="space-y-1">
