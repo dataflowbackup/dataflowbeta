@@ -632,6 +632,12 @@ export const financialGroups = pgTable("financial_groups", {
    * computando en la caja del período. Configurable por cliente (cada uno agrupa distinto).
    */
   isMerchandise: boolean("is_merchandise").default(false),
+  /**
+   * Si el grupo COMPUTA en el Balance Económico (ago-2026). Qué es gasto económico y qué no varía
+   * por cliente (ej. una Compra de Bienes es inversión, no gasto del período). Arranca en true: un
+   * grupo nuevo computa salvo que se lo saque expresamente.
+   */
+  economicComputes: boolean("economic_computes").default(true),
   active: boolean("active").default(true),
   createdAt: timestamp("created_at").defaultNow(),
 });

@@ -1,4 +1,5 @@
 import { formatInvoiceVoucherDisplay } from "@shared/invoiceDisplay";
+import { resolveEconomicMonth } from "@shared/economicMonth";
 import { db } from "./db";
 import { eq, and, desc, asc, gte, lte, sql, isNull, isNotNull, inArray, or, lt } from "drizzle-orm";
 import {
@@ -3722,6 +3723,290 @@ export class DatabaseStorage implements IStorage {
         totalTraslados,
       },
     };
+  }
+
+  /**
+   * BALANCE ECONÓMICO (ago-2026).
+   *
+   * Mide rentabilidad DEVENGADA, a diferencia del Balance Financiero que mide el flujo de dinero.
+   * Tres diferencias de fondo con `getBalanceSpreadsheet`:
+   *
+   *  1. Las VENTAS salen del sistema de gestión (Datalive / Fudo / Shares), no de los movimientos.
+   *     Por eso los grupos de tipo "income" NO computan acá: contarlos seria sumar dos veces la
+   *     misma venta.
+   *  2. Los GASTOS se agrupan por MES ECONÓMICO (`resolveEconomicMonth`), no por la fecha de
+   *     acreditación. De ahí que haya que leer un rango de fechas más amplio que el año pedido:
+   *     un movimiento acreditado en enero de 2027 puede ser económicamente de diciembre de 2026.
+   *  3. Cada grupo puede quedar fuera con `economicComputes = false` (qué es gasto económico y qué
+   *     es inversión cambia por cliente).
+   *
+   * Quedan siempre afuera los Movimientos Financieros y los "Otros Movimientos": no son economía
+   * del período. Los grupos de mercadería se devuelven marcados pero NO suman en los gastos: su
+   * lugar lo toma el CMV, que el front calcula con `buildCmvForBalance` sobre estas mismas ventas.
+   */
+  async getEconomicBalance(
+    clientId: number,
+    year: number,
+    localId?: number | number[],
+    salesSource: "datalive" | "fudo" | "shares" = "datalive",
+  ) {
+    const localIdSet =
+      localId == null ? null : new Set(Array.isArray(localId) ? localId : [localId]);
+    const localIds = localIdSet ? Array.from(localIdSet) : null;
+    const emptyMonths = (): Record<number, number> => {
+      const o: Record<number, number> = {};
+      for (let m = 1; m <= 12; m++) o[m] = 0;
+      return o;
+    };
+
+    // ---------- VENTAS (del sistema de gestión) ----------
+    const yearFrom = `${year}-01-01`;
+    const yearTo = `${year}-12-31`;
+    const ventasMonthly = emptyMonths();
+    const ventasByLocal: Record<number, Record<number, number>> = {};
+    const compositionMonthly: Record<string, Record<number, number>> = {};
+
+    const addVenta = (lid: number, month: number, total: number) => {
+      ventasMonthly[month] += total;
+      if (!ventasByLocal[lid]) ventasByLocal[lid] = emptyMonths();
+      ventasByLocal[lid][month] += total;
+    };
+    const addComposition = (label: string, month: number, val: number) => {
+      if (!val) return;
+      if (!compositionMonthly[label]) compositionMonthly[label] = emptyMonths();
+      compositionMonthly[label][month] += val;
+    };
+    const monthOf = (fecha: unknown): number => parseInt(String(fecha).slice(5, 7), 10);
+    const num = (v: unknown): number => {
+      const n = parseFloat(String(v ?? "0"));
+      return Number.isFinite(n) ? n : 0;
+    };
+
+    if (salesSource === "datalive") {
+      const conds = [
+        eq(dataliveVentas.clientId, clientId),
+        sql`${dataliveVentas.fecha} >= ${yearFrom}`,
+        sql`${dataliveVentas.fecha} <= ${yearTo}`,
+      ];
+      if (localIds) conds.push(inArray(dataliveVentas.localId, localIds));
+      const rows = await db.select().from(dataliveVentas).where(and(...conds));
+      for (const r of rows) {
+        const m = monthOf(r.fecha);
+        if (!Number.isFinite(m) || m < 1 || m > 12) continue;
+        addVenta(r.localId, m, num(r.ventaTotal));
+        addComposition("Efectivo", m, num(r.ventaEfectivo));
+        addComposition("Online", m, num(r.ventaOnline));
+      }
+    } else if (salesSource === "shares") {
+      const conds = [
+        eq(sharesVentas.clientId, clientId),
+        sql`${sharesVentas.fecha} >= ${yearFrom}`,
+        sql`${sharesVentas.fecha} <= ${yearTo}`,
+      ];
+      if (localIds) conds.push(inArray(sharesVentas.localId, localIds));
+      const rows = await db.select().from(sharesVentas).where(and(...conds));
+      for (const r of rows) {
+        const m = monthOf(r.fecha);
+        if (!Number.isFinite(m) || m < 1 || m > 12) continue;
+        addVenta(r.localId, m, num(r.ventaTotal));
+        addComposition("Efectivo", m, num(r.ventaEfectivo));
+        addComposition("Tarjeta", m, num(r.ventaTarjeta));
+        addComposition("Efectivo Online", m, num(r.ventaEfectivoOnline));
+        addComposition("Oper. Online", m, num(r.ventaOperOnline));
+        addComposition("Mercado Pago", m, num(r.ventaMercadopago));
+      }
+    } else {
+      const conds = [
+        eq(fudoVentas.clientId, clientId),
+        sql`${fudoVentas.fecha} >= ${yearFrom}`,
+        sql`${fudoVentas.fecha} <= ${yearTo}`,
+      ];
+      if (localIds) conds.push(inArray(fudoVentas.localId, localIds));
+      const rows = await db.select().from(fudoVentas).where(and(...conds));
+      for (const r of rows) {
+        const m = monthOf(r.fecha);
+        if (!Number.isFinite(m) || m < 1 || m > 12) continue;
+        addVenta(r.localId, m, num(r.ventaTotal));
+      }
+      // La composición de Fudo vive en otra tabla: los medios de pago del día.
+      const pagoConds = [
+        eq(fudoPagos.clientId, clientId),
+        sql`${fudoPagos.fecha} >= ${yearFrom}`,
+        sql`${fudoPagos.fecha} <= ${yearTo}`,
+      ];
+      if (localIds) pagoConds.push(inArray(fudoPagos.localId, localIds));
+      const pagos = await db.select().from(fudoPagos).where(and(...pagoConds));
+      for (const p of pagos) {
+        const m = monthOf(p.fecha);
+        if (!Number.isFinite(m) || m < 1 || m > 12) continue;
+        addComposition(String(p.medioPago || "Sin medio"), m, num(p.importe));
+      }
+    }
+
+    // ---------- GASTOS (movimientos, por MES ECONÓMICO) ----------
+    const allFinancialGroups = await db
+      .select()
+      .from(financialGroups)
+      .where(and(eq(financialGroups.clientId, clientId), eq(financialGroups.active, true)))
+      .orderBy(financialGroups.displayOrder, financialGroups.name);
+
+    const allCategories = await db
+      .select()
+      .from(transactionCategories)
+      .where(and(eq(transactionCategories.clientId, clientId), eq(transactionCategories.active, true)));
+
+    // Compatibilidad con categorías viejas que cuelgan de category_groups (mismo mapeo por
+    // nombre+tipo que usa el balance financiero).
+    const legacyGroups = await db
+      .select()
+      .from(categoryGroups)
+      .where(eq(categoryGroups.clientId, clientId));
+    const financialByNormalizedKey = new Map<string, typeof allFinancialGroups[number]>();
+    for (const fg of allFinancialGroups) {
+      financialByNormalizedKey.set(
+        `${String(fg.type || "").toLowerCase()}::${String(fg.name || "").trim().toLowerCase()}`,
+        fg,
+      );
+    }
+    const legacyToFinancialId = new Map<number, number>();
+    for (const lg of legacyGroups) {
+      const match = financialByNormalizedKey.get(
+        `${String(lg.type || "").toLowerCase()}::${String(lg.name || "").trim().toLowerCase()}`,
+      );
+      if (match) legacyToFinancialId.set(lg.id, match.id);
+    }
+    const resolvedGroupIdByCat = new Map<number, number | undefined>(
+      allCategories.map((c) => [
+        c.id,
+        c.financialGroupId ?? (c.groupId ? legacyToFinancialId.get(c.groupId) : undefined),
+      ]),
+    );
+
+    // El mes económico puede caer en otro año que el de acreditación, así que se lee un año para
+    // cada lado y recién despues se filtra por el mes económico resuelto.
+    const scanFrom = `${year - 1}-01-01`;
+    const scanTo = `${year + 1}-12-31`;
+    const allTransactions = await db
+      .select()
+      .from(transactions)
+      .where(
+        and(
+          eq(transactions.clientId, clientId),
+          sql`${transactions.transactionDate} >= ${scanFrom}`,
+          sql`${transactions.transactionDate} <= ${scanTo}`,
+        ),
+      );
+
+    const splitParentIds = new Set(
+      allTransactions.filter((t) => t.parentTransactionId != null).map((t) => t.parentTransactionId as number),
+    );
+    const movFinGroupIds = new Set(
+      allFinancialGroups.filter((g) => String(g.type) === MOVIMIENTOS_FINANCIEROS_GROUP_TYPE).map((g) => g.id),
+    );
+    const isExcludedCategory = (catId: number): boolean => {
+      const cat = allCategories.find((c) => c.id === catId);
+      if (!cat) return true;
+      if (typeof cat.specialType === "string" && OTROS_MOVIMIENTOS_SPECIAL_TYPES.has(cat.specialType)) return true;
+      const gid = resolvedGroupIdByCat.get(catId);
+      return gid != null && movFinGroupIds.has(gid);
+    };
+
+    const categoryNetMonthly: Record<number, Record<number, number>> = {};
+    for (const tx of allTransactions) {
+      if (!tx.categoryId) continue;
+      if (splitParentIds.has(tx.id)) continue;
+      if (localIdSet && (tx.localId == null || !localIdSet.has(tx.localId))) continue;
+      if (isExcludedCategory(tx.categoryId)) continue;
+
+      const econ = resolveEconomicMonth(tx as any);
+      if (!econ || econ.slice(0, 4) !== String(year)) continue;
+      const month = parseInt(econ.slice(5, 7), 10);
+      if (!Number.isFinite(month) || month < 1 || month > 12) continue;
+
+      const gid = resolvedGroupIdByCat.get(tx.categoryId);
+      const group = gid != null ? allFinancialGroups.find((g) => g.id === gid) : undefined;
+      // Solo gastos: las ventas ya vienen del sistema de gestión. Los huérfanos (sin grupo) no
+      // computan: sin grupo no hay forma de saber si son gasto económico.
+      if (!group || String(group.type) !== "expense") continue;
+
+      const amount = parseFloat(String(tx.amount) || "0");
+      // Neto en la dirección del grupo: un reintegro (ingreso en un grupo de gasto) resta.
+      const net = tx.type === "expense" ? amount : -amount;
+      if (!categoryNetMonthly[tx.categoryId]) categoryNetMonthly[tx.categoryId] = emptyMonths();
+      categoryNetMonthly[tx.categoryId][month] += net;
+    }
+
+    const expenseGroups = allFinancialGroups.filter((g) => String(g.type) === "expense");
+    const groups = expenseGroups.map((group) => {
+      const groupCategories = allCategories.filter((c) => resolvedGroupIdByCat.get(c.id) === group.id);
+      const monthlyTotals = emptyMonths();
+      const categories = groupCategories
+        .filter((c) => !isExcludedCategory(c.id))
+        .map((cat) => {
+          const catMonthly = categoryNetMonthly[cat.id] || emptyMonths();
+          let yearTotal = 0;
+          for (let m = 1; m <= 12; m++) {
+            yearTotal += catMonthly[m] || 0;
+            monthlyTotals[m] += catMonthly[m] || 0;
+          }
+          return { id: cat.id, name: cat.name, monthlyTotals: catMonthly, yearTotal };
+        });
+      const yearTotal = Object.values(monthlyTotals).reduce((a, b) => a + b, 0);
+      return {
+        id: group.id,
+        name: group.name,
+        type: String(group.type),
+        isMerchandise: !!group.isMerchandise,
+        // `?? true`: los grupos creados antes de esta columna computan, que es el default.
+        computes: group.economicComputes ?? true,
+        categories,
+        monthlyTotals,
+        yearTotal,
+      };
+    });
+
+    // Gastos = grupos que computan Y no son de mercadería (esos los reemplaza el CMV).
+    const gastos = emptyMonths();
+    for (const g of groups) {
+      if (!g.computes || g.isMerchandise) continue;
+      for (let m = 1; m <= 12; m++) gastos[m] += g.monthlyTotals[m] || 0;
+    }
+
+    const composition = Object.entries(compositionMonthly).map(([label, monthlyTotals]) => ({
+      label,
+      monthlyTotals,
+      yearTotal: Object.values(monthlyTotals).reduce((a, b) => a + b, 0),
+    }));
+    composition.sort((a, b) => b.yearTotal - a.yearTotal);
+
+    return {
+      salesSource,
+      ventas: {
+        monthly: ventasMonthly,
+        byLocal: ventasByLocal,
+        composition,
+        yearTotal: Object.values(ventasMonthly).reduce((a, b) => a + b, 0),
+      },
+      groups,
+      summary: {
+        gastos,
+        totalGastos: Object.values(gastos).reduce((a, b) => a + b, 0),
+      },
+    };
+  }
+
+  /** Marca si un grupo financiero computa en el Balance Económico (guardado por cliente). */
+  async setFinancialGroupEconomicComputes(
+    clientId: number,
+    groupId: number,
+    computes: boolean,
+  ): Promise<FinancialGroup | undefined> {
+    const [updated] = await db
+      .update(financialGroups)
+      .set({ economicComputes: computes })
+      .where(and(eq(financialGroups.id, groupId), eq(financialGroups.clientId, clientId)))
+      .returning();
+    return updated;
   }
 
   async getSales(clientId: number): Promise<Sale[]> {

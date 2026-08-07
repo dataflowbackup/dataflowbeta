@@ -3566,6 +3566,58 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
   });
 
+  /**
+   * BALANCE ECONÓMICO (ago-2026). Ventas del sistema de gestión + gastos por MES ECONÓMICO.
+   * Ver `storage.getEconomicBalance` para el criterio completo.
+   */
+  app.get("/api/economic-balance", isAuthenticated, async (req, res) => {
+    try {
+      const clientId = await getClientId(req);
+      const year = parseInt(req.query.year as string) || new Date().getFullYear();
+
+      const rawSource = String(req.query.salesSource ?? "datalive");
+      const salesSource =
+        rawSource === "fudo" || rawSource === "shares" || rawSource === "datalive"
+          ? (rawSource as "datalive" | "fudo" | "shares")
+          : "datalive";
+
+      const parseLocals = (): number | number[] | undefined => {
+        const multi = req.query.localIds as string | undefined;
+        if (multi && multi !== "all") {
+          const ids = multi.split(",").map((s) => parseInt(s, 10)).filter((n) => Number.isFinite(n));
+          return ids.length > 0 ? ids : undefined;
+        }
+        return undefined;
+      };
+
+      const data = await storage.getEconomicBalance(clientId, year, parseLocals(), salesSource);
+      res.json(data);
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
+  /**
+   * Marca qué grupos financieros computan en el Balance Económico. Se guarda por cliente y vale
+   * para todos los períodos (decisión del usuario, 07-ago-2026).
+   */
+  app.patch("/api/financial-groups/:id/economic-computes", isAuthenticated, async (req, res) => {
+    try {
+      const clientId = await getClientId(req);
+      const id = parseInt(req.params.id, 10);
+      if (!Number.isFinite(id)) return res.status(400).json({ message: "ID inválido" });
+      const computes = req.body?.computes;
+      if (typeof computes !== "boolean") {
+        return res.status(400).json({ message: "Se espera computes: true | false" });
+      }
+      const updated = await storage.setFinancialGroupEconomicComputes(clientId, id, computes);
+      if (!updated) return res.status(404).json({ message: "Grupo no encontrado" });
+      res.json(updated);
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
   // CMC (Costo de Mercadería Comprada) — Fase 4. Reporte gateado por RBAC granular.
   app.get("/api/finance/cmc", isAuthenticated, requirePermission("cmc.view", "view"), async (req, res) => {
     try {
