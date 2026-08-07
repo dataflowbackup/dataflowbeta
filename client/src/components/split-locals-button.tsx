@@ -33,7 +33,15 @@ import type { Transaction, Local, BankAccount, TransactionCategory, FinancialGro
 
 type RowTx = Pick<
   Transaction,
-  "id" | "source" | "localId" | "amount" | "description" | "type" | "parentTransactionId" | "bankAccountId"
+  | "id"
+  | "source"
+  | "localId"
+  | "amount"
+  | "description"
+  | "type"
+  | "parentTransactionId"
+  | "bankAccountId"
+  | "bankSource"
 >;
 
 type SplitMode = "equal" | "percent" | "manual";
@@ -83,6 +91,11 @@ export function SplitLocalsButton({
 
   const isIncome = transaction.type === "income";
   const totalCentsOriginal = toCents(Math.abs(parseFloat(String(transaction.amount)) || 0));
+
+  // El mismo botón sirve en Extractos y en Efectivo: el origen vive en una cuenta o en una caja,
+  // y las partes se quedan ahí mismo. Los movimientos del destino siempre caen en una Cuenta.
+  const origenEsCaja = transaction.bankSource === "cash";
+  const origenLabel = origenEsCaja ? "caja" : "cuenta";
 
   // Todas las categorías activas (ventas, gastos y movimientos financieros), agrupadas.
   const categoryGroupsForSelect = useMemo(
@@ -281,8 +294,8 @@ export function SplitLocalsButton({
             <AlertDialogHeader>
               <AlertDialogTitle>Deshacer la división</AlertDialogTitle>
               <AlertDialogDescription>
-                Se borran todas las partes de la cuenta de origen y los dos movimientos creados en cada local
-                destino. El movimiento vuelve a ser uno solo, como estaba. ¿Confirmás?
+                Se borran todas las partes de la {origenLabel} de origen y los dos movimientos creados en cada
+                local destino. El movimiento vuelve a ser uno solo, como estaba. ¿Confirmás?
               </AlertDialogDescription>
             </AlertDialogHeader>
             <AlertDialogFooter>
@@ -337,10 +350,10 @@ export function SplitLocalsButton({
           <DialogHeader>
             <DialogTitle>Dividir movimiento entre locales</DialogTitle>
             <DialogDescription>
-              El movimiento original queda asentado en su cuenta pero deja de computar, y se parte en esa misma
-              cuenta. Cada local destino recibe un <strong>préstamo</strong> y su{" "}
-              <strong>{isIncome ? "ingreso" : "gasto"} real</strong>, que netean $0.{" "}
-              <strong>Ningún saldo de ninguna cuenta cambia.</strong>
+              El movimiento original queda asentado en su {origenLabel} pero deja de computar, y se parte en esa
+              misma {origenLabel}. Cada local destino recibe un <strong>préstamo</strong> y su{" "}
+              <strong>{isIncome ? "ingreso" : "gasto"} real</strong> en la cuenta que elijas, que netean $0.{" "}
+              <strong>Ningún saldo cambia, ni el de la {origenLabel} de origen ni el de las cuentas destino.</strong>
             </DialogDescription>
           </DialogHeader>
 
@@ -456,7 +469,9 @@ export function SplitLocalsButton({
                       <CategorySelectOptions groups={categoryGroupsForSelect} />
                     </SelectContent>
                   </Select>
-                  <span className="text-xs text-muted-foreground">Queda en la cuenta del movimiento original</span>
+                  <span className="text-xs text-muted-foreground">
+                    Queda en la {origenLabel} del movimiento original
+                  </span>
                 </div>
               )}
             </div>

@@ -3,6 +3,7 @@ import * as XLSX from "xlsx";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { PageHeader } from "@/components/page-header";
 import { InternalLoanButton } from "@/components/internal-loan-button";
+import { SplitLocalsButton } from "@/components/split-locals-button";
 import { DataTable, Column } from "@/components/data-table";
 import { Button } from "@/components/ui/button";
 import {
@@ -684,40 +685,61 @@ export default function CashPage() {
     filterDateTo,
   ]);
 
+  /**
+   * Originales divididos entre locales: siguen visibles en la tabla (con el badge "Dividido — no
+   * computa") pero NO suman en los KPIs, porque sus partes hijas ya suman. Mismo criterio que
+   * Extractos y que el balance del backend.
+   */
+  const splitParentIds = useMemo(
+    () =>
+      new Set(
+        transactions
+          .filter((t) => t.parentTransactionId != null)
+          .map((t) => t.parentTransactionId as number),
+      ),
+    [transactions],
+  );
+
+  /** La vista filtrada sin los originales divididos: es la base de todos los KPIs de arriba. */
+  const kpiTransactions = useMemo(
+    () => filteredTransactions.filter((t) => !splitParentIds.has(t.id)),
+    [filteredTransactions, splitParentIds],
+  );
+
   const totalIncome = useMemo(
     () =>
-      filteredTransactions
+      kpiTransactions
         .filter((t) => t.type === "income")
         .reduce((s, t) => s + parseFloat(String(t.amount) || "0"), 0),
-    [filteredTransactions],
+    [kpiTransactions],
   );
   const totalExpense = useMemo(
     () =>
-      filteredTransactions
+      kpiTransactions
         .filter((t) => t.type === "expense")
         .reduce((s, t) => s + Math.abs(parseFloat(String(t.amount) || "0")), 0),
-    [filteredTransactions],
+    [kpiTransactions],
   );
 
   const saldoFiltered = useMemo(() => totalIncome - totalExpense, [totalIncome, totalExpense]);
 
   // % categorizado sobre la vista filtrada (mismo criterio que Extractos).
   const categorizedCount = useMemo(
-    () => filteredTransactions.filter((t) => t.categoryId).length,
-    [filteredTransactions],
+    () => kpiTransactions.filter((t) => t.categoryId).length,
+    [kpiTransactions],
   );
   const categorizationPercent = useMemo(
-    () => (filteredTransactions.length > 0 ? Math.round((categorizedCount / filteredTransactions.length) * 100) : 0),
-    [categorizedCount, filteredTransactions.length],
+    () => (kpiTransactions.length > 0 ? Math.round((categorizedCount / kpiTransactions.length) * 100) : 0),
+    [categorizedCount, kpiTransactions.length],
   );
   // Punto 5 (jul-27): % de movimientos con Local asignado (mismo criterio de vista).
   const withLocalCount = useMemo(
-    () => filteredTransactions.filter((t) => t.localId).length,
-    [filteredTransactions],
+    () => kpiTransactions.filter((t) => t.localId).length,
+    [kpiTransactions],
   );
   const withLocalPercent = useMemo(
-    () => (filteredTransactions.length > 0 ? Math.round((withLocalCount / filteredTransactions.length) * 100) : 0),
-    [withLocalCount, filteredTransactions.length],
+    () => (kpiTransactions.length > 0 ? Math.round((withLocalCount / kpiTransactions.length) * 100) : 0),
+    [withLocalCount, kpiTransactions.length],
   );
 
   /**
@@ -727,7 +749,7 @@ export default function CashPage() {
   const dailyIncomeAverage = useMemo(() => {
     const incomeSortedDates = Array.from(
       new Set(
-        filteredTransactions
+        kpiTransactions
           .filter((t) => t.type === "income")
           .map((t) => String(t.transactionDate ?? "").slice(0, 10))
           .filter((d) => /^\d{4}-\d{2}-\d{2}$/.test(d)),
@@ -746,7 +768,7 @@ export default function CashPage() {
       days,
       periodNote: `${from} → ${to} · ${days} día${days === 1 ? "" : "s"} · promedio diario desde el primer al último ingreso (filtros aplicados; los egresos no alargan el período).`,
     };
-  }, [filteredTransactions, totalIncome]);
+  }, [kpiTransactions, totalIncome]);
 
   const openBatch = () => {
     draftRowSeqRef.current = 0;
@@ -1322,7 +1344,18 @@ export default function CashPage() {
             <Pencil className="h-3.5 w-3.5 shrink-0" />
             <span className="text-xs font-medium">Editar</span>
           </Button>
-          <InternalLoanButton transaction={row} />
+          {row.parentTransactionId && (
+            <Badge variant="outline" className="text-xs text-muted-foreground">
+              Parte
+            </Badge>
+          )}
+          {splitParentIds.has(row.id) && (
+            <Badge variant="outline" className="text-xs text-muted-foreground border-amber-500/50">
+              Dividido — no computa
+            </Badge>
+          )}
+          <SplitLocalsButton transaction={row} isSplitParent={splitParentIds.has(row.id)} />
+          {!splitParentIds.has(row.id) && <InternalLoanButton transaction={row} />}
           <Button
             type="button"
             size="icon"
@@ -1515,7 +1548,7 @@ export default function CashPage() {
             </div>
             <Progress value={categorizationPercent} className="mt-2 h-2" />
             <p className="text-xs text-muted-foreground mt-1">
-              {categorizedCount} de {filteredTransactions.length} movimientos
+              {categorizedCount} de {kpiTransactions.length} movimientos
             </p>
           </CardContent>
         </Card>
@@ -1539,7 +1572,7 @@ export default function CashPage() {
             </div>
             <Progress value={withLocalPercent} className="mt-2 h-2" />
             <p className="text-xs text-muted-foreground mt-1">
-              {withLocalCount} de {filteredTransactions.length} movimientos
+              {withLocalCount} de {kpiTransactions.length} movimientos
             </p>
           </CardContent>
         </Card>
