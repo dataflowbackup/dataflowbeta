@@ -42,6 +42,7 @@ import {
   CommandList,
 } from "@/components/ui/command";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Checkbox } from "@/components/ui/checkbox";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { formatCurrency, formatDate, formatEsArAmountInput, formatNumber, parseEsArAmount, normalizeName } from "@/lib/formatters";
@@ -513,7 +514,23 @@ export default function CashPage() {
     () => cajaComboItems.map((c) => ({ value: String(c.id), label: c.name })),
     [cajaComboItems],
   );
-  const [filterCajaId, setFilterCajaId] = useState<string>("all");
+  /**
+   * Filtro por Caja, multi-selección: cada entrada es el id de una caja o "none" (sin caja), que se
+   * puede combinar con cajas reales. Vacío = todas.
+   */
+  const [filterCajaIds, setFilterCajaIds] = useState<string[]>([]);
+  const toggleFilterCaja = (key: string) =>
+    setFilterCajaIds((prev) => (prev.includes(key) ? prev.filter((k) => k !== key) : [...prev, key]));
+
+  const cajasFilterLabel = useMemo(() => {
+    if (filterCajaIds.length === 0) return "Todas las cajas";
+    if (filterCajaIds.length === 1) {
+      const k = filterCajaIds[0];
+      return k === "none" ? "Sin caja" : (cajasById.get(parseInt(k, 10)) ?? "1 caja");
+    }
+    return `${filterCajaIds.length} cajas`;
+  }, [filterCajaIds, cajasById]);
+
   const [batchCajaId, setBatchCajaId] = useState<string>("");
   const [isCajasOpen, setIsCajasOpen] = useState(false);
   const [newCajaName, setNewCajaName] = useState("");
@@ -653,13 +670,9 @@ export default function CashPage() {
         const cid = parseInt(filterCategoryId, 10);
         if (!Number.isFinite(cid) || t.categoryId !== cid) return false;
       }
-      if (filterCajaId !== "all") {
-        if (filterCajaId === "none") {
-          if ((t as any).cashRegisterId != null) return false;
-        } else {
-          const cid = parseInt(filterCajaId, 10);
-          if (!Number.isFinite(cid) || (t as any).cashRegisterId !== cid) return false;
-        }
+      if (filterCajaIds.length > 0) {
+        const cid = (t as any).cashRegisterId as number | null | undefined;
+        if (!filterCajaIds.includes(cid == null ? "none" : String(cid))) return false;
       }
       if (filterDateFrom && String(t.transactionDate) < filterDateFrom) return false;
       if (filterDateTo && String(t.transactionDate) > filterDateTo) return false;
@@ -686,7 +699,7 @@ export default function CashPage() {
     filterType,
     filterLocalId,
     filterCategoryId,
-    filterCajaId,
+    filterCajaIds,
     filterEconMonth,
     filterDateFrom,
     filterDateTo,
@@ -1414,7 +1427,7 @@ export default function CashPage() {
     setFilterType("all");
     setFilterLocalId("all");
     setFilterCategoryId("all");
-    setFilterCajaId("all");
+    setFilterCajaIds([]);
     setFilterEconMonth("all");
     setFilterDateFrom("");
     setFilterDateTo("");
@@ -1425,7 +1438,7 @@ export default function CashPage() {
     filterType !== "all" ||
     filterLocalId !== "all" ||
     filterCategoryId !== "all" ||
-    filterCajaId !== "all" ||
+    filterCajaIds.length > 0 ||
     filterEconMonth !== "all" ||
     filterDateFrom !== "" ||
     filterDateTo !== "";
@@ -1664,14 +1677,51 @@ export default function CashPage() {
             </div>
             <div className="space-y-1">
               <Label className="text-xs">Caja</Label>
-              <FilterSearchableSelect
-                value={filterCajaId}
-                onChange={setFilterCajaId}
-                allLabel="Todas las cajas"
-                items={cajaComboItems}
-                searchPlaceholder="Buscar caja…"
-                extraOptions={[{ value: "none", label: "Sin caja" }]}
-              />
+              <Popover>
+                <PopoverTrigger asChild>
+                  <Button
+                    variant="outline"
+                    className="w-full justify-between font-normal"
+                    data-testid="button-filter-cajas"
+                  >
+                    <span className="truncate">{cajasFilterLabel}</span>
+                    <ChevronsUpDown className="h-4 w-4 shrink-0 opacity-50" />
+                  </Button>
+                </PopoverTrigger>
+                <PopoverContent className="w-64 space-y-2" align="start">
+                  <div className="flex items-center justify-between">
+                    <p className="text-sm font-medium">Cajas</p>
+                    <Button variant="ghost" size="sm" onClick={() => setFilterCajaIds([])}>
+                      Todas
+                    </Button>
+                  </div>
+                  <div className="max-h-64 space-y-1 overflow-y-auto">
+                    {/* "Sin caja" es una opción más: se puede combinar con cajas reales. */}
+                    <label className="flex cursor-pointer items-center gap-2 rounded px-1 py-1 hover:bg-muted">
+                      <Checkbox
+                        checked={filterCajaIds.includes("none")}
+                        onCheckedChange={() => toggleFilterCaja("none")}
+                      />
+                      <span className="text-sm text-muted-foreground">Sin caja</span>
+                    </label>
+                    {cajaComboItems.map((c) => (
+                      <label
+                        key={c.id}
+                        className="flex cursor-pointer items-center gap-2 rounded px-1 py-1 hover:bg-muted"
+                      >
+                        <Checkbox
+                          checked={filterCajaIds.includes(String(c.id))}
+                          onCheckedChange={() => toggleFilterCaja(String(c.id))}
+                        />
+                        <span className="truncate text-sm">{c.name}</span>
+                      </label>
+                    ))}
+                    {cajaComboItems.length === 0 && (
+                      <p className="py-3 text-center text-sm text-muted-foreground">No hay cajas creadas.</p>
+                    )}
+                  </div>
+                </PopoverContent>
+              </Popover>
             </div>
             <div className="space-y-1">
               <Label className="text-xs">Mes Económico</Label>

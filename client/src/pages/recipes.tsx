@@ -4,6 +4,7 @@ import { useLocation, Link } from "wouter";
 import { PageHeader } from "@/components/page-header";
 import { DataTable, Column } from "@/components/data-table";
 import { CodeConfirmDialog } from "@/components/code-confirm-dialog";
+import { CartaExportDialog } from "@/components/carta-export-dialog";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -162,6 +163,23 @@ export default function RecipesPage() {
     () => computePlatoKpis(platosStructuralFiltered),
     [platosStructuralFiltered],
   );
+
+  /** Filtros aplicados, en texto, para que el PDF exportado se explique solo. */
+  const exportFiltersLabel = useMemo(() => {
+    const parts: string[] = [];
+    if (filterCategoryId !== "__all__") {
+      parts.push(`Categoría: ${recipeCategories.find((c) => String(c.id) === filterCategoryId)?.name ?? "—"}`);
+    }
+    if (filterSubcategoryId !== "__all__") {
+      parts.push(
+        `Subcategoría: ${recipeSubcategories.find((s) => String(s.id) === filterSubcategoryId)?.name ?? "—"}`,
+      );
+    }
+    if (filterActive === "active") parts.push("Solo activas");
+    if (filterActive === "inactive") parts.push("Solo inactivas");
+    if (searchName.trim()) parts.push(`Búsqueda: "${searchName.trim()}"`);
+    return parts.length > 0 ? parts.join(" · ") : "Todas las recetas, sin filtros";
+  }, [filterCategoryId, filterSubcategoryId, filterActive, searchName, recipeCategories, recipeSubcategories]);
 
   const clearRecipeFilters = () => {
     setFilterCategoryId("__all__");
@@ -417,14 +435,7 @@ export default function RecipesPage() {
                 Sub-Recetas ({stats?.totalSubRecipes || 0})
               </Button>
             </Link>
-            <Button
-              variant="outline"
-              onClick={() => window.open("/api/recipes/export", "_blank")}
-              data-testid="button-export-recipes"
-            >
-              <Download className="h-4 w-4 mr-2" />
-              Exportar Carta
-            </Button>
+            <CartaExportDialog rows={platosForTable} kpis={dashboardKpis} filtersLabel={exportFiltersLabel} />
             <Button onClick={() => navigate("/recetas/nueva")} data-testid="button-new-recipe">
               <Plus className="h-4 w-4 mr-2" />
               Nueva Receta
