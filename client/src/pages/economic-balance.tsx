@@ -1,4 +1,4 @@
-import { useQuery, useMutation } from "@tanstack/react-query";
+﻿import { useQuery, useMutation } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
@@ -58,11 +58,13 @@ interface EconGroup {
 }
 
 interface EconomicBalanceData {
-  salesSource: SalesSource;
+  salesSources: SalesSource[];
   ventas: {
     monthly: Record<number, number>;
     byLocal: Record<number, Record<number, number>>;
     composition: { label: string; monthlyTotals: Record<number, number>; yearTotal: number }[];
+    /** Locales que facturan en más de una fuente elegida: ahí sí se estaría duplicando la venta. */
+    overlappingLocalIds: number[];
     yearTotal: number;
   };
   groups: EconGroup[];
@@ -89,7 +91,8 @@ export default function EconomicBalancePage() {
   const [selectedYear, setSelectedYear] = useState(String(currentYear));
   const [selectedMonth, setSelectedMonth] = useState(String(now.getMonth() + 1));
   const [selectedLocalIds, setSelectedLocalIds] = useState<number[]>([]);
-  const [salesSource, setSalesSource] = useState<SalesSource>("datalive");
+  /** Varias fuentes a la vez: cada local suele facturar con un sistema distinto. */
+  const [salesSources, setSalesSources] = useState<SalesSource[]>(["datalive"]);
   const [viewMode, setViewMode] = useState("monthly");
   const [expandedGroupIds, setExpandedGroupIds] = useState<number[]>([]);
   const [ventasOpen, setVentasOpen] = useState(false);
@@ -106,15 +109,17 @@ export default function EconomicBalancePage() {
   });
 
   const localIdsParam = selectedLocalIds.length > 0 ? selectedLocalIds.join(",") : "";
+  const sourcesParam = salesSources.join(",");
   const { data, isLoading } = useQuery<EconomicBalanceData>({
-    queryKey: ["/api/economic-balance", selectedYear, localIdsParam, salesSource],
+    queryKey: ["/api/economic-balance", selectedYear, localIdsParam, sourcesParam],
     queryFn: async () => {
-      const qs = new URLSearchParams({ year: selectedYear, salesSource });
+      const qs = new URLSearchParams({ year: selectedYear, salesSources: sourcesParam });
       if (localIdsParam) qs.set("localIds", localIdsParam);
       const res = await fetch(`/api/economic-balance?${qs}`, { credentials: "include" });
       if (!res.ok) throw new Error("Error al cargar el balance económico");
       return res.json();
     },
+    enabled: salesSources.length > 0,
   });
 
   const computesMut = useMutation({
@@ -135,23 +140,31 @@ export default function EconomicBalancePage() {
   const years = Array.from({ length: 5 }, (_, i) => currentYear - 2 + i);
   const yearOptions = years.map((y) => ({ value: String(y), label: String(y) }));
   const monthOptions = MONTH_NAMES_ES.map((m, i) => ({ value: String(i + 1), label: m }));
-  const localOptions = [
-    { value: "all", label: "Todos los locales" },
-    ...locals.map((l) => ({ value: String(l.id), label: l.name })),
-  ];
+  const toggleSource = (s: SalesSource) =>
+    setSalesSources((prev) => {
+      const next = prev.includes(s) ? prev.filter((x) => x !== s) : [...prev, s];
+      // Sin ninguna fuente no hay balance que mostrar: se deja al menos la que se quiso sacar.
+      return next.length === 0 ? prev : next;
+    });
+
+  const sourcesLabel =
+    salesSources.length === 0
+      ? "Ninguna"
+      : salesSources.map((s) => SALES_SOURCE_OPTIONS.find((o) => o.value === s)?.label ?? s).join(" + ");
 
   const ventasMes = data?.ventas.monthly[month] ?? 0;
   const prevMonth = month === 1 ? 12 : month - 1;
   const ventasPrev = data?.ventas.monthly[prevMonth] ?? 0;
   const evolucion = ventasPrev > 0 ? ((ventasMes - ventasPrev) / ventasPrev) * 100 : 0;
 
-  /** Grupos de gasto que efectivamente suman: los que computan y no son de mercadería. */
-  const computingGroups = useMemo(
-    () => (data?.groups ?? []).filter((g) => g.computes && !g.isMerchandise),
+  /** Grupos que suman: TODOS los tildados. El tilde es el único criterio. */
+  const computingGroups = useMemo(() => (data?.groups ?? []).filter((g) => g.computes), [data]);
+  const excludedGroups = useMemo(() => (data?.groups ?? []).filter((g) => !g.computes), [data]);
+  /** Tildados Y de mercadería: si además hay CMV, ese costo se está contando dos veces. */
+  const merchandiseComputing = useMemo(
+    () => (data?.groups ?? []).filter((g) => g.computes && g.isMerchandise && g.yearTotal !== 0),
     [data],
   );
-  const merchandiseGroups = useMemo(() => (data?.groups ?? []).filter((g) => g.isMerchandise), [data]);
-  const excludedGroups = useMemo(() => (data?.groups ?? []).filter((g) => !g.computes), [data]);
 
   const ventasByLocal = data?.ventas.byLocal ?? {};
 
@@ -202,7 +215,7 @@ export default function EconomicBalancePage() {
     const rows: { label: string; importe?: string; pct?: string; bold?: boolean; section?: boolean; indent?: boolean }[] = [];
     const pct = (v: number) => `${v.toFixed(1)}%`;
 
-    rows.push({ label: `VENTAS (${sourceLabel})`, importe: formatCurrency(ventasMes), bold: true });
+    rows.push({ label: `VENTAS (${sourcesLabel})`, importe: formatCurrency(ventasMes), bold: true });
     for (const c of data?.ventas.composition ?? []) {
       const v = c.monthlyTotals[month] ?? 0;
       if (v === 0) continue;
@@ -210,21 +223,6 @@ export default function EconomicBalancePage() {
         label: c.label,
         importe: formatCurrency(v),
         pct: ventasMes > 0 ? pct((v / ventasMes) * 100) : "",
-        indent: true,
-      });
-    }
-
-    rows.push({ label: "CMV", importe: formatCurrency(cmvMes), bold: true, section: false });
-    for (const r of cmvBalance.rows) {
-      rows.push({
-        label: `${localName(r.localId)} · ${r.pct.toFixed(2)}%`,
-        importe: formatCurrency(r.cmvAmount),
-        indent: true,
-      });
-    }
-    if (cmvBalance.hasMissing) {
-      rows.push({
-        label: `Sin CMV: ${cmvBalance.missing.map((m) => localName(m.localId)).join(", ")} — ${formatCurrency(cmvBalance.ventasSinCmv)} de ventas sin costo`,
         indent: true,
       });
     }
@@ -242,6 +240,8 @@ export default function EconomicBalancePage() {
       });
     }
 
+    rows.push({ label: "CMV", importe: formatCurrency(cmvMes), bold: true });
+
     rows.push({
       label: "UTILIDAD ECONÓMICA",
       importe: formatCurrency(utilidadMes),
@@ -250,9 +250,35 @@ export default function EconomicBalancePage() {
       section: true,
     });
 
+    // El detalle del CMV va abajo de todo el análisis, igual que en pantalla.
+    rows.push({ label: "CMV POR LOCAL", importe: formatCurrency(cmvMes), section: true, bold: true });
+    for (const r of cmvBalance.rows) {
+      rows.push({
+        label: `${localName(r.localId)} · ${r.pct.toFixed(2)}%`,
+        importe: formatCurrency(r.cmvAmount),
+        indent: true,
+      });
+    }
+    if (cmvBalance.hasMissing) {
+      rows.push({
+        label: `Sin CMV: ${cmvBalance.missing.map((m) => localName(m.localId)).join(", ")} — ${formatCurrency(cmvBalance.ventasSinCmv)} de ventas sin costo`,
+        indent: true,
+      });
+    }
+
+    if (merchandiseComputing.length > 0 && cmvMes > 0) {
+      rows.push({
+        label: `ATENCION: ${merchandiseComputing.map((g) => g.name).join(", ")} suma(n) en GASTOS y ademas esta el CMV: el costo de mercaderia se cuenta dos veces.`,
+      });
+    }
+    if ((data?.ventas.overlappingLocalIds ?? []).length > 0) {
+      rows.push({
+        label: `ATENCION: ${(data?.ventas.overlappingLocalIds ?? []).map(localName).join(", ")} factura(n) en mas de una fuente: su venta se suma dos veces.`,
+      });
+    }
     if (localsSinVentas.length > 0) {
       rows.push({
-        label: `Sin ventas de ${sourceLabel}: ${localsSinVentas.map(localName).join(", ")}. Sus gastos igual computan.`,
+        label: `Sin ventas de ${sourcesLabel}: ${localsSinVentas.map(localName).join(", ")}. Sus gastos igual computan.`,
       });
     }
     if (excludedGroups.length > 0) {
@@ -284,7 +310,7 @@ export default function EconomicBalancePage() {
     doc.setFontSize(9);
     doc.setFont("helvetica", "normal");
     doc.text(localsLabel, marginX, y);
-    doc.text(`Ventas: ${sourceLabel} · Gastos por mes económico`, tableRight, y, { align: "right" });
+    doc.text(`Ventas: ${sourcesLabel} · Gastos por mes económico`, tableRight, y, { align: "right" });
     y += 18;
 
     const drawTableHeader = () => {
@@ -351,8 +377,6 @@ export default function EconomicBalancePage() {
   );
   const computingCount = expenseGroupsForConfig.filter((g) => (g as any).economicComputes ?? true).length;
 
-  const sourceLabel = SALES_SOURCE_OPTIONS.find((s) => s.value === salesSource)?.label ?? salesSource;
-
   return (
     <div className="space-y-6">
       <PageHeader
@@ -416,14 +440,34 @@ export default function EconomicBalancePage() {
 
         <div className="flex items-center gap-2">
           <span className="text-sm text-muted-foreground">Ventas de:</span>
-          <DataEntryCombobox
-            options={SALES_SOURCE_OPTIONS.map((s) => ({ value: s.value, label: s.label }))}
-            value={salesSource}
-            onValueChange={(v) => setSalesSource(v as SalesSource)}
-            placeholder="Fuente"
-            searchPlaceholder="Buscar…"
-            triggerClassName="w-36"
-          />
+          <Popover>
+            <PopoverTrigger asChild>
+              <Button variant="outline" className="gap-2" data-testid="button-econ-sources">
+                <ChevronsUpDown className="h-4 w-4" />
+                {sourcesLabel}
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent className="w-72 space-y-2" align="start">
+              <div>
+                <p className="text-sm font-medium">Sistemas de venta</p>
+                <p className="text-xs text-muted-foreground">
+                  Se suman. Cada local suele facturar con un solo sistema, así que combinándolos entra la venta de
+                  todos los locales.
+                </p>
+              </div>
+              <div className="space-y-1">
+                {SALES_SOURCE_OPTIONS.map((s) => (
+                  <label
+                    key={s.value}
+                    className="flex cursor-pointer items-center gap-2 rounded px-1 py-1 hover:bg-muted"
+                  >
+                    <Checkbox checked={salesSources.includes(s.value)} onCheckedChange={() => toggleSource(s.value)} />
+                    <span className="text-sm">{s.label}</span>
+                  </label>
+                ))}
+              </div>
+            </PopoverContent>
+          </Popover>
         </div>
 
         <Popover>
@@ -437,8 +481,9 @@ export default function EconomicBalancePage() {
             <div>
               <p className="text-sm font-medium">Grupos que computan</p>
               <p className="text-xs text-muted-foreground">
-                Destildá los que no son gasto económico del período (ej. compra de bienes, que es inversión). Se
-                guarda para este cliente y vale para todos los meses.
+                Todo grupo tildado suma en los gastos. Destildá los que no son gasto económico del período (ej.
+                compra de bienes, que es inversión, o la mercadería si ya la estás midiendo por CMV). Se guarda
+                para este cliente y vale para todos los meses.
               </p>
             </div>
             <div className="max-h-72 space-y-1 overflow-y-auto">
@@ -455,11 +500,6 @@ export default function EconomicBalancePage() {
                       onCheckedChange={(v) => computesMut.mutate({ id: g.id, computes: v === true })}
                     />
                     <span className="flex-1 truncate text-sm">{g.name}</span>
-                    {(g as any).isMerchandise && (
-                      <Badge variant="outline" className="text-[10px]">
-                        Mercadería
-                      </Badge>
-                    )}
                   </label>
                 );
               })}
@@ -530,7 +570,7 @@ export default function EconomicBalancePage() {
             >
               <span className="inline-flex items-center gap-1 text-muted-foreground">
                 {ventasOpen ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
-                Composición ({sourceLabel})
+                Composición ({sourcesLabel})
               </span>
               <span className="font-mono text-sm">{formatCurrency(ventasMes)}</span>
             </button>
@@ -538,7 +578,7 @@ export default function EconomicBalancePage() {
               <div className="ml-5 border-l pl-3">
                 {(data?.ventas.composition ?? []).filter((c) => (c.monthlyTotals[month] ?? 0) !== 0).length === 0 ? (
                   <p className="py-2 text-xs text-muted-foreground">
-                    {sourceLabel} no trae desglose de la venta para este mes.
+                    {sourcesLabel} no trae desglose de la venta para este mes.
                   </p>
                 ) : (
                   (data?.ventas.composition ?? [])
@@ -557,7 +597,7 @@ export default function EconomicBalancePage() {
               <div className="mt-2 flex items-start gap-2 rounded-md border border-amber-500/40 bg-amber-500/5 p-2 text-xs text-amber-700 dark:text-amber-400">
                 <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
                 <span>
-                  No hay ventas de {sourceLabel} cargadas para {MONTH_NAMES_ES[month - 1]} {year} en los locales
+                  No hay ventas de {sourcesLabel} cargadas para {MONTH_NAMES_ES[month - 1]} {year} en los locales
                   seleccionados. Probá con otra fuente.
                 </span>
               </div>
@@ -566,50 +606,24 @@ export default function EconomicBalancePage() {
                 <div className="mt-2 flex items-start gap-2 rounded-md border border-amber-500/40 bg-amber-500/5 p-2 text-xs text-amber-700 dark:text-amber-400">
                   <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
                   <span>
-                    Sin ventas de {sourceLabel} en {localsSinVentas.map(localName).join(", ")}. Sus gastos igual
+                    Sin ventas de {sourcesLabel} en {localsSinVentas.map(localName).join(", ")}. Sus gastos igual
                     computan más abajo, así que la utilidad queda subestimada. Si esos locales facturan con otro
-                    sistema, cambiá la fuente o filtrá por local.
+                    sistema, sumá esa fuente arriba o filtrá por local.
                   </span>
                 </div>
               )
             )}
 
-            {/* CMV */}
-            <div className="mt-5 flex items-center justify-between border-t pt-3">
-              <span className="text-sm font-bold tracking-wide">CMV</span>
-              <span className="font-mono font-bold text-red-600">{formatCurrency(cmvMes)}</span>
-            </div>
-            {cmvBalance.rows.length > 0 && (
-              <div className="ml-5 border-l pl-3">
-                {cmvBalance.rows.map((r) => (
-                  <div key={r.localId} className="flex items-center justify-between py-1 text-sm">
-                    <span className="text-muted-foreground">
-                      {localName(r.localId)}{" "}
-                      <Badge variant="outline" className="ml-1 text-[10px]">
-                        {r.pct.toFixed(2)}%
-                      </Badge>
-                    </span>
-                    <span className="font-mono">{formatCurrency(r.cmvAmount)}</span>
-                  </div>
-                ))}
-              </div>
-            )}
-            {cmvBalance.hasMissing && (
-              <div className="mt-2 flex items-start gap-2 rounded-md border border-amber-500/40 bg-amber-500/5 p-2 text-xs text-amber-700 dark:text-amber-400">
+            {(data?.ventas.overlappingLocalIds ?? []).length > 0 && (
+              <div className="mt-2 flex items-start gap-2 rounded-md border border-red-500/50 bg-red-500/5 p-2 text-xs text-red-700 dark:text-red-400">
                 <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
                 <span>
-                  Sin CMV de {MONTH_NAMES_ES[month - 1]} en{" "}
-                  {cmvBalance.missing.map((m) => localName(m.localId)).join(", ")}:{" "}
-                  {formatCurrency(cmvBalance.ventasSinCmv)} de ventas quedan sin costo de mercadería, así que la
-                  utilidad de abajo está sobrestimada.
+                  <strong>Venta duplicada:</strong>{" "}
+                  {(data?.ventas.overlappingLocalIds ?? []).map(localName).join(", ")} factura(n) en más de una de
+                  las fuentes elegidas, así que su venta se está sumando dos veces. Dejá una sola fuente para esos
+                  locales.
                 </span>
               </div>
-            )}
-            {merchandiseGroups.length > 0 && (
-              <p className="ml-5 mt-1 text-xs text-muted-foreground">
-                Reemplaza a {merchandiseGroups.map((g) => g.name).join(", ")}: en el económico el costo es el CMV,
-                no lo que se le pagó al proveedor.
-              </p>
             )}
 
             {/* GASTOS */}
@@ -665,8 +679,25 @@ export default function EconomicBalancePage() {
               </p>
             )}
 
+            {/* CMV — resta en la utilidad; el detalle por local va abajo de todo el análisis. */}
+            <div className="mt-3 flex items-center justify-between border-t pt-3">
+              <span className="text-sm font-bold tracking-wide">CMV</span>
+              <span className="font-mono font-bold text-red-600">{formatCurrency(cmvMes)}</span>
+            </div>
+
+            {merchandiseComputing.length > 0 && cmvMes > 0 && (
+              <div className="mt-2 flex items-start gap-2 rounded-md border border-red-500/50 bg-red-500/5 p-2 text-xs text-red-700 dark:text-red-400">
+                <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                <span>
+                  <strong>El costo de mercadería se está contando dos veces:</strong>{" "}
+                  {merchandiseComputing.map((g) => g.name).join(", ")} suma(n) en GASTOS y además está el CMV.
+                  Destildá esos grupos en "Grupos que computan" para medir la mercadería solo por CMV.
+                </span>
+              </div>
+            )}
+
             {/* UTILIDAD */}
-            <div className="mt-5 flex items-center justify-between border-t-2 pt-3">
+            <div className="mt-4 flex items-center justify-between border-t-2 pt-3">
               <span className="text-base font-bold tracking-wide">UTILIDAD ECONÓMICA</span>
               <div className="text-right">
                 <span
@@ -679,6 +710,44 @@ export default function EconomicBalancePage() {
                 </span>
                 <p className="text-xs text-muted-foreground">{margenPct.toFixed(1)}% sobre ventas</p>
               </div>
+            </div>
+
+            {/* ---- Detalle del CMV: abajo de todo el análisis ---- */}
+            <div className="mt-6 rounded-lg border bg-muted/30 p-3">
+              <div className="flex items-center justify-between">
+                <span className="text-sm font-semibold tracking-wide">CMV POR LOCAL</span>
+                <span className="font-mono text-sm font-semibold">{formatCurrency(cmvMes)}</span>
+              </div>
+              {cmvBalance.rows.length > 0 ? (
+                <div className="mt-2 divide-y">
+                  {cmvBalance.rows.map((r) => (
+                    <div key={r.localId} className="flex items-center justify-between py-1 text-sm">
+                      <span className="text-muted-foreground">
+                        {localName(r.localId)}{" "}
+                        <Badge variant="outline" className="ml-1 text-[10px]">
+                          {r.pct.toFixed(2)}%
+                        </Badge>
+                      </span>
+                      <span className="font-mono">{formatCurrency(r.cmvAmount)}</span>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p className="mt-2 text-xs text-muted-foreground">
+                  No hay CMV cargado para {MONTH_NAMES_ES[month - 1]} {year} en los locales con ventas.
+                </p>
+              )}
+              {cmvBalance.hasMissing && (
+                <div className="mt-2 flex items-start gap-2 rounded-md border border-amber-500/40 bg-amber-500/5 p-2 text-xs text-amber-700 dark:text-amber-400">
+                  <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                  <span>
+                    Sin CMV de {MONTH_NAMES_ES[month - 1]} en{" "}
+                    {cmvBalance.missing.map((m) => localName(m.localId)).join(", ")}:{" "}
+                    {formatCurrency(cmvBalance.ventasSinCmv)} de ventas quedan sin costo de mercadería, así que la
+                    utilidad de arriba está sobrestimada.
+                  </span>
+                </div>
+              )}
             </div>
           </CardContent>
         </Card>
@@ -703,7 +772,7 @@ export default function EconomicBalancePage() {
               </thead>
               <tbody>
                 <tr className="border-b font-semibold">
-                  <td className="py-2">VENTAS ({sourceLabel})</td>
+                  <td className="py-2">VENTAS ({sourcesLabel})</td>
                   {SHORT_MONTHS.map((_, i) => (
                     <td key={i} className="px-2 py-2 text-right font-mono text-green-600">
                       {formatCurrency(data?.ventas.monthly[i + 1] ?? 0)}

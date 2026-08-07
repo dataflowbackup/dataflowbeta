@@ -3575,11 +3575,16 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const clientId = await getClientId(req);
       const year = parseInt(req.query.year as string) || new Date().getFullYear();
 
-      const rawSource = String(req.query.salesSource ?? "datalive");
-      const salesSource =
-        rawSource === "fudo" || rawSource === "shares" || rawSource === "datalive"
-          ? (rawSource as "datalive" | "fudo" | "shares")
-          : "datalive";
+      // Acepta varias fuentes (salesSources=datalive,shares). Cada local suele facturar con un solo
+      // sistema, asi que sumarlas es lo que da la venta completa de la empresa.
+      const rawSources = String(req.query.salesSources ?? req.query.salesSource ?? "datalive");
+      const salesSources = rawSources
+        .split(",")
+        .map((s) => s.trim())
+        .filter((s): s is "datalive" | "fudo" | "shares" =>
+          s === "datalive" || s === "fudo" || s === "shares",
+        );
+      if (salesSources.length === 0) salesSources.push("datalive");
 
       const parseLocals = (): number | number[] | undefined => {
         const multi = req.query.localIds as string | undefined;
@@ -3590,7 +3595,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         return undefined;
       };
 
-      const data = await storage.getEconomicBalance(clientId, year, parseLocals(), salesSource);
+      const data = await storage.getEconomicBalance(clientId, year, parseLocals(), salesSources);
       res.json(data);
     } catch (e: any) {
       res.status(500).json({ message: e.message });

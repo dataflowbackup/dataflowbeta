@@ -3738,17 +3738,23 @@ export class DatabaseStorage implements IStorage {
    *     acreditación. De ahí que haya que leer un rango de fechas más amplio que el año pedido:
    *     un movimiento acreditado en enero de 2027 puede ser económicamente de diciembre de 2026.
    *  3. Cada grupo puede quedar fuera con `economicComputes = false` (qué es gasto económico y qué
-   *     es inversión cambia por cliente).
+   *     es inversión cambia por cliente). El tilde es el ÚNICO criterio: si un grupo está tildado
+   *     computa, sin importar si es de mercadería (decisión del usuario, 07-ago-2026). Por eso,
+   *     cuando además hay CMV, los grupos de mercadería hay que destildarlos a mano o el costo se
+   *     cuenta dos veces; el front avisa cuando eso pasa.
    *
    * Quedan siempre afuera los Movimientos Financieros y los "Otros Movimientos": no son economía
-   * del período. Los grupos de mercadería se devuelven marcados pero NO suman en los gastos: su
-   * lugar lo toma el CMV, que el front calcula con `buildCmvForBalance` sobre estas mismas ventas.
+   * del período.
+   *
+   * Se pueden combinar varias fuentes de venta: cada local suele facturar con un solo sistema, así
+   * que sumarlas es lo que da la venta completa de la empresa. Si algún local apareciera en más de
+   * una fuente elegida se lo reporta en `overlappingLocalIds`, porque ahí sí se estaría duplicando.
    */
   async getEconomicBalance(
     clientId: number,
     year: number,
     localId?: number | number[],
-    salesSource: "datalive" | "fudo" | "shares" = "datalive",
+    salesSources: Array<"datalive" | "fudo" | "shares"> = ["datalive"],
   ) {
     const localIdSet =
       localId == null ? null : new Set(Array.isArray(localId) ? localId : [localId]);
@@ -3766,10 +3772,16 @@ export class DatabaseStorage implements IStorage {
     const ventasByLocal: Record<number, Record<number, number>> = {};
     const compositionMonthly: Record<string, Record<number, number>> = {};
 
-    const addVenta = (lid: number, month: number, total: number) => {
+    // localId -> fuentes en las que ese local tiene ventas. Con más de una, hay doble conteo.
+    const sourcesByLocal = new Map<number, Set<string>>();
+    const addVenta = (lid: number, month: number, total: number, source: string) => {
       ventasMonthly[month] += total;
       if (!ventasByLocal[lid]) ventasByLocal[lid] = emptyMonths();
       ventasByLocal[lid][month] += total;
+      if (total !== 0) {
+        if (!sourcesByLocal.has(lid)) sourcesByLocal.set(lid, new Set());
+        sourcesByLocal.get(lid)!.add(source);
+      }
     };
     const addComposition = (label: string, month: number, val: number) => {
       if (!val) return;
@@ -3782,66 +3794,79 @@ export class DatabaseStorage implements IStorage {
       return Number.isFinite(n) ? n : 0;
     };
 
-    if (salesSource === "datalive") {
-      const conds = [
-        eq(dataliveVentas.clientId, clientId),
-        sql`${dataliveVentas.fecha} >= ${yearFrom}`,
-        sql`${dataliveVentas.fecha} <= ${yearTo}`,
-      ];
-      if (localIds) conds.push(inArray(dataliveVentas.localId, localIds));
-      const rows = await db.select().from(dataliveVentas).where(and(...conds));
-      for (const r of rows) {
-        const m = monthOf(r.fecha);
-        if (!Number.isFinite(m) || m < 1 || m > 12) continue;
-        addVenta(r.localId, m, num(r.ventaTotal));
-        addComposition("Efectivo", m, num(r.ventaEfectivo));
-        addComposition("Online", m, num(r.ventaOnline));
-      }
-    } else if (salesSource === "shares") {
-      const conds = [
-        eq(sharesVentas.clientId, clientId),
-        sql`${sharesVentas.fecha} >= ${yearFrom}`,
-        sql`${sharesVentas.fecha} <= ${yearTo}`,
-      ];
-      if (localIds) conds.push(inArray(sharesVentas.localId, localIds));
-      const rows = await db.select().from(sharesVentas).where(and(...conds));
-      for (const r of rows) {
-        const m = monthOf(r.fecha);
-        if (!Number.isFinite(m) || m < 1 || m > 12) continue;
-        addVenta(r.localId, m, num(r.ventaTotal));
-        addComposition("Efectivo", m, num(r.ventaEfectivo));
-        addComposition("Tarjeta", m, num(r.ventaTarjeta));
-        addComposition("Efectivo Online", m, num(r.ventaEfectivoOnline));
-        addComposition("Oper. Online", m, num(r.ventaOperOnline));
-        addComposition("Mercado Pago", m, num(r.ventaMercadopago));
-      }
-    } else {
-      const conds = [
-        eq(fudoVentas.clientId, clientId),
-        sql`${fudoVentas.fecha} >= ${yearFrom}`,
-        sql`${fudoVentas.fecha} <= ${yearTo}`,
-      ];
-      if (localIds) conds.push(inArray(fudoVentas.localId, localIds));
-      const rows = await db.select().from(fudoVentas).where(and(...conds));
-      for (const r of rows) {
-        const m = monthOf(r.fecha);
-        if (!Number.isFinite(m) || m < 1 || m > 12) continue;
-        addVenta(r.localId, m, num(r.ventaTotal));
-      }
-      // La composición de Fudo vive en otra tabla: los medios de pago del día.
-      const pagoConds = [
-        eq(fudoPagos.clientId, clientId),
-        sql`${fudoPagos.fecha} >= ${yearFrom}`,
-        sql`${fudoPagos.fecha} <= ${yearTo}`,
-      ];
-      if (localIds) pagoConds.push(inArray(fudoPagos.localId, localIds));
-      const pagos = await db.select().from(fudoPagos).where(and(...pagoConds));
-      for (const p of pagos) {
-        const m = monthOf(p.fecha);
-        if (!Number.isFinite(m) || m < 1 || m > 12) continue;
-        addComposition(String(p.medioPago || "Sin medio"), m, num(p.importe));
+    const sources = salesSources.length > 0 ? salesSources : (["datalive"] as const);
+    const multi = sources.length > 1;
+    // Con varias fuentes, la composición lleva de qué sistema viene cada concepto: "Efectivo"
+    // significa cosas distintas en Datalive que en Shares.
+    const compLabel = (label: string, source: string) =>
+      multi ? `${label} (${source === "datalive" ? "Datalive" : source === "shares" ? "Shares" : "Fudo"})` : label;
+
+    for (const source of sources) {
+      if (source === "datalive") {
+        const conds = [
+          eq(dataliveVentas.clientId, clientId),
+          sql`${dataliveVentas.fecha} >= ${yearFrom}`,
+          sql`${dataliveVentas.fecha} <= ${yearTo}`,
+        ];
+        if (localIds) conds.push(inArray(dataliveVentas.localId, localIds));
+        const rows = await db.select().from(dataliveVentas).where(and(...conds));
+        for (const r of rows) {
+          const m = monthOf(r.fecha);
+          if (!Number.isFinite(m) || m < 1 || m > 12) continue;
+          addVenta(r.localId, m, num(r.ventaTotal), source);
+          addComposition(compLabel("Efectivo", source), m, num(r.ventaEfectivo));
+          addComposition(compLabel("Online", source), m, num(r.ventaOnline));
+        }
+      } else if (source === "shares") {
+        const conds = [
+          eq(sharesVentas.clientId, clientId),
+          sql`${sharesVentas.fecha} >= ${yearFrom}`,
+          sql`${sharesVentas.fecha} <= ${yearTo}`,
+        ];
+        if (localIds) conds.push(inArray(sharesVentas.localId, localIds));
+        const rows = await db.select().from(sharesVentas).where(and(...conds));
+        for (const r of rows) {
+          const m = monthOf(r.fecha);
+          if (!Number.isFinite(m) || m < 1 || m > 12) continue;
+          addVenta(r.localId, m, num(r.ventaTotal), source);
+          addComposition(compLabel("Efectivo", source), m, num(r.ventaEfectivo));
+          addComposition(compLabel("Tarjeta", source), m, num(r.ventaTarjeta));
+          addComposition(compLabel("Efectivo Online", source), m, num(r.ventaEfectivoOnline));
+          addComposition(compLabel("Oper. Online", source), m, num(r.ventaOperOnline));
+          addComposition(compLabel("Mercado Pago", source), m, num(r.ventaMercadopago));
+        }
+      } else {
+        const conds = [
+          eq(fudoVentas.clientId, clientId),
+          sql`${fudoVentas.fecha} >= ${yearFrom}`,
+          sql`${fudoVentas.fecha} <= ${yearTo}`,
+        ];
+        if (localIds) conds.push(inArray(fudoVentas.localId, localIds));
+        const rows = await db.select().from(fudoVentas).where(and(...conds));
+        for (const r of rows) {
+          const m = monthOf(r.fecha);
+          if (!Number.isFinite(m) || m < 1 || m > 12) continue;
+          addVenta(r.localId, m, num(r.ventaTotal), source);
+        }
+        // La composición de Fudo vive en otra tabla: los medios de pago del día.
+        const pagoConds = [
+          eq(fudoPagos.clientId, clientId),
+          sql`${fudoPagos.fecha} >= ${yearFrom}`,
+          sql`${fudoPagos.fecha} <= ${yearTo}`,
+        ];
+        if (localIds) pagoConds.push(inArray(fudoPagos.localId, localIds));
+        const pagos = await db.select().from(fudoPagos).where(and(...pagoConds));
+        for (const p of pagos) {
+          const m = monthOf(p.fecha);
+          if (!Number.isFinite(m) || m < 1 || m > 12) continue;
+          addComposition(compLabel(String(p.medioPago || "Sin medio"), source), m, num(p.importe));
+        }
       }
     }
+
+    const overlappingLocalIds = Array.from(sourcesByLocal.entries())
+      .filter(([, set]) => set.size > 1)
+      .map(([lid]) => lid);
 
     // ---------- GASTOS (movimientos, por MES ECONÓMICO) ----------
     const allFinancialGroups = await db
@@ -3965,10 +3990,11 @@ export class DatabaseStorage implements IStorage {
       };
     });
 
-    // Gastos = grupos que computan Y no son de mercadería (esos los reemplaza el CMV).
+    // Gastos = TODOS los grupos tildados. El tilde es el único criterio: ser de mercadería ya no
+    // excluye por su cuenta (si además se usa el CMV, hay que destildarlos a mano).
     const gastos = emptyMonths();
     for (const g of groups) {
-      if (!g.computes || g.isMerchandise) continue;
+      if (!g.computes) continue;
       for (let m = 1; m <= 12; m++) gastos[m] += g.monthlyTotals[m] || 0;
     }
 
@@ -3980,11 +4006,12 @@ export class DatabaseStorage implements IStorage {
     composition.sort((a, b) => b.yearTotal - a.yearTotal);
 
     return {
-      salesSource,
+      salesSources: sources,
       ventas: {
         monthly: ventasMonthly,
         byLocal: ventasByLocal,
         composition,
+        overlappingLocalIds,
         yearTotal: Object.values(ventasMonthly).reduce((a, b) => a + b, 0),
       },
       groups,
