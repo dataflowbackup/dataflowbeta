@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
+import { Slider } from "@/components/ui/slider";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { DataEntryCombobox } from "@/components/data-entry-combobox";
 import {
@@ -18,12 +19,14 @@ import {
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { formatCurrency } from "@/lib/formatters";
-import { Plus, Trash2, Save, Target, Eye, TrendingUp, Pencil } from "lucide-react";
+import { buildBreakevenPdf } from "@/lib/breakeven-pdf";
+import { Plus, Trash2, Save, Target, Eye, TrendingUp, Pencil, Sparkles, FileDown } from "lucide-react";
 import {
-  LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, ReferenceDot,
+  LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, ReferenceDot, ReferenceLine,
 } from "recharts";
 import {
   computeBreakeven,
+  profitAtUnits,
   variableCostAmount,
   VARIABLE_COST_BASE_LABELS,
   type AppliedVariableCost,
@@ -78,6 +81,8 @@ export default function BreakevenPage() {
 
   const [detailId, setDetailId] = useState<number | null>(null);
   const [varForm, setVarForm] = useState<typeof emptyVariableCostForm | null>(null);
+  /** Unidades del simulador. Vacío = se sigue solo al punto de equilibrio. */
+  const [simInput, setSimInput] = useState("");
 
   const { data: locals = [] } = useQuery<Local[]>({ queryKey: ["/api/locals"] });
   const { data: recipes = [] } = useQuery<Recipe[]>({ queryKey: ["/api/recipes"] });
@@ -182,6 +187,90 @@ export default function BreakevenPage() {
     }
     return pts;
   }, [isMargin, valid, units, priceN, costN, pe.variablePerUnit, totalFixed]);
+
+  /**
+   * Simulador: cubiertos los costos fijos, cada unidad de más deja el margen de contribución
+   * entero. Arranca parado en el PE redondeado hacia arriba (la primera unidad que ya da ganancia).
+   */
+  const peUnitsCeil = units != null ? Math.ceil(units) : 0;
+  const simUnits = simInput === "" ? peUnitsCeil : Math.max(0, parseFloat(simInput) || 0);
+  const simMax = Math.max(peUnitsCeil * 3, 10);
+  const sim = useMemo(() => {
+    const revenueAt = simUnits * priceN;
+    const variableAt = simUnits * (costN + pe.variablePerUnit);
+    const profit = profitAtUnits(simUnits, contribution, totalFixed);
+    return {
+      units: simUnits,
+      overBreakeven: units != null ? simUnits - units : 0,
+      revenue: revenueAt,
+      variableTotal: variableAt,
+      profit,
+      profitPct: revenueAt > 0 ? (profit / revenueAt) * 100 : 0,
+    };
+  }, [simUnits, priceN, costN, pe.variablePerUnit, contribution, totalFixed, units]);
+
+  /** Escenarios rápidos por encima del punto de equilibrio. */
+  const scenarios = useMemo(() => {
+    if (units == null) return [];
+    return [
+      { label: "En el punto de equilibrio", factor: 1 },
+      { label: "+10%", factor: 1.1 },
+      { label: "+25%", factor: 1.25 },
+      { label: "+50%", factor: 1.5 },
+      { label: "El doble", factor: 2 },
+    ].map((s) => {
+      const u = Math.ceil(units * s.factor);
+      const revenueAt = u * priceN;
+      const profit = profitAtUnits(u, contribution, totalFixed);
+      return {
+        ...s,
+        units: u,
+        revenue: revenueAt,
+        profit,
+        profitPct: revenueAt > 0 ? (profit / revenueAt) * 100 : 0,
+      };
+    });
+  }, [units, priceN, contribution, totalFixed]);
+
+  const exportPdf = () => {
+    if (units == null || revenue == null) return;
+    const recipe = recipes.find((r) => String(r.id) === recipeId);
+    const doc = buildBreakevenPdf({
+      name: name.trim() || "Análisis sin nombre",
+      localName: localId === "all" ? "General" : localName(parseInt(localId, 10)),
+      productName: recipe?.name ?? null,
+      priceNoIva: priceN,
+      costNoIva: costN,
+      variableCosts: appliedVariableCosts.map((c) => ({
+        label: c.label || "Costo variable",
+        pct: c.pct,
+        base: c.base,
+        ivaRate: c.ivaRate,
+        amountPerUnit: variableCostAmount(c, priceN, costN),
+      })),
+      variablePerUnit: pe.variablePerUnit,
+      contributionMargin: contribution,
+      contributionPct: pe.contributionPct,
+      fixedCosts: fixed
+        .filter((f) => parseFloat(f.amount) > 0)
+        .map((f) => {
+          const { transactionCategoryId, financialGroupId } = parseFixedRef(f.ref);
+          const imputation =
+            financialGroupId != null
+              ? `${groupName(financialGroupId)} (grupo)`
+              : categoryName(transactionCategoryId) ?? "Sin imputar";
+          return { imputation, label: f.label || "", amount: parseFloat(f.amount) };
+        }),
+      totalFixed,
+      units,
+      revenue,
+      scenarios,
+      // Solo se incluye si el usuario efectivamente movió el simulador.
+      simulation: simInput === "" ? null : sim,
+    });
+    const slug = (name.trim() || "punto-de-equilibrio").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+    doc.save(`${slug}.pdf`);
+  };
 
   const saveVariableCost = useMutation({
     mutationFn: async (form: typeof emptyVariableCostForm) => {
@@ -463,6 +552,16 @@ export default function BreakevenPage() {
             <Button className="w-full mt-2" onClick={() => saveMutation.mutate()} disabled={saveMutation.isPending || !valid} data-testid="button-save">
               <Save className="h-4 w-4 mr-2" /> {saveMutation.isPending ? "Guardando..." : "Guardar"}
             </Button>
+            <Button
+              variant="outline"
+              className="w-full"
+              onClick={exportPdf}
+              disabled={isMargin || !valid || units == null}
+              title={isMargin ? "El PDF se arma sobre un producto puntual" : undefined}
+              data-testid="button-export-pdf"
+            >
+              <FileDown className="h-4 w-4 mr-2" /> Exportar PDF
+            </Button>
           </CardContent>
         </Card>
       </div>
@@ -490,6 +589,15 @@ export default function BreakevenPage() {
                   <Line type="monotone" dataKey="Ingresos" stroke="#16a34a" strokeWidth={2} dot={false} />
                   <Line type="monotone" dataKey="Costos" stroke="#dc2626" strokeWidth={2} dot={false} />
                   <ReferenceDot x={Math.round(units)} y={units * priceN} r={6} fill="hsl(var(--primary))" stroke="white" strokeWidth={2} />
+                  {/* Dónde te deja el simulador */}
+                  {simUnits > 0 && Math.abs(simUnits - units) > 0.5 && (
+                    <ReferenceLine
+                      x={Math.round(simUnits)}
+                      stroke="#0ea5e9"
+                      strokeDasharray="4 4"
+                      label={{ value: "Simulación", fontSize: 10, fill: "#0ea5e9", position: "top" }}
+                    />
+                  )}
                 </LineChart>
               </ResponsiveContainer>
               <div className="space-y-3">
@@ -508,6 +616,112 @@ export default function BreakevenPage() {
                   variables ya están restados del margen.
                 </p>
               </div>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Simulador: qué pasa si vendo por encima del punto de equilibrio */}
+      {!isMargin && valid && units != null && (
+        <Card>
+          <CardHeader className="pb-3">
+            <CardTitle className="text-base flex items-center gap-2">
+              <Sparkles className="h-4 w-4 text-sky-500" /> ¿Y si vendo más?
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-5">
+            <div className="grid gap-4 lg:grid-cols-[1fr_auto] items-end">
+              <div className="space-y-2">
+                <Label className="text-xs">Unidades vendidas</Label>
+                <Slider
+                  value={[Math.min(simUnits, simMax)]}
+                  min={0}
+                  max={simMax}
+                  step={1}
+                  onValueChange={([v]) => setSimInput(String(v))}
+                  data-testid="slider-sim"
+                />
+                <div className="flex justify-between text-xs text-muted-foreground">
+                  <span>0</span>
+                  <span>PE: {peUnitsCeil}</span>
+                  <span>{simMax}</span>
+                </div>
+              </div>
+              <div className="flex items-end gap-2">
+                <div className="space-y-1">
+                  <Label className="text-xs">Unidades</Label>
+                  <Input
+                    type="number"
+                    step="any"
+                    className="w-32"
+                    value={simInput === "" ? String(peUnitsCeil) : simInput}
+                    onChange={(e) => setSimInput(e.target.value)}
+                    data-testid="input-sim-units"
+                  />
+                </div>
+                <Button variant="outline" size="sm" onClick={() => setSimInput("")}>Volver al PE</Button>
+              </div>
+            </div>
+
+            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+              <div className="rounded-lg border p-3">
+                <p className="text-xs text-muted-foreground">Sobre el punto de equilibrio</p>
+                <p className="text-xl font-bold" data-testid="text-sim-over">
+                  {sim.overBreakeven >= 0 ? "+" : ""}{sim.overBreakeven.toFixed(0)}
+                  <span className="text-sm font-normal text-muted-foreground"> u.</span>
+                </p>
+              </div>
+              <div className="rounded-lg border p-3">
+                <p className="text-xs text-muted-foreground">Facturación</p>
+                <p className="text-xl font-bold font-mono">{formatCurrency(sim.revenue)}</p>
+              </div>
+              <div className="rounded-lg border p-3">
+                <p className="text-xs text-muted-foreground">Costos totales</p>
+                <p className="text-xl font-bold font-mono">{formatCurrency(totalFixed + sim.variableTotal)}</p>
+                <p className="text-xs text-muted-foreground mt-1">
+                  {formatCurrency(totalFixed)} fijos + {formatCurrency(sim.variableTotal)} variables
+                </p>
+              </div>
+              <div className={`rounded-lg border p-3 ${sim.profit >= 0 ? "bg-emerald-500/5 border-emerald-500/30" : "bg-red-500/5 border-red-500/30"}`}>
+                <p className="text-xs text-muted-foreground">{sim.profit >= 0 ? "Ganancia" : "Pérdida"}</p>
+                <p className={`text-xl font-bold font-mono ${sim.profit >= 0 ? "text-emerald-600" : "text-red-600"}`} data-testid="text-sim-profit">
+                  {formatCurrency(sim.profit)}
+                </p>
+                <p className="text-xs text-muted-foreground mt-1">{sim.profitPct.toFixed(1)}% sobre ventas</p>
+              </div>
+            </div>
+
+            <p className="text-xs text-muted-foreground">
+              Pasado el punto de equilibrio los costos fijos ya están cubiertos: de cada unidad extra solo se descuentan
+              el costo del producto y los costos variables, así que quedan{" "}
+              <span className="font-mono font-medium">{formatCurrency(contribution)}</span> limpios por unidad.
+            </p>
+
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="bg-muted/50">
+                    <th className="text-left px-3 py-2 font-medium border-b">Escenario</th>
+                    <th className="text-right px-3 py-2 font-medium border-b">Unidades</th>
+                    <th className="text-right px-3 py-2 font-medium border-b">Facturación</th>
+                    <th className="text-right px-3 py-2 font-medium border-b">Ganancia</th>
+                    <th className="text-right px-3 py-2 font-medium border-b">% s/ventas</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {scenarios.map((s) => (
+                    <tr key={s.label} className="border-b">
+                      <td className="px-3 py-2">{s.label}</td>
+                      <td className="px-3 py-2 text-right font-mono">{s.units}</td>
+                      <td className="px-3 py-2 text-right font-mono">{formatCurrency(s.revenue)}</td>
+                      <td className={`px-3 py-2 text-right font-mono font-semibold ${s.profit > 0 ? "text-emerald-600" : ""}`}>
+                        {formatCurrency(s.profit)}
+                      </td>
+                      <td className="px-3 py-2 text-right font-mono text-muted-foreground">{s.profitPct.toFixed(1)}%</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
             </div>
           </CardContent>
         </Card>
