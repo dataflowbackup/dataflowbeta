@@ -5,40 +5,64 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Checkbox } from "@/components/ui/checkbox";
+import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { DataEntryCombobox } from "@/components/data-entry-combobox";
 import {
   Dialog,
   DialogContent,
   DialogHeader,
   DialogTitle,
+  DialogFooter,
 } from "@/components/ui/dialog";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { formatCurrency } from "@/lib/formatters";
-import { Plus, Trash2, Save, Target, Eye, TrendingUp } from "lucide-react";
+import { Plus, Trash2, Save, Target, Eye, TrendingUp, Pencil } from "lucide-react";
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, ReferenceDot,
 } from "recharts";
-import { DataEntryCombobox as Combo } from "@/components/data-entry-combobox";
-import type { Local, Recipe, TransactionCategory, BreakevenAnalysis, BreakevenFixedCost } from "@shared/schema";
+import {
+  computeBreakeven,
+  variableCostAmount,
+  VARIABLE_COST_BASE_LABELS,
+  type AppliedVariableCost,
+  type VariableCostBase,
+} from "@shared/breakeven";
+import type {
+  Local,
+  Recipe,
+  TransactionCategory,
+  FinancialGroup,
+  BreakevenAnalysis,
+  BreakevenFixedCost,
+  BreakevenVariableCost,
+} from "@shared/schema";
 
+/**
+ * Un gasto fijo se imputa a una categoría o a un grupo financiero entero. En la pantalla es un
+ * solo combo, así que la referencia viaja prefijada ("c:12" categoría, "g:5" grupo) y se abre en
+ * dos campos recién al guardar.
+ */
 interface FixedCostRow {
-  transactionCategoryId: string;
+  ref: string;
   label: string;
   amount: string;
 }
 
-interface CommissionRow {
-  label: string;
-  pct: string;
-  base: "con_iva" | "sin_iva";
-  ivaRate: string;
-}
+const parseFixedRef = (ref: string): { transactionCategoryId: number | null; financialGroupId: number | null } => {
+  const [kind, rawId] = ref.split(":");
+  const id = parseInt(rawId ?? "", 10);
+  if (!Number.isFinite(id)) return { transactionCategoryId: null, financialGroupId: null };
+  return {
+    transactionCategoryId: kind === "c" ? id : null,
+    financialGroupId: kind === "g" ? id : null,
+  };
+};
 
-const COMMISSION_BASE_OPTIONS = [
-  { value: "sin_iva", label: "Sobre precio SIN IVA (ej. IIBB)" },
-  { value: "con_iva", label: "Sobre precio CON IVA (ej. Mercado Pago)" },
-];
+const BASE_OPTIONS: VariableCostBase[] = ["costo", "sin_iva", "con_iva"];
+
+const emptyVariableCostForm = { id: null as number | null, name: "", pct: "", base: "sin_iva" as VariableCostBase, ivaRate: "21" };
 
 export default function BreakevenPage() {
   const { toast } = useToast();
@@ -49,14 +73,17 @@ export default function BreakevenPage() {
   const [cost, setCost] = useState("");
   const [mode, setMode] = useState<"product" | "margin">("product");
   const [marginPctInput, setMarginPctInput] = useState("");
-  const [fixed, setFixed] = useState<FixedCostRow[]>([{ transactionCategoryId: "", label: "", amount: "" }]);
-  const [commissions, setCommissions] = useState<CommissionRow[]>([]);
+  const [fixed, setFixed] = useState<FixedCostRow[]>([{ ref: "", label: "", amount: "" }]);
+  const [selectedVarIds, setSelectedVarIds] = useState<number[]>([]);
 
   const [detailId, setDetailId] = useState<number | null>(null);
+  const [varForm, setVarForm] = useState<typeof emptyVariableCostForm | null>(null);
 
   const { data: locals = [] } = useQuery<Local[]>({ queryKey: ["/api/locals"] });
   const { data: recipes = [] } = useQuery<Recipe[]>({ queryKey: ["/api/recipes"] });
   const { data: categories = [] } = useQuery<TransactionCategory[]>({ queryKey: ["/api/transaction-categories"] });
+  const { data: groups = [] } = useQuery<FinancialGroup[]>({ queryKey: ["/api/financial-groups"] });
+  const { data: variableCosts = [] } = useQuery<BreakevenVariableCost[]>({ queryKey: ["/api/finance/breakeven-variable-costs"] });
   const { data: analyses = [] } = useQuery<BreakevenAnalysis[]>({ queryKey: ["/api/finance/breakeven"] });
   const { data: detail, isLoading: detailLoading } = useQuery<{ analysis: BreakevenAnalysis; fixedCosts: BreakevenFixedCost[] }>({
     queryKey: ["/api/finance/breakeven", detailId],
@@ -67,6 +94,8 @@ export default function BreakevenPage() {
     id == null ? "General" : locals.find((l) => l.id === id)?.name ?? `Local ${id}`;
   const categoryName = (id: number | null | undefined) =>
     id == null ? null : categories.find((c) => c.id === id)?.name ?? null;
+  const groupName = (id: number | null | undefined) =>
+    id == null ? null : groups.find((g) => g.id === id)?.name ?? null;
 
   const localOptions = useMemo(
     () => [{ value: "all", label: "Sin local / general" }, ...locals.map((l) => ({ value: String(l.id), label: l.name }))],
@@ -76,10 +105,24 @@ export default function BreakevenPage() {
     () => [{ value: "", label: "Manual (sin receta)" }, ...recipes.map((r) => ({ value: String(r.id), label: r.name }))],
     [recipes],
   );
-  const categoryOptions = useMemo(
-    () => [{ value: "", label: "Sin categoría" }, ...categories.filter((c) => c.type === "expense").map((c) => ({ value: String(c.id), label: c.name }))],
-    [categories],
-  );
+
+  /**
+   * Grupos de gasto primero y después las categorías colgando de su grupo: así se puede cargar
+   * "Sueldos" de un saque o abrir el detalle categoría por categoría, sin dos combos.
+   */
+  const fixedCostOptions = useMemo(() => {
+    const expenseGroups = groups.filter((g) => g.type === "expense");
+    const groupById = new Map(expenseGroups.map((g) => [g.id, g.name]));
+    const opts: Array<{ value: string; label: string }> = [{ value: "", label: "Sin imputar" }];
+    for (const g of expenseGroups) {
+      opts.push({ value: `g:${g.id}`, label: `${g.name} — grupo completo` });
+    }
+    for (const c of categories.filter((c) => c.type === "expense")) {
+      const parent = c.financialGroupId != null ? groupById.get(c.financialGroupId) : undefined;
+      opts.push({ value: `c:${c.id}`, label: parent ? `${parent} › ${c.name}` : c.name });
+    }
+    return opts;
+  }, [groups, categories]);
 
   const onPickRecipe = (val: string) => {
     setRecipeId(val);
@@ -94,42 +137,43 @@ export default function BreakevenPage() {
   const priceN = parseFloat(price) || 0;
   const costN = parseFloat(cost) || 0;
   const totalFixed = useMemo(() => fixed.reduce((a, f) => a + (parseFloat(f.amount) || 0), 0), [fixed]);
-
   const isMargin = mode === "margin";
-  // Punto 22: comisiones por unidad (solo modo producto). Sobre precio con o sin IVA.
-  const commissionPerUnit = useMemo(() => {
-    if (isMargin) return 0;
-    return commissions.reduce((acc, c) => {
-      const pct = parseFloat(c.pct) || 0;
-      const iva = parseFloat(c.ivaRate) || 0;
-      const base = c.base === "con_iva" ? priceN * (1 + iva / 100) : priceN;
-      return acc + base * (pct / 100);
-    }, 0);
-  }, [commissions, priceN, isMargin]);
 
-  // % de margen de contribución: en modo producto se deriva del precio/costo/comisiones; en modo margen lo carga el usuario.
-  const marginPct = isMargin
-    ? parseFloat(marginPctInput) || 0
-    : priceN > 0
-      ? ((priceN - costN - commissionPerUnit) / priceN) * 100
-      : 0;
-  const contribution = priceN - costN - commissionPerUnit; // $ por unidad (solo modo producto)
+  /** Los costos variables tildados del catálogo, en el formato que entienden las fórmulas. */
+  const appliedVariableCosts = useMemo<AppliedVariableCost[]>(() => {
+    if (isMargin) return [];
+    return variableCosts
+      .filter((v) => selectedVarIds.includes(v.id))
+      .map((v) => ({
+        label: v.name,
+        pct: parseFloat(String(v.pct)) || 0,
+        base: (v.base as VariableCostBase) ?? "sin_iva",
+        ivaRate: v.ivaRate == null ? undefined : parseFloat(String(v.ivaRate)) || 0,
+      }));
+  }, [variableCosts, selectedVarIds, isMargin]);
+
+  const pe = useMemo(
+    () =>
+      computeBreakeven({
+        priceNoIva: priceN,
+        costNoIva: costN,
+        totalFixedCosts: totalFixed,
+        variableCosts: appliedVariableCosts,
+      }),
+    [priceN, costN, totalFixed, appliedVariableCosts],
+  );
+
+  // En modo margen no hay producto: el usuario carga el % de contribución y solo sale el PE en $.
+  const marginPct = isMargin ? parseFloat(marginPctInput) || 0 : pe.contributionPct;
+  const contribution = pe.contributionMargin;
   const valid = isMargin ? marginPct > 0 && marginPct < 100 : contribution > 0;
-  // PE en unidades solo aplica en modo producto (hay precio por unidad).
-  const units = !isMargin && contribution > 0 ? totalFixed / contribution : null;
-  // PE en facturación: modo producto = units*precio; modo margen = fijos / (margen%/100).
-  const revenue = isMargin
-    ? marginPct > 0
-      ? totalFixed / (marginPct / 100)
-      : null
-    : units != null
-      ? units * priceN
-      : null;
+  const units = isMargin ? null : pe.units;
+  const revenue = isMargin ? (marginPct > 0 ? totalFixed / (marginPct / 100) : null) : pe.revenue;
 
-  // Punto 23: datos del gráfico de PE (rectas Ingresos vs Costos totales cruzándose).
+  // Gráfico de PE: rectas de Ingresos y Costos totales cruzándose en el punto de equilibrio.
   const chartData = useMemo(() => {
     if (isMargin || !valid || units == null || priceN <= 0) return [];
-    const varUnit = costN + commissionPerUnit; // costo variable efectivo por unidad
+    const varUnit = costN + pe.variablePerUnit; // costo variable efectivo por unidad
     const maxU = Math.max(units * 2, 10);
     const step = maxU / 24;
     const pts: Array<{ u: number; Ingresos: number; Costos: number }> = [];
@@ -137,13 +181,52 @@ export default function BreakevenPage() {
       pts.push({ u: Math.round(u), Ingresos: u * priceN, Costos: totalFixed + varUnit * u });
     }
     return pts;
-  }, [isMargin, valid, units, priceN, costN, commissionPerUnit, totalFixed]);
+  }, [isMargin, valid, units, priceN, costN, pe.variablePerUnit, totalFixed]);
+
+  const saveVariableCost = useMutation({
+    mutationFn: async (form: typeof emptyVariableCostForm) => {
+      const pct = parseFloat(form.pct) || 0;
+      if (!form.name.trim()) throw new Error("Poné un nombre al costo variable");
+      if (pct <= 0) throw new Error("El porcentaje debe ser mayor a 0");
+      const body = {
+        name: form.name.trim(),
+        pct,
+        base: form.base,
+        ivaRate: form.base === "con_iva" ? parseFloat(form.ivaRate) || 0 : undefined,
+      };
+      const res = form.id == null
+        ? await apiRequest("POST", "/api/finance/breakeven-variable-costs", body)
+        : await apiRequest("PATCH", `/api/finance/breakeven-variable-costs/${form.id}`, body);
+      return res.json() as Promise<BreakevenVariableCost>;
+    },
+    onSuccess: (saved, form) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/finance/breakeven-variable-costs"] });
+      // Recién creado se tilda solo: si lo cargaste es porque lo querés usar en este análisis.
+      if (form.id == null && saved?.id != null) setSelectedVarIds((p) => [...p, saved.id]);
+      setVarForm(null);
+      toast({ title: form.id == null ? "Costo variable creado" : "Costo variable actualizado" });
+    },
+    onError: (e: Error) => toast({ title: "No se pudo guardar", description: e.message, variant: "destructive" }),
+  });
+
+  const deleteVariableCost = useMutation({
+    mutationFn: async (id: number) => {
+      await apiRequest("DELETE", `/api/finance/breakeven-variable-costs/${id}`);
+      return id;
+    },
+    onSuccess: (id) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/finance/breakeven-variable-costs"] });
+      setSelectedVarIds((p) => p.filter((x) => x !== id));
+      toast({ title: "Costo variable eliminado", description: "Los análisis ya guardados no cambian." });
+    },
+    onError: (e: Error) => toast({ title: "No se pudo eliminar", description: e.message, variant: "destructive" }),
+  });
 
   const saveMutation = useMutation({
     mutationFn: async () => {
       if (!name.trim()) throw new Error("Poné un nombre al análisis");
       if (!valid) {
-        throw new Error(isMargin ? "El margen debe estar entre 0 y 100%" : "El precio de venta debe ser mayor al costo variable");
+        throw new Error(isMargin ? "El margen debe estar entre 0 y 100%" : "El precio de venta debe ser mayor al costo más los costos variables");
       }
       // En modo margen no hay precio por unidad: se usa una base nocional de 100 para conservar
       // la razón de contribución (precio 100, costo 100−margen%) → la facturación de PE es exacta.
@@ -155,20 +238,17 @@ export default function BreakevenPage() {
         recipeId: isMargin || !recipeId ? null : parseInt(recipeId, 10),
         salePriceNoIva,
         variableCostNoIva,
-        commissions: isMargin
-          ? []
-          : commissions
-              .filter((c) => (parseFloat(c.pct) || 0) > 0)
-              .map((c) => ({
-                label: c.label || null,
-                pct: parseFloat(c.pct) || 0,
-                base: c.base,
-                ivaRate: c.base === "con_iva" ? parseFloat(c.ivaRate) || 0 : undefined,
-              })),
+        // Foto de los % aplicados: si mañana cambia el catálogo, este análisis no se mueve.
+        commissions: appliedVariableCosts.map((c) => ({
+          label: c.label ?? null,
+          pct: c.pct,
+          base: c.base,
+          ivaRate: c.base === "con_iva" ? c.ivaRate ?? 0 : undefined,
+        })),
         fixedCosts: fixed
           .filter((f) => parseFloat(f.amount) > 0)
           .map((f) => ({
-            transactionCategoryId: f.transactionCategoryId ? parseInt(f.transactionCategoryId, 10) : null,
+            ...parseFixedRef(f.ref),
             label: f.label || null,
             amount: parseFloat(f.amount),
           })),
@@ -184,7 +264,7 @@ export default function BreakevenPage() {
 
   return (
     <div className="space-y-6">
-      <PageHeader title="Punto de Equilibrio" description="Costos fijos / (precio de venta − costo variable), sin IVA" />
+      <PageHeader title="Punto de Equilibrio" description="Costos fijos / (precio de venta − costo − costos variables), sin IVA" />
 
       <div className="grid gap-6 lg:grid-cols-[1fr_320px]">
         <Card>
@@ -221,7 +301,7 @@ export default function BreakevenPage() {
                   <Input type="number" step="any" value={price} onChange={(e) => setPrice(e.target.value)} data-testid="input-price" className="w-40" />
                 </div>
                 <div className="space-y-1">
-                  <Label className="text-xs">Costo variable (sin IVA)</Label>
+                  <Label className="text-xs">Costo del producto (sin IVA)</Label>
                   <Input type="number" step="any" value={cost} onChange={(e) => setCost(e.target.value)} data-testid="input-cost" className="w-40" />
                 </div>
               </div>
@@ -236,17 +316,20 @@ export default function BreakevenPage() {
             <div className="space-y-2">
               <div className="flex items-center justify-between">
                 <Label className="text-sm">Gastos fijos</Label>
-                <Button variant="outline" size="sm" onClick={() => setFixed((p) => [...p, { transactionCategoryId: "", label: "", amount: "" }])} data-testid="button-add-fixed">
+                <Button variant="outline" size="sm" onClick={() => setFixed((p) => [...p, { ref: "", label: "", amount: "" }])} data-testid="button-add-fixed">
                   <Plus className="h-4 w-4 mr-1" /> Agregar
                 </Button>
               </div>
+              <p className="text-xs text-muted-foreground">
+                Imputalos a un grupo financiero completo o a una categoría puntual. El importe lo cargás vos.
+              </p>
               {fixed.map((f, i) => (
                 <div key={i} className="grid grid-cols-[1fr_1fr_120px_auto] items-center gap-2">
                   <DataEntryCombobox
-                    options={categoryOptions}
-                    value={f.transactionCategoryId}
-                    onValueChange={(v) => setFixed((p) => p.map((x, j) => (j === i ? { ...x, transactionCategoryId: v } : x)))}
-                    placeholder="Categoría"
+                    options={fixedCostOptions}
+                    value={f.ref}
+                    onValueChange={(v) => setFixed((p) => p.map((x, j) => (j === i ? { ...x, ref: v } : x)))}
+                    placeholder="Grupo o categoría"
                     searchPlaceholder="Buscar…"
                     data-testid={`fixed-cat-${i}`}
                   />
@@ -268,63 +351,87 @@ export default function BreakevenPage() {
                   </Button>
                 </div>
               ))}
+              <div className="flex justify-end border-t pt-2 text-sm">
+                <span className="text-muted-foreground mr-3">Total fijos</span>
+                <span className="font-mono font-semibold">{formatCurrency(totalFixed)}</span>
+              </div>
             </div>
 
-            {/* Punto 22: comisiones (%) — solo modo producto */}
+            {/* Catálogo de costos variables: se crean una vez y quedan disponibles siempre. */}
             {!isMargin && (
               <div className="space-y-2">
                 <div className="flex items-center justify-between">
-                  <Label className="text-sm">Comisiones (%)</Label>
+                  <Label className="text-sm">Costos variables y comisiones (%)</Label>
                   <Button
                     variant="outline"
                     size="sm"
-                    onClick={() => setCommissions((p) => [...p, { label: "", pct: "", base: "sin_iva", ivaRate: "21" }])}
+                    onClick={() => setVarForm({ ...emptyVariableCostForm })}
                     data-testid="button-add-commission"
                   >
-                    <Plus className="h-4 w-4 mr-1" /> Agregar
+                    <Plus className="h-4 w-4 mr-1" /> Nuevo
                   </Button>
                 </div>
-                {commissions.length === 0 && (
+                {variableCosts.length === 0 ? (
                   <p className="text-xs text-muted-foreground">
-                    Cargá comisiones en % (Mercado Pago, IIBB…) y elegí si aplican sobre el precio con o sin IVA. Reducen el margen de contribución.
+                    Todavía no creaste ninguno. Cargá los que te cobran por vender (Mercado Pago, IIBB, packaging…) y quedan
+                    disponibles para todos tus análisis.
                   </p>
+                ) : (
+                  <>
+                    <p className="text-xs text-muted-foreground">Tildá los que aplican a este producto.</p>
+                    <div className="rounded-md border divide-y">
+                      {variableCosts.map((v) => {
+                        const checked = selectedVarIds.includes(v.id);
+                        const base = (v.base as VariableCostBase) ?? "sin_iva";
+                        const pctN = parseFloat(String(v.pct)) || 0;
+                        const perUnit = variableCostAmount(
+                          { pct: pctN, base, ivaRate: v.ivaRate == null ? undefined : parseFloat(String(v.ivaRate)) || 0 },
+                          priceN,
+                          costN,
+                        );
+                        return (
+                          <div key={v.id} className="flex items-center gap-3 px-3 py-2">
+                            <Checkbox
+                              checked={checked}
+                              onCheckedChange={(c) =>
+                                setSelectedVarIds((p) => (c ? [...p, v.id] : p.filter((x) => x !== v.id)))
+                              }
+                              data-testid={`variable-cost-${v.id}`}
+                            />
+                            <div className="flex-1 min-w-0">
+                              <p className="text-sm truncate">{v.name}</p>
+                              <p className="text-xs text-muted-foreground truncate">
+                                {pctN.toFixed(2)}% · {VARIABLE_COST_BASE_LABELS[base]}
+                                {base === "con_iva" && v.ivaRate != null ? ` (IVA ${parseFloat(String(v.ivaRate)).toFixed(0)}%)` : ""}
+                              </p>
+                            </div>
+                            {checked && perUnit > 0 && (
+                              <span className="font-mono text-xs text-amber-600 whitespace-nowrap">− {formatCurrency(perUnit)}</span>
+                            )}
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              onClick={() =>
+                                setVarForm({
+                                  id: v.id,
+                                  name: v.name,
+                                  pct: String(pctN),
+                                  base,
+                                  ivaRate: v.ivaRate == null ? "21" : String(parseFloat(String(v.ivaRate)) || 0),
+                                })
+                              }
+                            >
+                              <Pencil className="h-4 w-4" />
+                            </Button>
+                            <Button variant="ghost" size="icon" onClick={() => deleteVariableCost.mutate(v.id)}>
+                              <Trash2 className="h-4 w-4 text-destructive" />
+                            </Button>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </>
                 )}
-                {commissions.map((c, i) => (
-                  <div key={i} className="grid grid-cols-[1fr_90px_1fr_90px_auto] items-center gap-2">
-                    <Input
-                      placeholder="Nombre (ej. Mercado Pago)"
-                      value={c.label}
-                      onChange={(e) => setCommissions((p) => p.map((x, j) => (j === i ? { ...x, label: e.target.value } : x)))}
-                    />
-                    <Input
-                      type="number"
-                      step="any"
-                      placeholder="%"
-                      value={c.pct}
-                      onChange={(e) => setCommissions((p) => p.map((x, j) => (j === i ? { ...x, pct: e.target.value } : x)))}
-                      data-testid={`commission-pct-${i}`}
-                    />
-                    <Combo
-                      options={COMMISSION_BASE_OPTIONS}
-                      value={c.base}
-                      onValueChange={(v) => setCommissions((p) => p.map((x, j) => (j === i ? { ...x, base: v as "con_iva" | "sin_iva" } : x)))}
-                      placeholder="Base"
-                      searchPlaceholder="Buscar…"
-                    />
-                    <Input
-                      type="number"
-                      step="any"
-                      placeholder="IVA %"
-                      value={c.ivaRate}
-                      disabled={c.base !== "con_iva"}
-                      title="Alícuota de IVA (solo si aplica sobre precio con IVA)"
-                      onChange={(e) => setCommissions((p) => p.map((x, j) => (j === i ? { ...x, ivaRate: e.target.value } : x)))}
-                    />
-                    <Button variant="ghost" size="icon" onClick={() => setCommissions((p) => p.filter((_, j) => j !== i))}>
-                      <Trash2 className="h-4 w-4 text-destructive" />
-                    </Button>
-                  </div>
-                ))}
               </div>
             )}
           </CardContent>
@@ -335,8 +442,8 @@ export default function BreakevenPage() {
             <CardTitle className="text-base flex items-center gap-2"><Target className="h-4 w-4" /> Resultado</CardTitle>
           </CardHeader>
           <CardContent className="space-y-2 text-sm">
-            {!isMargin && commissionPerUnit > 0 && (
-              <div className="flex justify-between"><span className="text-muted-foreground">Comisiones ($/u)</span><span className="font-mono text-amber-600">− {formatCurrency(commissionPerUnit)}</span></div>
+            {!isMargin && pe.variablePerUnit > 0 && (
+              <div className="flex justify-between"><span className="text-muted-foreground">Costos variables ($/u)</span><span className="font-mono text-amber-600">− {formatCurrency(pe.variablePerUnit)}</span></div>
             )}
             {!isMargin && (
               <div className="flex justify-between"><span className="text-muted-foreground">Margen contribución ($/u)</span><span className={`font-mono ${contribution <= 0 ? "text-red-600" : ""}`}>{formatCurrency(contribution)}</span></div>
@@ -352,7 +459,7 @@ export default function BreakevenPage() {
               <div className="flex justify-between border-t pt-2 font-bold"><span>PE (unidades)</span><span className="font-mono" data-testid="text-pe-units">{units == null ? "—" : units.toFixed(2)}</span></div>
             )}
             <div className={`flex justify-between font-bold ${isMargin ? "border-t pt-2" : ""}`}><span>PE (facturación)</span><span className="font-mono" data-testid="text-pe-revenue">{revenue == null ? "—" : formatCurrency(revenue)}</span></div>
-            {!valid && <p className="text-xs text-red-600">{isMargin ? "El margen debe estar entre 0 y 100%." : "El precio debe superar al costo variable."}</p>}
+            {!valid && <p className="text-xs text-red-600">{isMargin ? "El margen debe estar entre 0 y 100%." : "El precio debe superar al costo más los costos variables."}</p>}
             <Button className="w-full mt-2" onClick={() => saveMutation.mutate()} disabled={saveMutation.isPending || !valid} data-testid="button-save">
               <Save className="h-4 w-4 mr-2" /> {saveMutation.isPending ? "Guardando..." : "Guardar"}
             </Button>
@@ -360,7 +467,7 @@ export default function BreakevenPage() {
         </Card>
       </div>
 
-      {/* Punto 23: gráfico de punto de equilibrio (rectas Ingresos vs Costos) */}
+      {/* Gráfico de punto de equilibrio (rectas Ingresos vs Costos) */}
       {!isMargin && valid && chartData.length > 0 && units != null && (
         <Card>
           <CardHeader className="pb-3">
@@ -397,8 +504,8 @@ export default function BreakevenPage() {
                 </div>
                 <p className="text-xs text-muted-foreground">
                   Debajo del punto de cruce hay <span className="text-red-600 font-medium">pérdida</span>; por encima,
-                  <span className="text-green-600 font-medium"> ganancia</span>. La comisión y el costo variable ya están
-                  restados del margen.
+                  <span className="text-green-600 font-medium"> ganancia</span>. El costo del producto y los costos
+                  variables ya están restados del margen.
                 </p>
               </div>
             </div>
@@ -450,6 +557,84 @@ export default function BreakevenPage() {
         </CardContent>
       </Card>
 
+      {/* Alta/edición de un costo variable del catálogo */}
+      <Dialog open={varForm != null} onOpenChange={(open) => !open && setVarForm(null)}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>{varForm?.id == null ? "Nuevo costo variable" : "Editar costo variable"}</DialogTitle>
+          </DialogHeader>
+          {varForm && (
+            <div className="space-y-4">
+              <div className="space-y-1">
+                <Label className="text-xs">Nombre</Label>
+                <Input
+                  value={varForm.name}
+                  onChange={(e) => setVarForm({ ...varForm, name: e.target.value })}
+                  placeholder="Ej: Mercado Pago"
+                  data-testid="input-variable-name"
+                />
+              </div>
+              <div className="space-y-1 w-32">
+                <Label className="text-xs">Porcentaje</Label>
+                <Input
+                  type="number"
+                  step="any"
+                  value={varForm.pct}
+                  onChange={(e) => setVarForm({ ...varForm, pct: e.target.value })}
+                  placeholder="3,5"
+                  data-testid="input-variable-pct"
+                />
+              </div>
+              <div className="space-y-2">
+                <Label className="text-xs">Se aplica sobre</Label>
+                <RadioGroup
+                  value={varForm.base}
+                  onValueChange={(v) => setVarForm({ ...varForm, base: v as VariableCostBase })}
+                  className="space-y-1"
+                >
+                  {BASE_OPTIONS.map((b) => (
+                    <div key={b} className="flex items-center space-x-2">
+                      <RadioGroupItem value={b} id={`base-${b}`} data-testid={`radio-base-${b}`} />
+                      <Label htmlFor={`base-${b}`} className="font-normal cursor-pointer">{VARIABLE_COST_BASE_LABELS[b]}</Label>
+                    </div>
+                  ))}
+                </RadioGroup>
+              </div>
+              {varForm.base === "con_iva" && (
+                <div className="space-y-1 w-32">
+                  <Label className="text-xs">Alícuota de IVA (%)</Label>
+                  <Input
+                    type="number"
+                    step="any"
+                    value={varForm.ivaRate}
+                    onChange={(e) => setVarForm({ ...varForm, ivaRate: e.target.value })}
+                    data-testid="input-variable-iva"
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    El precio se carga sin IVA, así que hace falta para reconstruir el importe sobre el que cobran.
+                  </p>
+                </div>
+              )}
+              {varForm.id != null && (
+                <p className="text-xs text-muted-foreground">
+                  Los análisis ya guardados conservan el porcentaje con el que se calcularon.
+                </p>
+              )}
+            </div>
+          )}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setVarForm(null)}>Cancelar</Button>
+            <Button
+              onClick={() => varForm && saveVariableCost.mutate(varForm)}
+              disabled={saveVariableCost.isPending}
+              data-testid="button-save-variable"
+            >
+              {saveVariableCost.isPending ? "Guardando…" : "Guardar"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       <Dialog open={detailId != null} onOpenChange={(open) => !open && setDetailId(null)}>
         <DialogContent className="max-w-lg">
           <DialogHeader>
@@ -469,7 +654,7 @@ export default function BreakevenPage() {
                   <span className="font-mono">{formatCurrency(parseFloat(String(detail.analysis.salePriceNoIva)) || 0)}</span>
                 </div>
                 <div className="flex justify-between">
-                  <span className="text-muted-foreground">Costo variable (sin IVA)</span>
+                  <span className="text-muted-foreground">Costo (sin IVA)</span>
                   <span className="font-mono">{formatCurrency(parseFloat(String(detail.analysis.variableCostNoIva)) || 0)}</span>
                 </div>
                 <div className="flex justify-between">
@@ -495,15 +680,21 @@ export default function BreakevenPage() {
                   <p className="text-muted-foreground text-xs">Sin gastos fijos cargados.</p>
                 ) : (
                   <ul className="space-y-1">
-                    {detail.fixedCosts.map((f) => (
-                      <li key={f.id} className="flex justify-between">
-                        <span className="text-muted-foreground">
-                          {categoryName(f.transactionCategoryId) ?? f.label ?? "Sin categoría"}
-                          {categoryName(f.transactionCategoryId) && f.label ? ` — ${f.label}` : ""}
-                        </span>
-                        <span className="font-mono">{formatCurrency(parseFloat(String(f.amount)) || 0)}</span>
-                      </li>
-                    ))}
+                    {detail.fixedCosts.map((f) => {
+                      const imputation =
+                        groupName((f as any).financialGroupId) != null
+                          ? `${groupName((f as any).financialGroupId)} (grupo)`
+                          : categoryName(f.transactionCategoryId);
+                      return (
+                        <li key={f.id} className="flex justify-between">
+                          <span className="text-muted-foreground">
+                            {imputation ?? f.label ?? "Sin imputar"}
+                            {imputation && f.label ? ` — ${f.label}` : ""}
+                          </span>
+                          <span className="font-mono">{formatCurrency(parseFloat(String(f.amount)) || 0)}</span>
+                        </li>
+                      );
+                    })}
                   </ul>
                 )}
               </div>
@@ -511,13 +702,14 @@ export default function BreakevenPage() {
               {Array.isArray((detail.analysis as any).commissions) && (detail.analysis as any).commissions.length > 0 && (
                 <div>
                   <div className="flex items-center justify-between border-b pb-1 mb-2">
-                    <span className="font-medium">Comisiones consideradas</span>
+                    <span className="font-medium">Costos variables considerados</span>
                   </div>
                   <ul className="space-y-1">
                     {(detail.analysis as any).commissions.map((c: any, i: number) => (
                       <li key={i} className="flex justify-between">
                         <span className="text-muted-foreground">
-                          {c.label || "Comisión"} — {c.base === "con_iva" ? `sobre precio con IVA${c.ivaRate ? ` (${c.ivaRate}%)` : ""}` : "sobre precio sin IVA"}
+                          {c.label || "Costo variable"} — {VARIABLE_COST_BASE_LABELS[(c.base as VariableCostBase) ?? "sin_iva"]}
+                          {c.base === "con_iva" && c.ivaRate ? ` (IVA ${c.ivaRate}%)` : ""}
                         </span>
                         <span className="font-mono">{(parseFloat(String(c.pct)) || 0).toFixed(2)}%</span>
                       </li>

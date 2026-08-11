@@ -51,6 +51,7 @@ import {
   stockValuationItems,
   breakevenAnalyses,
   breakevenFixedCosts,
+  breakevenVariableCosts,
   cmvCalculations,
   dataliveVentas,
   fudoVentas,
@@ -166,6 +167,7 @@ import {
   type InsertStockValuationItem,
   type BreakevenAnalysis,
   type BreakevenFixedCost,
+  type BreakevenVariableCost,
   type CmvCalculation,
   type DataliveVenta,
   type FudoVenta,
@@ -204,6 +206,11 @@ import {
   type MerchandiseTransferItem,
   type InsertMerchandiseTransferItem,
 } from "@shared/schema";
+import {
+  computeBreakeven,
+  type AppliedVariableCost,
+  type VariableCostBase,
+} from "@shared/breakeven";
 
 /**
  * specialType canónicos de "Otros Movimientos" (ROADMAP_BETA Fase 1): categorías que
@@ -526,8 +533,26 @@ export interface IStorage {
     salePriceNoIva: number;
     variableCostNoIva: number;
     createdBy?: string | null;
-    fixedCosts: Array<{ transactionCategoryId?: number | null; label?: string | null; amount: number }>;
+    commissions?: AppliedVariableCost[];
+    fixedCosts: Array<{ transactionCategoryId?: number | null; financialGroupId?: number | null; label?: string | null; amount: number }>;
   }): Promise<BreakevenAnalysis>;
+
+  // Catálogo de costos variables en % del Punto de Equilibrio (ago-2026)
+  listBreakevenVariableCosts(clientId: number): Promise<BreakevenVariableCost[]>;
+  createBreakevenVariableCost(input: {
+    clientId: number;
+    name: string;
+    pct: number;
+    base: VariableCostBase;
+    ivaRate?: number | null;
+    createdBy?: string | null;
+  }): Promise<BreakevenVariableCost>;
+  updateBreakevenVariableCost(
+    clientId: number,
+    id: number,
+    patch: { name?: string; pct?: number; base?: VariableCostBase; ivaRate?: number | null; active?: boolean },
+  ): Promise<BreakevenVariableCost | undefined>;
+  deleteBreakevenVariableCost(clientId: number, id: number): Promise<boolean>;
 
   /** CMV = stock inicial + compras (CMC) − stock final; CMV% sobre venta (con o sin IVA según ivaIncluded). */
   computeCmv(clientId: number, opts: { localId?: number; stockInicialId: number; stockFinalId: number; dateFrom?: string; dateTo?: string; salesSource?: "extractos" | "datalive" | "fudo" | "shares"; ivaIncluded?: boolean }): Promise<{
@@ -4502,23 +4527,25 @@ export class DatabaseStorage implements IStorage {
     salePriceNoIva: number;
     variableCostNoIva: number;
     createdBy?: string | null;
-    commissions?: Array<{ label?: string | null; pct: number; base: "con_iva" | "sin_iva"; ivaRate?: number }>;
-    fixedCosts: Array<{ transactionCategoryId?: number | null; label?: string | null; amount: number }>;
+    commissions?: AppliedVariableCost[];
+    fixedCosts: Array<{ transactionCategoryId?: number | null; financialGroupId?: number | null; label?: string | null; amount: number }>;
   }): Promise<BreakevenAnalysis> {
     const price = Number(input.salePriceNoIva) || 0;
     const variable = Number(input.variableCostNoIva) || 0;
-    // Punto 22: comisiones (%). Sobre precio con o sin IVA. Reducen el margen de contribución.
+    // Costos variables en % (comisiones, IIBB, packaging…): reducen el margen de contribución.
+    // Se guarda una FOTO de los que se aplicaron; el catálogo puede cambiar después.
     const commissions = Array.isArray(input.commissions) ? input.commissions : [];
-    const commissionPerUnit = commissions.reduce((acc, c) => {
-      const pct = Number(c.pct) || 0;
-      const ivaRate = Number(c.ivaRate) || 0;
-      const base = c.base === "con_iva" ? price * (1 + ivaRate / 100) : price;
-      return acc + base * (pct / 100);
-    }, 0);
-    const contribution = price - variable - commissionPerUnit;
     const totalFixed = Math.round(input.fixedCosts.reduce((a, f) => a + (Number(f.amount) || 0), 0) * 100) / 100;
-    // PE en unidades = costos fijos / margen de contribución (si el margen es positivo).
-    const units = contribution > 0 ? Math.round((totalFixed / contribution) * 100) / 100 : 0;
+    const pe = computeBreakeven({
+      priceNoIva: price,
+      costNoIva: variable,
+      totalFixedCosts: totalFixed,
+      variableCosts: commissions,
+    });
+    const contribution = pe.contributionMargin;
+    // Sin margen positivo no hay PE; se persiste 0 para no romper las columnas numéricas, pero la
+    // ruta ya rechaza ese caso antes de llegar acá.
+    const units = pe.units != null ? Math.round(pe.units * 100) / 100 : 0;
     const revenue = Math.round(units * price * 100) / 100;
 
     const [created] = await db.insert(breakevenAnalyses).values({
@@ -4542,12 +4569,75 @@ export class DatabaseStorage implements IStorage {
         rows.map((f) => ({
           analysisId: created.id,
           transactionCategoryId: f.transactionCategoryId ?? null,
+          financialGroupId: f.financialGroupId ?? null,
           label: f.label ?? null,
           amount: String(Number(f.amount) || 0),
         })) as any,
       );
     }
     return created;
+  }
+
+  // ---- Catálogo de costos variables en % (Punto de Equilibrio) ----
+  // Se crean una vez y quedan disponibles para todos los análisis del cliente.
+
+  async listBreakevenVariableCosts(clientId: number): Promise<BreakevenVariableCost[]> {
+    return db.select().from(breakevenVariableCosts)
+      .where(eq(breakevenVariableCosts.clientId, clientId))
+      .orderBy(breakevenVariableCosts.name);
+  }
+
+  async createBreakevenVariableCost(input: {
+    clientId: number;
+    name: string;
+    pct: number;
+    base: VariableCostBase;
+    ivaRate?: number | null;
+    createdBy?: string | null;
+  }): Promise<BreakevenVariableCost> {
+    const [created] = await db.insert(breakevenVariableCosts).values({
+      clientId: input.clientId,
+      name: input.name.trim(),
+      pct: String(Number(input.pct) || 0),
+      base: input.base,
+      // La alícuota solo tiene sentido cuando el % pega sobre el precio con IVA.
+      ivaRate: input.base === "con_iva" ? String(Number(input.ivaRate) || 0) : null,
+      active: true,
+      createdBy: input.createdBy ?? null,
+    } as any).returning();
+    return created;
+  }
+
+  async updateBreakevenVariableCost(
+    clientId: number,
+    id: number,
+    patch: { name?: string; pct?: number; base?: VariableCostBase; ivaRate?: number | null; active?: boolean },
+  ): Promise<BreakevenVariableCost | undefined> {
+    const values: Record<string, unknown> = {};
+    if (patch.name !== undefined) values.name = patch.name.trim();
+    if (patch.pct !== undefined) values.pct = String(Number(patch.pct) || 0);
+    if (patch.base !== undefined) values.base = patch.base;
+    if (patch.active !== undefined) values.active = patch.active;
+    // Si deja de aplicar sobre el precio con IVA, la alícuota vieja quedaría colgada.
+    if (patch.base !== undefined && patch.base !== "con_iva") values.ivaRate = null;
+    else if (patch.ivaRate !== undefined) values.ivaRate = patch.ivaRate == null ? null : String(Number(patch.ivaRate) || 0);
+    if (Object.keys(values).length === 0) {
+      const [current] = await db.select().from(breakevenVariableCosts)
+        .where(and(eq(breakevenVariableCosts.id, id), eq(breakevenVariableCosts.clientId, clientId)));
+      return current;
+    }
+    const [updated] = await db.update(breakevenVariableCosts)
+      .set(values as any)
+      .where(and(eq(breakevenVariableCosts.id, id), eq(breakevenVariableCosts.clientId, clientId)))
+      .returning();
+    return updated;
+  }
+
+  async deleteBreakevenVariableCost(clientId: number, id: number): Promise<boolean> {
+    const deleted = await db.delete(breakevenVariableCosts)
+      .where(and(eq(breakevenVariableCosts.id, id), eq(breakevenVariableCosts.clientId, clientId)))
+      .returning();
+    return deleted.length > 0;
   }
 
   async computeCmv(

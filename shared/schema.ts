@@ -1206,7 +1206,14 @@ export const breakevenAnalyses = pgTable("breakeven_analyses", {
   totalFixedCosts: decimal("total_fixed_costs", { precision: 14, scale: 2 }).default("0"),
   breakevenUnits: decimal("breakeven_units", { precision: 14, scale: 2 }).default("0"),
   breakevenRevenue: decimal("breakeven_revenue", { precision: 14, scale: 2 }).default("0"),
-  // Punto 22: comisiones (%). Array de { label, pct, base: "con_iva"|"sin_iva", ivaRate }.
+  /**
+   * Costos variables en % aplicados a la unidad. Array de { label, pct, base, ivaRate }.
+   * base: "costo" (sobre el costo del producto) | "sin_iva" (sobre el precio sin IVA) |
+   * "con_iva" (sobre el precio con IVA, usando ivaRate).
+   * Es una FOTO: se copia del catálogo (breakeven_variable_costs) al calcular y no se vuelve a
+   * leer. Editar el catálogo no reescribe análisis viejos. Los registros previos a ago-2026 solo
+   * tienen "con_iva"/"sin_iva" y se siguen leyendo igual.
+   */
   commissions: jsonb("commissions"),
   createdBy: varchar("created_by").references(() => users.id),
   createdAt: timestamp("created_at").defaultNow(),
@@ -1220,6 +1227,12 @@ export const breakevenFixedCosts = pgTable("breakeven_fixed_costs", {
   id: serial("id").primaryKey(),
   analysisId: integer("analysis_id").notNull().references(() => breakevenAnalyses.id, { onDelete: "cascade" }),
   transactionCategoryId: integer("transaction_category_id").references(() => transactionCategories.id),
+  /**
+   * Un gasto fijo se imputa a una CATEGORÍA o a un GRUPO financiero entero (ago-2026), nunca a los
+   * dos: el grupo sirve para cargar de un saque algo que en el balance está abierto en categorías
+   * (ej. "Sueldos"). El importe siempre lo escribe el usuario; no se lee de las transacciones.
+   */
+  financialGroupId: integer("financial_group_id").references(() => financialGroups.id),
   label: varchar("label", { length: 255 }),
   amount: decimal("amount", { precision: 14, scale: 2 }).notNull(),
 });
@@ -1227,6 +1240,30 @@ export const breakevenFixedCosts = pgTable("breakeven_fixed_costs", {
 export const insertBreakevenFixedCostSchema = createInsertSchema(breakevenFixedCosts).omit({ id: true });
 export type InsertBreakevenFixedCost = z.infer<typeof insertBreakevenFixedCostSchema>;
 export type BreakevenFixedCost = typeof breakevenFixedCosts.$inferSelect;
+
+/**
+ * Catálogo de costos variables en % por cliente (ago-2026). Se crean una vez (comisión de Mercado
+ * Pago, IIBB, packaging…) y quedan disponibles para todos los análisis: en cada punto de equilibrio
+ * se tildan los que aplican. Al calcular se copia una FOTO en breakeven_analyses.commissions, así
+ * que cambiar un % acá no altera lo ya calculado.
+ */
+export const breakevenVariableCosts = pgTable("breakeven_variable_costs", {
+  id: serial("id").primaryKey(),
+  clientId: integer("client_id").notNull().references(() => clients.id, { onDelete: "cascade" }),
+  name: varchar("name", { length: 255 }).notNull(),
+  pct: decimal("pct", { precision: 8, scale: 4 }).notNull(),
+  /** "costo" | "sin_iva" | "con_iva" — sobre qué importe se aplica el %. */
+  base: varchar("base", { length: 20 }).notNull().default("sin_iva"),
+  /** Alícuota de IVA usada para reconstruir el precio con IVA. Solo aplica si base = "con_iva". */
+  ivaRate: decimal("iva_rate", { precision: 5, scale: 2 }).default("21"),
+  active: boolean("active").default(true),
+  createdBy: varchar("created_by").references(() => users.id),
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
+export const insertBreakevenVariableCostSchema = createInsertSchema(breakevenVariableCosts).omit({ id: true, createdAt: true });
+export type InsertBreakevenVariableCost = z.infer<typeof insertBreakevenVariableCostSchema>;
+export type BreakevenVariableCost = typeof breakevenVariableCosts.$inferSelect;
 
 // ==========================================
 // CMV CALCULATIONS (Registros de Costo de Mercadería Vendida - Fase 7)

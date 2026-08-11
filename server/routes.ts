@@ -26,6 +26,7 @@ import type {
 } from "@shared/schema";
 import { computeInvoiceTaxes } from "@shared/invoiceTaxComputation";
 import { isEconomicMonth } from "@shared/economicMonth";
+import { computeBreakeven } from "@shared/breakeven";
 import { registerBulkInvoiceImportRoutes } from "./routesBulkInvoiceImport";
 import { db } from "./db";
 import { users, userCredentials, clients } from "@shared/schema";
@@ -3918,27 +3919,31 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         recipeId: z.coerce.number().int().positive().nullable().optional(),
         salePriceNoIva: z.coerce.number(),
         variableCostNoIva: z.coerce.number(),
+        // Foto de los costos variables aplicados. "costo" se sumó en ago-2026; los análisis viejos
+        // solo tienen con_iva/sin_iva.
         commissions: z.array(z.object({
           label: z.string().optional().nullable(),
           pct: z.coerce.number(),
-          base: z.enum(["con_iva", "sin_iva"]),
+          base: z.enum(["costo", "con_iva", "sin_iva"]),
           ivaRate: z.coerce.number().optional(),
         })).optional().default([]),
         fixedCosts: z.array(z.object({
           transactionCategoryId: z.coerce.number().int().positive().nullable().optional(),
+          financialGroupId: z.coerce.number().int().positive().nullable().optional(),
           label: z.string().optional().nullable(),
           amount: z.coerce.number(),
         })).default([]),
       });
       const parsed = bodySchema.safeParse(req.body);
       if (!parsed.success) return res.status(400).json({ message: "Datos inválidos", errors: parsed.error.flatten() });
-      const price = parsed.data.salePriceNoIva;
-      const commPerUnit = parsed.data.commissions.reduce((acc, c) => {
-        const base = c.base === "con_iva" ? price * (1 + (c.ivaRate ?? 0) / 100) : price;
-        return acc + base * (c.pct / 100);
-      }, 0);
-      if (price - parsed.data.variableCostNoIva - commPerUnit <= 0) {
-        return res.status(400).json({ message: "El margen de contribución (precio − costo variable − comisiones) debe ser positivo." });
+      const { contributionMargin } = computeBreakeven({
+        priceNoIva: parsed.data.salePriceNoIva,
+        costNoIva: parsed.data.variableCostNoIva,
+        totalFixedCosts: 0,
+        variableCosts: parsed.data.commissions,
+      });
+      if (contributionMargin <= 0) {
+        return res.status(400).json({ message: "El margen de contribución (precio − costo − costos variables) debe ser positivo." });
       }
       const created = await storage.createBreakevenAnalysis({
         clientId,
@@ -3952,6 +3957,71 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         fixedCosts: parsed.data.fixedCosts,
       });
       res.json(created);
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
+  // Catálogo de costos variables en % (ago-2026): se crean una vez y quedan disponibles para
+  // siempre. Los análisis guardan una foto, así que editar o borrar acá no reescribe la historia.
+  app.get("/api/finance/breakeven-variable-costs", isAuthenticated, requirePermission("breakeven.view", "view"), async (req, res) => {
+    try {
+      const { clientId } = (req as any).rbac;
+      res.json(await storage.listBreakevenVariableCosts(clientId));
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
+  const variableCostBodySchema = z.object({
+    name: z.string().min(1, "El nombre es requerido"),
+    pct: z.coerce.number().gt(0, "El porcentaje debe ser mayor a 0").lte(100, "El porcentaje no puede superar 100"),
+    base: z.enum(["costo", "con_iva", "sin_iva"]),
+    ivaRate: z.coerce.number().min(0).max(100).optional(),
+  });
+
+  app.post("/api/finance/breakeven-variable-costs", isAuthenticated, requirePermission("breakeven.create", "create"), async (req, res) => {
+    try {
+      const { clientId, actorId } = (req as any).rbac;
+      const parsed = variableCostBodySchema.safeParse(req.body);
+      if (!parsed.success) return res.status(400).json({ message: "Datos inválidos", errors: parsed.error.flatten() });
+      const created = await storage.createBreakevenVariableCost({
+        clientId,
+        name: parsed.data.name,
+        pct: parsed.data.pct,
+        base: parsed.data.base,
+        ivaRate: parsed.data.base === "con_iva" ? parsed.data.ivaRate ?? 21 : null,
+        createdBy: actorId,
+      });
+      res.json(created);
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
+  app.patch("/api/finance/breakeven-variable-costs/:id", isAuthenticated, requirePermission("breakeven.create", "create"), async (req, res) => {
+    try {
+      const { clientId } = (req as any).rbac;
+      const id = parseInt(req.params.id, 10);
+      if (!Number.isFinite(id)) return res.status(400).json({ message: "ID inválido" });
+      const parsed = variableCostBodySchema.partial().extend({ active: z.boolean().optional() }).safeParse(req.body);
+      if (!parsed.success) return res.status(400).json({ message: "Datos inválidos", errors: parsed.error.flatten() });
+      const updated = await storage.updateBreakevenVariableCost(clientId, id, parsed.data);
+      if (!updated) return res.status(404).json({ message: "Costo variable no encontrado" });
+      res.json(updated);
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
+  app.delete("/api/finance/breakeven-variable-costs/:id", isAuthenticated, requirePermission("breakeven.create", "create"), async (req, res) => {
+    try {
+      const { clientId } = (req as any).rbac;
+      const id = parseInt(req.params.id, 10);
+      if (!Number.isFinite(id)) return res.status(400).json({ message: "ID inválido" });
+      const ok = await storage.deleteBreakevenVariableCost(clientId, id);
+      if (!ok) return res.status(404).json({ message: "Costo variable no encontrado" });
+      res.json({ ok: true });
     } catch (e: any) {
       res.status(500).json({ message: e.message });
     }
