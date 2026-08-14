@@ -12,6 +12,15 @@ import { Input } from "@/components/ui/input";
 import { DataEntryCombobox } from "@/components/data-entry-combobox";
 import { Switch } from "@/components/ui/switch";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { recipeRemovesIva, RECIPE_IVA_RATE } from "@shared/recipePricing";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { formatCurrency, formatPercentage, formatDate } from "@/lib/formatters";
@@ -67,6 +76,8 @@ export default function RecipesPage() {
   const [filterCategoryId, setFilterCategoryId] = useState<string>("__all__");
   const [filterSubcategoryId, setFilterSubcategoryId] = useState<string>("__all__");
   const [filterActive, setFilterActive] = useState<string>("__all__");
+  const [ivaPolicyOpen, setIvaPolicyOpen] = useState(false);
+  const [ivaPolicyValue, setIvaPolicyValue] = useState(true);
 
   const { data: recipes = [], isLoading } = useQuery<RecipeWithRelations[]>({
     queryKey: ["/api/recipes"],
@@ -100,6 +111,12 @@ export default function RecipesPage() {
   });
 
   const platos = recipes.filter(r => r.recipeType !== 'sub');
+
+  /** Cómo está hoy repartida la regla de IVA, para mostrarla antes de aplicar una nueva. */
+  const ivaPolicyCounts = useMemo(() => {
+    const sinIva = platos.filter((r) => recipeRemovesIva(r as any)).length;
+    return { sinIva, conIva: platos.length - sinIva };
+  }, [platos]);
 
   const subcategoryFilterOptions = useMemo(() => {
     if (filterCategoryId === "__all__") {
@@ -202,6 +219,29 @@ export default function RecipesPage() {
     },
   });
 
+  /**
+   * Aplica de un saque a todos los platos si al precio de venta se le quita el IVA. El precio
+   * cobrado no cambia: se recalculan CMV, margen y markup contra el precio que corresponda.
+   */
+  const ivaPolicyMutation = useMutation({
+    mutationFn: async (removeIvaFromPrice: boolean) => {
+      const res = await apiRequest("PATCH", "/api/recipes/iva-policy", { removeIvaFromPrice });
+      return res.json() as Promise<{ updated: number }>;
+    },
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/recipes"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/recipes/stats"] });
+      setIvaPolicyOpen(false);
+      toast({
+        title: "Regla de IVA aplicada",
+        description: `${data?.updated ?? 0} recetas recalculadas.`,
+      });
+    },
+    onError: (error: Error) => {
+      toast({ title: "No se pudo aplicar", description: error.message, variant: "destructive" });
+    },
+  });
+
   const deleteMutation = useMutation({
     mutationFn: async (id: number) => {
       await apiRequest("DELETE", `/api/recipes/${id}`);
@@ -298,10 +338,15 @@ export default function RecipesPage() {
       cell: (row) => (
         <div className="text-sm">
           <div className="font-mono">{formatCurrency(row.salePrice)}</div>
-          {row.salePriceWithTax && (
-            <div className="text-xs text-muted-foreground font-mono">
-              c/IVA: {formatCurrency(row.salePriceWithTax)}
-            </div>
+          {/* Sin quitar IVA los dos precios son el mismo: se aclara en vez de repetirlo. */}
+          {recipeRemovesIva(row as any) ? (
+            row.salePriceWithTax ? (
+              <div className="text-xs text-muted-foreground font-mono">
+                c/IVA: {formatCurrency(row.salePriceWithTax)}
+              </div>
+            ) : null
+          ) : (
+            <div className="text-xs text-muted-foreground">con IVA (no se descuenta)</div>
           )}
         </div>
       ),
@@ -435,6 +480,18 @@ export default function RecipesPage() {
                 Sub-Recetas ({stats?.totalSubRecipes || 0})
               </Button>
             </Link>
+            <Button
+              variant="outline"
+              onClick={() => {
+                // Arranca en la opción que hoy tiene la mayoría, que es la que se suele querer mantener.
+                setIvaPolicyValue(ivaPolicyCounts.conIva > ivaPolicyCounts.sinIva ? false : true);
+                setIvaPolicyOpen(true);
+              }}
+              data-testid="button-iva-policy"
+            >
+              <Percent className="h-4 w-4 mr-2" />
+              IVA del precio
+            </Button>
             <CartaExportDialog rows={platosForTable} kpis={dashboardKpis} filtersLabel={exportFiltersLabel} />
             <Button onClick={() => navigate("/recetas/nueva")} data-testid="button-new-recipe">
               <Plus className="h-4 w-4 mr-2" />
@@ -619,6 +676,65 @@ export default function RecipesPage() {
         onConfirm={() => deleteRecipe && deleteMutation.mutate(deleteRecipe.id)}
         isLoading={deleteMutation.isPending}
       />
+
+      {/* Regla de IVA para TODAS las recetas de un saque (cada receta igual puede tener la suya). */}
+      <Dialog open={ivaPolicyOpen} onOpenChange={setIvaPolicyOpen}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>IVA del precio de venta</DialogTitle>
+            <DialogDescription>
+              Define contra qué precio se costea. El precio cargado no se toca: solo cambia si se le
+              descuenta el IVA antes de calcular CMV, margen y markup.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3">
+            <div className="flex gap-1 rounded-md border p-1 w-fit">
+              <Button
+                size="sm"
+                variant={ivaPolicyValue ? "default" : "ghost"}
+                onClick={() => setIvaPolicyValue(true)}
+                data-testid="button-iva-policy-si"
+              >
+                Sí, quitar IVA
+              </Button>
+              <Button
+                size="sm"
+                variant={!ivaPolicyValue ? "default" : "ghost"}
+                onClick={() => setIvaPolicyValue(false)}
+                data-testid="button-iva-policy-no"
+              >
+                No quitar IVA
+              </Button>
+            </div>
+            <p className="text-sm text-muted-foreground">
+              {ivaPolicyValue
+                ? `Se le descuenta el ${RECIPE_IVA_RATE}%: CMV = costo sin IVA / precio SIN IVA.`
+                : "El precio queda tal como se cobra: CMV = costo sin IVA / precio CON IVA."}
+            </p>
+            <div className="rounded-md border p-3 text-sm">
+              <p className="font-medium mb-1">Hoy tenés</p>
+              <p className="text-muted-foreground">
+                {ivaPolicyCounts.sinIva} receta{ivaPolicyCounts.sinIva === 1 ? "" : "s"} con el IVA
+                descontado y {ivaPolicyCounts.conIva} sin descontarlo.
+              </p>
+              <p className="text-muted-foreground mt-1">
+                Al aplicar, las {platos.length} recetas quedan con la misma regla y se recalculan sus
+                porcentajes.
+              </p>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setIvaPolicyOpen(false)}>Cancelar</Button>
+            <Button
+              onClick={() => ivaPolicyMutation.mutate(ivaPolicyValue)}
+              disabled={ivaPolicyMutation.isPending}
+              data-testid="button-iva-policy-apply"
+            >
+              {ivaPolicyMutation.isPending ? "Aplicando…" : "Aplicar a todas"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

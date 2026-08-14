@@ -1917,6 +1917,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         "Costo MP $ (sin IVA)": parseFloat(String(r.totalCost) || "0").toFixed(2),
         "Precio Venta $ (sin IVA)": parseFloat(String(r.salePrice) || "0").toFixed(2),
         "Precio Venta $ (con IVA)": parseFloat(String(r.salePriceWithTax) || "0").toFixed(2),
+        "Se le quita el IVA": (r as any).removeIvaFromPrice === false ? "No" : "Si",
         "CMV %": `${parseFloat(String(r.cmvPercentage) || "0").toFixed(2)}%`,
         "Margen $": parseFloat(String(r.margin) || "0").toFixed(2),
         "Margen %": `${parseFloat(String(r.marginPercentage) || "0").toFixed(2)}%`,
@@ -1983,6 +1984,23 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const { ingredients, ...recipe } = req.body;
       const data = await storage.createRecipe({ ...recipe, clientId }, ingredients || []);
       res.json(data);
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
+  /**
+   * Aplica a TODOS los platos si al precio de venta se le quita el IVA (ago-2026). El precio
+   * cobrado no se toca: solo cambia contra qué se miden CMV, margen y markup, y se reescriben esas
+   * métricas. Va antes de "/api/recipes/:id" para que "iva-policy" no se lea como un id.
+   */
+  app.patch("/api/recipes/iva-policy", isAuthenticated, async (req, res) => {
+    try {
+      const clientId = await getClientId(req);
+      const parsed = z.object({ removeIvaFromPrice: z.boolean() }).safeParse(req.body);
+      if (!parsed.success) return res.status(400).json({ message: "Datos inválidos" });
+      const updated = await storage.setRecipesIvaPolicy(clientId, parsed.data.removeIvaFromPrice);
+      res.json({ updated });
     } catch (e: any) {
       res.status(500).json({ message: e.message });
     }

@@ -27,6 +27,7 @@ import { apiRequest, queryClient } from "@/lib/queryClient";
 import { formatCurrency, formatPercentage, formatNumber } from "@/lib/formatters";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Plus, Trash2, TrendingUp, DollarSign, Percent, Package, ChefHat, Upload, Check, ChevronsUpDown } from "lucide-react";
+import { computeRecipeMetrics, RECIPE_IVA_RATE } from "@shared/recipePricing";
 import type { RecipeCategory, RecipeSubcategory, Supply, UnitOfMeasure, Recipe } from "@shared/schema";
 
 interface SupplyWithUnit extends Supply {
@@ -82,6 +83,8 @@ const formSchema = z.object({
   description: z.string().optional(),
   preparationSteps: z.string().optional(),
   salePriceWithTax: z.coerce.number().min(0).default(0),
+  /** Si al precio de venta se le quita el IVA para costear. true = comportamiento histórico. */
+  removeIvaFromPrice: z.boolean().default(true),
   cmvIdeal: z.coerce.number().min(0).max(100).optional(),
   usefulYield: z.coerce.number().optional(),
   yieldUnit: z.string().optional(),
@@ -198,6 +201,7 @@ export default function RecipeFormPage() {
       description: "",
       preparationSteps: "",
       salePriceWithTax: 0,
+      removeIvaFromPrice: true,
       cmvIdeal: undefined,
       usefulYield: undefined,
       yieldUnit: "",
@@ -233,6 +237,8 @@ export default function RecipeFormPage() {
         description: existingRecipe.description || "",
         preparationSteps: existingRecipe.preparationSteps || "",
         salePriceWithTax: salePriceWithTaxHydrated,
+        // Las recetas anteriores a ago-2026 no tienen el campo: se leen como "sí se le quita".
+        removeIvaFromPrice: (existingRecipe as any).removeIvaFromPrice !== false,
         cmvIdeal: existingRecipe.cmvIdeal ? parseFloat(String(existingRecipe.cmvIdeal)) : undefined,
         usefulYield: existingRecipe.usefulYield ? parseFloat(String(existingRecipe.usefulYield)) : undefined,
         yieldUnit: existingRecipe.yieldUnit || "",
@@ -266,6 +272,11 @@ export default function RecipeFormPage() {
     control: form.control,
     name: "salePriceWithTax",
   });
+  const watchRemoveIva = useWatch({
+    control: form.control,
+    name: "removeIvaFromPrice",
+  });
+  const removeIva = watchRemoveIva !== false;
   const watchCmvIdeal = useWatch({
     control: form.control,
     name: "cmvIdeal",
@@ -361,28 +372,21 @@ export default function RecipeFormPage() {
       salePriceWithTax = inferredFromSinIva;
     }
 
-    const salePrice = salePriceWithTax / 1.21;
-    const cmvPercentage = salePrice > 0 ? (totalCost / salePrice) * 100 : 0;
-    const margin = salePrice - totalCost;
-    const marginPercentage = salePrice > 0 ? (margin / salePrice) * 100 : 0;
-    const markup = totalCost > 0 ? ((salePrice - totalCost) / totalCost) * 100 : 0;
+    // El precio de referencia sale del precio cobrado: con el IVA quitado o tal cual, según la receta.
+    const metrics = computeRecipeMetrics({ grossPrice: salePriceWithTax, totalCost, removeIva });
     const cmvIdeal = watchCmvIdeal || 0;
-    const cmvDiff = cmvIdeal > 0 ? cmvPercentage - cmvIdeal : 0;
+    const cmvDiff = cmvIdeal > 0 ? metrics.cmvPercentage - cmvIdeal : 0;
 
     return {
       totalCost,
-      salePrice,
-      salePriceWithTax,
-      cmvPercentage,
-      margin,
-      marginPercentage,
-      markup,
+      ...metrics,
       cmvIdeal,
       cmvDiff,
     };
   }, [
     watchIngredients,
     watchSalePriceWithTax,
+    removeIva,
     watchCmvIdeal,
     supplies,
     allSubRecipesRaw,
@@ -434,7 +438,12 @@ export default function RecipeFormPage() {
 
   const createMutation = useMutation({
     mutationFn: async (data: FormData) => {
-      const salePrice = (data.salePriceWithTax || 0) / 1.21;
+      // Precio de referencia del costeo: se le quita el IVA o se usa tal cual, según la receta.
+      const { salePrice } = computeRecipeMetrics({
+        grossPrice: data.salePriceWithTax || 0,
+        totalCost: calculations.totalCost,
+        removeIva: data.removeIvaFromPrice !== false,
+      });
       const totalCost = calculations.totalCost;
       const ingredients = data.ingredients
         .filter(ing => {
@@ -482,6 +491,7 @@ export default function RecipeFormPage() {
         preparationSteps: data.preparationSteps,
         salePrice: isSubRecipe ? 0 : salePrice,
         salePriceWithTax: isSubRecipe ? 0 : data.salePriceWithTax,
+        removeIvaFromPrice: isSubRecipe ? true : data.removeIvaFromPrice !== false,
         cmvIdeal: data.cmvIdeal,
         usefulYield: data.usefulYield,
         yieldUnit: data.yieldUnit,
@@ -657,7 +667,7 @@ export default function RecipeFormPage() {
                         name="salePriceWithTax"
                         render={({ field }) => (
                           <FormItem>
-                            <FormLabel>Precio de Venta (CON IVA) *</FormLabel>
+                            <FormLabel>{removeIva ? "Precio de Venta (CON IVA) *" : "Precio de Venta *"}</FormLabel>
                             <FormControl>
                               <Input
                                 type="number"
@@ -680,7 +690,9 @@ export default function RecipeFormPage() {
                               />
                             </FormControl>
                             <p className="text-xs text-muted-foreground font-mono">
-                              Sin IVA: {formatCurrency(calculations.salePrice)}
+                              {removeIva
+                                ? `Sin IVA: ${formatCurrency(calculations.salePrice)}`
+                                : `Se costea sobre ${formatCurrency(calculations.salePrice)} (sin quitar IVA)`}
                             </p>
                             <FormMessage />
                           </FormItem>
@@ -709,6 +721,45 @@ export default function RecipeFormPage() {
                         )}
                       />
                     </div>
+                  )}
+
+                  {/* Contra qué precio se costea: con el IVA quitado o tal como se cobra. */}
+                  {!isSubRecipe && (
+                    <FormField
+                      control={form.control}
+                      name="removeIvaFromPrice"
+                      render={({ field }) => (
+                        <FormItem className="rounded-lg border p-3">
+                          <FormLabel>¿Al precio de venta se le quita el IVA?</FormLabel>
+                          <div className="flex gap-1 rounded-md border p-1 w-fit mt-1">
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant={field.value !== false ? "default" : "ghost"}
+                              onClick={() => field.onChange(true)}
+                              data-testid="button-remove-iva-si"
+                            >
+                              Sí
+                            </Button>
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant={field.value === false ? "default" : "ghost"}
+                              onClick={() => field.onChange(false)}
+                              data-testid="button-remove-iva-no"
+                            >
+                              No
+                            </Button>
+                          </div>
+                          <p className="text-xs text-muted-foreground mt-2">
+                            {field.value !== false
+                              ? `Sí: se le descuenta el ${RECIPE_IVA_RATE}% y el CMV sale costo sin IVA / precio SIN IVA.`
+                              : "No: el precio se usa tal como se cobra y el CMV sale costo sin IVA / precio CON IVA."}
+                          </p>
+                          <FormMessage />
+                        </FormItem>
+                      )}
+                    />
                   )}
 
                   <div className="flex items-center gap-4">
@@ -1156,22 +1207,24 @@ export default function RecipeFormPage() {
                         <div className="flex justify-between items-center p-3 rounded-lg bg-muted/50">
                           <div className="flex items-center gap-2 text-sm">
                             <DollarSign className="h-4 w-4 text-muted-foreground" />
-                            Precio Venta (sin IVA)
+                            {removeIva ? "Precio Venta (sin IVA)" : "Precio Venta (con IVA)"}
                           </div>
                           <span className="font-mono font-medium">
                             {formatCurrency(calculations.salePrice)}
                           </span>
                         </div>
 
-                        <div className="flex justify-between items-center p-3 rounded-lg bg-muted/50">
-                          <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                            <DollarSign className="h-4 w-4" />
-                            Precio c/IVA (21%)
+                        {removeIva && (
+                          <div className="flex justify-between items-center p-3 rounded-lg bg-muted/50">
+                            <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                              <DollarSign className="h-4 w-4" />
+                              Precio c/IVA ({RECIPE_IVA_RATE}%)
+                            </div>
+                            <span className="font-mono text-muted-foreground">
+                              {formatCurrency(calculations.salePriceWithTax)}
+                            </span>
                           </div>
-                          <span className="font-mono text-muted-foreground">
-                            {formatCurrency(calculations.salePriceWithTax)}
-                          </span>
-                        </div>
+                        )}
                       </>
                     )}
                   </div>
@@ -1267,10 +1320,21 @@ export default function RecipeFormPage() {
                     <ul className="space-y-1">
                       {!isSubRecipe && (
                         <>
-                          <li>Precio sin IVA = Precio c/IVA / 1.21</li>
-                          <li>CMV% = (Costo MP / Precio sin IVA) x 100</li>
-                          <li>Margen $ = Precio sin IVA - Costo MP</li>
-                          <li>Margen % = Margen / Precio sin IVA x 100</li>
+                          {removeIva ? (
+                            <>
+                              <li>Precio sin IVA = Precio c/IVA / {(1 + RECIPE_IVA_RATE / 100).toFixed(2)}</li>
+                              <li>CMV% = (Costo MP / Precio sin IVA) x 100</li>
+                              <li>Margen $ = Precio sin IVA - Costo MP</li>
+                              <li>Margen % = Margen / Precio sin IVA x 100</li>
+                            </>
+                          ) : (
+                            <>
+                              <li>Al precio de venta no se le quita el IVA</li>
+                              <li>CMV% = (Costo MP / Precio con IVA) x 100</li>
+                              <li>Margen $ = Precio con IVA - Costo MP</li>
+                              <li>Margen % = Margen / Precio con IVA x 100</li>
+                            </>
+                          )}
                           <li>Mark Up = ((PV - Costo) / Costo) x 100</li>
                         </>
                       )}

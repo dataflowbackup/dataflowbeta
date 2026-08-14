@@ -1,5 +1,6 @@
 import { formatInvoiceVoucherDisplay } from "@shared/invoiceDisplay";
 import { resolveEconomicMonth } from "@shared/economicMonth";
+import { computeRecipeMetrics, recipeGrossPrice, recipeRemovesIva } from "@shared/recipePricing";
 import { db } from "./db";
 import { eq, and, desc, asc, gte, lte, sql, isNull, isNotNull, inArray, or, lt } from "drizzle-orm";
 import {
@@ -340,6 +341,8 @@ export interface IStorage {
   getRecipeIngredients(recipeId: number): Promise<RecipeIngredient[]>;
   createRecipe(recipe: InsertRecipe, ingredients: InsertRecipeIngredient[]): Promise<Recipe>;
   updateRecipe(clientId: number, id: number, recipe: Partial<InsertRecipe>, ingredients?: InsertRecipeIngredient[]): Promise<Recipe | undefined>;
+  /** Aplica a todos los platos si al precio de venta se le quita el IVA. Devuelve cuántos actualizó. */
+  setRecipesIvaPolicy(clientId: number, removeIva: boolean): Promise<number>;
   deleteRecipe(clientId: number, id: number): Promise<boolean>;
   
   getCostHistory(clientId: number): Promise<CostHistory[]>;
@@ -982,23 +985,27 @@ export class DatabaseStorage implements IStorage {
       const usefulYield = parseFloat(String(recipe.usefulYield ?? 0)) || 0;
 
       if (recipe.recipeType === "plato") {
-        const salePriceWithTax = parseFloat(String(recipe.salePriceWithTax ?? 0)) || 0;
-        const salePrice = salePriceWithTax > 0 ? salePriceWithTax / 1.21 : (parseFloat(String(recipe.salePrice ?? 0)) || 0);
+        // El precio de referencia depende de la receta: con IVA quitado o tal como se cobra.
+        const metrics = computeRecipeMetrics({
+          grossPrice: recipeGrossPrice(recipe),
+          totalCost: newTotalCost,
+          removeIva: recipeRemovesIva(recipe as any),
+        });
 
-        const cmvPercentageRaw = salePrice > 0 ? (newTotalCost / salePrice) * 100 : 0;
-        const marginRaw = salePrice - newTotalCost;
-        const marginPercentageRaw = salePrice > 0 ? (marginRaw / salePrice) * 100 : 0;
-        const markupRaw = newTotalCost > 0 ? (marginRaw / newTotalCost) * 100 : 0;
-
-        const cmvPercentage = clamp(toFinite(cmvPercentageRaw), -999.99, 999.99);
-        const margin = clamp(toFinite(marginRaw), -9999999999.99, 9999999999.99);
-        const marginPercentage = clamp(toFinite(marginPercentageRaw), -999.99, 999.99);
-        const markup = clamp(toFinite(markupRaw), -999.99, 999.99);
+        const cmvPercentage = clamp(toFinite(metrics.cmvPercentage), -999.99, 999.99);
+        const margin = clamp(toFinite(metrics.margin), -9999999999.99, 9999999999.99);
+        const marginPercentage = clamp(toFinite(metrics.marginPercentage), -999.99, 999.99);
+        const markup = clamp(toFinite(metrics.markup), -999.99, 999.99);
 
         await tx
           .update(recipes)
           .set({
             totalCost: newTotalCost.toFixed(4),
+            // Se reescriben los dos precios para que el de referencia siempre coincida con la
+            // política de IVA de la receta y el bruto quede explícito (las recetas viejas lo
+            // tenían en 0 y se reconstruía cada vez).
+            salePrice: metrics.salePrice.toFixed(2),
+            salePriceWithTax: metrics.salePriceWithTax.toFixed(2),
             cmvPercentage: cmvPercentage.toFixed(2),
             margin: margin.toFixed(2),
             marginPercentage: marginPercentage.toFixed(2),
@@ -2020,6 +2027,44 @@ export class DatabaseStorage implements IStorage {
       }
     }
     
+    return updated;
+  }
+
+  /**
+   * Aplica la misma política de IVA a todos los platos del cliente y reescribe las métricas
+   * derivadas (ago-2026). Es idempotente: el precio cobrado no se toca, solo cambia contra qué se
+   * miden CMV, margen y markup. Las sub-recetas no tienen precio de venta, así que quedan afuera.
+   */
+  async setRecipesIvaPolicy(clientId: number, removeIva: boolean): Promise<number> {
+    const toFinite = (value: number, fallback = 0) => (Number.isFinite(value) ? value : fallback);
+    const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
+    const rows = await db
+      .select()
+      .from(recipes)
+      .where(and(eq(recipes.clientId, clientId), eq(recipes.recipeType, "plato")));
+
+    let updated = 0;
+    for (const recipe of rows) {
+      const metrics = computeRecipeMetrics({
+        grossPrice: recipeGrossPrice(recipe),
+        totalCost: parseFloat(String(recipe.totalCost ?? 0)) || 0,
+        removeIva,
+      });
+      await db
+        .update(recipes)
+        .set({
+          removeIvaFromPrice: removeIva,
+          salePrice: metrics.salePrice.toFixed(2),
+          salePriceWithTax: metrics.salePriceWithTax.toFixed(2),
+          cmvPercentage: clamp(toFinite(metrics.cmvPercentage), -999.99, 999.99).toFixed(2),
+          margin: clamp(toFinite(metrics.margin), -9999999999.99, 9999999999.99).toFixed(2),
+          marginPercentage: clamp(toFinite(metrics.marginPercentage), -999.99, 999.99).toFixed(2),
+          markup: clamp(toFinite(metrics.markup), -999.99, 999.99).toFixed(2),
+          updatedAt: new Date(),
+        } as any)
+        .where(and(eq(recipes.id, recipe.id), eq(recipes.clientId, clientId)));
+      updated += 1;
+    }
     return updated;
   }
 

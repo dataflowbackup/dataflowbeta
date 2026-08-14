@@ -558,8 +558,16 @@ export const recipes = pgTable("recipes", {
   normalizedName: varchar("normalized_name", { length: 255 }),
   description: text("description"),
   preparationSteps: text("preparation_steps"),
+  /** Precio de referencia del costeo: sin IVA o con IVA según removeIvaFromPrice. */
   salePrice: decimal("sale_price", { precision: 12, scale: 2 }).default("0"),
+  /** Precio tal como se cobra en el mostrador (siempre con IVA incluido). */
   salePriceWithTax: decimal("sale_price_with_tax", { precision: 12, scale: 2 }).default("0"),
+  /**
+   * Si al precio de venta se le quita el IVA para costear (ago-2026). true (default e histórico):
+   * CMV = costo sin IVA / precio SIN IVA. false: CMV = costo sin IVA / precio CON IVA.
+   * Las recetas anteriores no lo tienen y se leen como true, que es como se calcularon.
+   */
+  removeIvaFromPrice: boolean("remove_iva_from_price").default(true),
   totalCost: decimal("total_cost", { precision: 12, scale: 4 }).default("0"),
   usefulYield: decimal("useful_yield", { precision: 12, scale: 4 }),
   yieldUnit: varchar("yield_unit", { length: 20 }),
