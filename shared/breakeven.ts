@@ -108,3 +108,152 @@ export function computeBreakeven(input: {
 export function profitAtUnits(units: number, contributionMargin: number, totalFixedCosts: number): number {
   return (Number(units) || 0) * contributionMargin - (Number(totalFixedCosts) || 0);
 }
+
+// ==========================================
+// MEZCLA DE PRODUCTOS CON UNO LÍDER (ago-2026)
+// ==========================================
+/**
+ * Un local no vende un solo producto: vende 10 empanadas y, cada esas 10, 2 pizzas. El líder manda
+ * —todas las cantidades se expresan "cada X unidades del líder"— así que el punto de equilibrio
+ * sale en unidades del LÍDER y el resto acompaña en proporción.
+ *
+ * Todo se reduce a una unidad de líder ficticia: facturación por unidad de líder = precio del líder
+ * + la parte proporcional de cada acompañante. A partir de ahí la fórmula es la de siempre.
+ */
+export interface MixProduct {
+  name?: string | null;
+  priceNoIva: number;
+  costNoIva: number;
+  /** Unidades por canasta. En el líder es la cantidad de referencia (las 10 empanadas). */
+  qty: number;
+}
+
+export interface MixProductLine extends MixProduct {
+  priceNoIva: number;
+  costNoIva: number;
+  qty: number;
+  /** Unidades de este producto por CADA unidad del líder (qty / cantidad del líder). */
+  ratio: number;
+  /** Costos variables en % , en $ por unidad de ESTE producto. */
+  variablePerUnit: number;
+  /** Precio − costo − costos variables, por unidad de este producto. */
+  contributionPerUnit: number;
+}
+
+export interface MixBreakevenResult {
+  lines: MixProductLine[];
+  /** Cantidad de referencia del líder (las 10 empanadas). */
+  leaderQty: number;
+  /** Facturación por unidad de líder: el líder más la parte proporcional del resto. */
+  revenuePerLeaderUnit: number;
+  /** Costo de los productos por unidad de líder, sin los % variables. */
+  productCostPerLeaderUnit: number;
+  /** Costos variables en % por unidad de líder. */
+  pctVariablePerLeaderUnit: number;
+  /** Costo variable total (productos + %) por unidad de líder. */
+  variablePerLeaderUnit: number;
+  /** Margen de contribución por unidad de líder. */
+  contributionMargin: number;
+  contributionPct: number;
+  /** Unidades DEL LÍDER para no ganar ni perder. null si el margen no es positivo. */
+  units: number | null;
+  revenue: number | null;
+}
+
+/** Punto de equilibrio de una mezcla. El producto en la posición 0 es el líder. */
+export function computeMixBreakeven(input: {
+  products: MixProduct[];
+  totalFixedCosts: number;
+  variableCosts: AppliedVariableCost[];
+}): MixBreakevenResult {
+  const fixed = Number(input.totalFixedCosts) || 0;
+  const products = Array.isArray(input.products) ? input.products : [];
+  const leaderQty = Number(products[0]?.qty) || 0;
+
+  const lines: MixProductLine[] = products.map((p) => {
+    const priceNoIva = Number(p.priceNoIva) || 0;
+    const costNoIva = Number(p.costNoIva) || 0;
+    const qty = Number(p.qty) || 0;
+    const variablePerUnit = totalVariableCostPerUnit(input.variableCosts, priceNoIva, costNoIva);
+    return {
+      name: p.name ?? null,
+      priceNoIva,
+      costNoIva,
+      qty,
+      // Sin líder cargado la mezcla no tiene referencia: todo queda en 0 y no hay PE.
+      ratio: leaderQty > 0 ? qty / leaderQty : 0,
+      variablePerUnit,
+      contributionPerUnit: priceNoIva - costNoIva - variablePerUnit,
+    };
+  });
+
+  const weighted = (pick: (l: MixProductLine) => number) => lines.reduce((a, l) => a + l.ratio * pick(l), 0);
+  const revenuePerLeaderUnit = weighted((l) => l.priceNoIva);
+  const productCostPerLeaderUnit = weighted((l) => l.costNoIva);
+  const pctVariablePerLeaderUnit = weighted((l) => l.variablePerUnit);
+  const contributionMargin = revenuePerLeaderUnit - productCostPerLeaderUnit - pctVariablePerLeaderUnit;
+  const units = contributionMargin > 0 ? fixed / contributionMargin : null;
+
+  return {
+    lines,
+    leaderQty,
+    revenuePerLeaderUnit,
+    productCostPerLeaderUnit,
+    pctVariablePerLeaderUnit,
+    variablePerLeaderUnit: productCostPerLeaderUnit + pctVariablePerLeaderUnit,
+    contributionMargin,
+    contributionPct: revenuePerLeaderUnit > 0 ? (contributionMargin / revenuePerLeaderUnit) * 100 : 0,
+    units,
+    revenue: units != null ? units * revenuePerLeaderUnit : null,
+  };
+}
+
+export interface MixLineAtUnits {
+  name: string | null;
+  qty: number;
+  ratio: number;
+  priceNoIva: number;
+  /** Costo variable unitario completo: costo del producto + costos variables en %. */
+  unitCost: number;
+  /** Unidades vendidas de este producto para las unidades de líder dadas. */
+  units: number;
+  revenue: number;
+  variableCost: number;
+  contribution: number;
+}
+
+/**
+ * Cuánto se vende de cada producto —y cuánto factura y cuesta cada uno— para una cantidad dada de
+ * unidades del líder. La suma de `revenue` es la facturación total y la de `variableCost` es el
+ * costo variable total del escenario.
+ */
+export function mixLinesAtLeaderUnits(lines: MixProductLine[], leaderUnits: number): MixLineAtUnits[] {
+  const u = Number(leaderUnits) || 0;
+  return (lines ?? []).map((l) => {
+    const units = l.ratio * u;
+    const unitCost = l.costNoIva + l.variablePerUnit;
+    return {
+      name: l.name ?? null,
+      qty: l.qty,
+      ratio: l.ratio,
+      priceNoIva: l.priceNoIva,
+      unitCost,
+      units,
+      revenue: units * l.priceNoIva,
+      variableCost: units * unitCost,
+      contribution: units * l.contributionPerUnit,
+    };
+  });
+}
+
+/**
+ * Cuánto pesa UN costo variable en % por unidad de líder. Se necesita para abrir el desglose del
+ * PDF por concepto (Mercado Pago, IIBB…) cuando el % se aplicó a varios productos con precios
+ * distintos.
+ */
+export function mixVariableCostPerLeaderUnit(lines: MixProductLine[], item: AppliedVariableCost): number {
+  return (lines ?? []).reduce(
+    (acc, l) => acc + l.ratio * variableCostAmount(item, l.priceNoIva, l.costNoIva),
+    0,
+  );
+}

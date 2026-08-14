@@ -534,6 +534,8 @@ export interface IStorage {
     variableCostNoIva: number;
     createdBy?: string | null;
     commissions?: AppliedVariableCost[];
+    /** Foto de la mezcla cuando el análisis se hizo con producto líder. */
+    productMix?: unknown;
     fixedCosts: Array<{ transactionCategoryId?: number | null; financialGroupId?: number | null; label?: string | null; amount: number }>;
   }): Promise<BreakevenAnalysis>;
 
@@ -4528,6 +4530,7 @@ export class DatabaseStorage implements IStorage {
     variableCostNoIva: number;
     createdBy?: string | null;
     commissions?: AppliedVariableCost[];
+    productMix?: unknown;
     fixedCosts: Array<{ transactionCategoryId?: number | null; financialGroupId?: number | null; label?: string | null; amount: number }>;
   }): Promise<BreakevenAnalysis> {
     const price = Number(input.salePriceNoIva) || 0;
@@ -4560,6 +4563,7 @@ export class DatabaseStorage implements IStorage {
       breakevenUnits: String(units),
       breakevenRevenue: String(revenue),
       commissions: commissions.length > 0 ? commissions : null,
+      productMix: input.productMix ?? null,
       createdBy: input.createdBy ?? null,
     } as any).returning();
 

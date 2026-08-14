@@ -26,10 +26,15 @@ import {
 } from "recharts";
 import {
   computeBreakeven,
+  computeMixBreakeven,
+  mixLinesAtLeaderUnits,
+  mixVariableCostPerLeaderUnit,
   profitAtUnits,
   variableCostAmount,
   VARIABLE_COST_BASE_LABELS,
   type AppliedVariableCost,
+  type MixLineAtUnits,
+  type MixProduct,
   type VariableCostBase,
 } from "@shared/breakeven";
 import type {
@@ -63,6 +68,20 @@ const parseFixedRef = (ref: string): { transactionCategoryId: number | null; fin
   };
 };
 
+/**
+ * Una fila de la mezcla "por producto líder". La primera es SIEMPRE el líder: su cantidad es la
+ * referencia (las 10 empanadas) y la del resto se lee "tantas cada esas 10".
+ */
+interface MixRow {
+  recipeId: string;
+  name: string;
+  price: string;
+  cost: string;
+  qty: string;
+}
+
+const emptyMixRow = (): MixRow => ({ recipeId: "", name: "", price: "", cost: "", qty: "" });
+
 const BASE_OPTIONS: VariableCostBase[] = ["costo", "sin_iva", "con_iva"];
 
 const emptyVariableCostForm = { id: null as number | null, name: "", pct: "", base: "sin_iva" as VariableCostBase, ivaRate: "21" };
@@ -74,8 +93,9 @@ export default function BreakevenPage() {
   const [recipeId, setRecipeId] = useState("");
   const [price, setPrice] = useState("");
   const [cost, setCost] = useState("");
-  const [mode, setMode] = useState<"product" | "margin">("product");
+  const [mode, setMode] = useState<"product" | "margin" | "mix">("product");
   const [marginPctInput, setMarginPctInput] = useState("");
+  const [mixRows, setMixRows] = useState<MixRow[]>([{ ...emptyMixRow(), qty: "10" }, emptyMixRow()]);
   const [fixed, setFixed] = useState<FixedCostRow[]>([{ ref: "", label: "", amount: "" }]);
   const [selectedVarIds, setSelectedVarIds] = useState<number[]>([]);
 
@@ -139,10 +159,32 @@ export default function BreakevenPage() {
     }
   };
 
+  const updMixRow = (i: number, patch: Partial<MixRow>) =>
+    setMixRows((p) => p.map((x, j) => (j === i ? { ...x, ...patch } : x)));
+
+  /** Al elegir una receta en una fila de la mezcla se traen nombre, precio y costo. */
+  const onPickMixRecipe = (i: number, val: string) => {
+    const r = recipes.find((x) => String(x.id) === val);
+    setMixRows((p) =>
+      p.map((x, j) =>
+        j === i
+          ? {
+              ...x,
+              recipeId: val,
+              name: r ? r.name : x.name,
+              price: r ? String(parseFloat(String(r.salePrice ?? 0)) || 0) : x.price,
+              cost: r ? String(parseFloat(String(r.totalCost ?? 0)) || 0) : x.cost,
+            }
+          : x,
+      ),
+    );
+  };
+
   const priceN = parseFloat(price) || 0;
   const costN = parseFloat(cost) || 0;
   const totalFixed = useMemo(() => fixed.reduce((a, f) => a + (parseFloat(f.amount) || 0), 0), [fixed]);
   const isMargin = mode === "margin";
+  const isMix = mode === "mix";
 
   /** Los costos variables tildados del catálogo, en el formato que entienden las fórmulas. */
   const appliedVariableCosts = useMemo<AppliedVariableCost[]>(() => {
@@ -168,25 +210,66 @@ export default function BreakevenPage() {
     [priceN, costN, totalFixed, appliedVariableCosts],
   );
 
+  /**
+   * Mezcla con producto líder: la fila 0 manda y el resto viaja en proporción. Las filas vacías se
+   * ignoran (menos la del líder, que si falta simplemente no hay PE).
+   */
+  const mixProducts = useMemo<MixProduct[]>(
+    () =>
+      mixRows
+        .map((r, i) => ({
+          name: r.name.trim() || (i === 0 ? "Producto líder" : `Producto ${i + 1}`),
+          priceNoIva: parseFloat(r.price) || 0,
+          costNoIva: parseFloat(r.cost) || 0,
+          qty: parseFloat(r.qty) || 0,
+        }))
+        .filter((p, i) => i === 0 || (p.qty > 0 && (p.priceNoIva > 0 || p.costNoIva > 0))),
+    [mixRows],
+  );
+
+  const mix = useMemo(
+    () =>
+      computeMixBreakeven({
+        products: isMix ? mixProducts : [],
+        totalFixedCosts: totalFixed,
+        variableCosts: appliedVariableCosts,
+      }),
+    [isMix, mixProducts, totalFixed, appliedVariableCosts],
+  );
+  const leaderName = mixRows[0]?.name.trim() || "líder";
+
   // En modo margen no hay producto: el usuario carga el % de contribución y solo sale el PE en $.
-  const marginPct = isMargin ? parseFloat(marginPctInput) || 0 : pe.contributionPct;
-  const contribution = pe.contributionMargin;
+  const marginPct = isMargin ? parseFloat(marginPctInput) || 0 : isMix ? mix.contributionPct : pe.contributionPct;
+  const contribution = isMix ? mix.contributionMargin : pe.contributionMargin;
   const valid = isMargin ? marginPct > 0 && marginPct < 100 : contribution > 0;
-  const units = isMargin ? null : pe.units;
-  const revenue = isMargin ? (marginPct > 0 ? totalFixed / (marginPct / 100) : null) : pe.revenue;
+  const units = isMargin ? null : isMix ? mix.units : pe.units;
+  const revenue = isMargin
+    ? marginPct > 0
+      ? totalFixed / (marginPct / 100)
+      : null
+    : isMix
+      ? mix.revenue
+      : pe.revenue;
+
+  /**
+   * Precio y costo variable "de la unidad" con la que se hace todo lo que sigue (gráfico, simulador
+   * y escenarios). Con mezcla, la unidad es una unidad del líder: factura lo suyo más la parte
+   * proporcional de los acompañantes.
+   */
+  const effPrice = isMix ? mix.revenuePerLeaderUnit : priceN;
+  const effVarUnit = isMix ? mix.variablePerLeaderUnit : costN + pe.variablePerUnit;
 
   // Gráfico de PE: rectas de Ingresos y Costos totales cruzándose en el punto de equilibrio.
   const chartData = useMemo(() => {
-    if (isMargin || !valid || units == null || priceN <= 0) return [];
-    const varUnit = costN + pe.variablePerUnit; // costo variable efectivo por unidad
+    if (isMargin || !valid || units == null || effPrice <= 0) return [];
     const maxU = Math.max(units * 2, 10);
     const step = maxU / 24;
     const pts: Array<{ u: number; Ingresos: number; Costos: number }> = [];
     for (let u = 0; u <= maxU + 0.0001; u += step) {
-      pts.push({ u: Math.round(u), Ingresos: u * priceN, Costos: totalFixed + varUnit * u });
+      pts.push({ u: Math.round(u), Ingresos: u * effPrice, Costos: totalFixed + effVarUnit * u });
     }
     return pts;
-  }, [isMargin, valid, units, priceN, costN, pe.variablePerUnit, totalFixed]);
+  }, [isMargin, valid, units, effPrice, effVarUnit, totalFixed]);
 
   /**
    * Simulador: cubiertos los costos fijos, cada unidad de más deja el margen de contribución
@@ -196,8 +279,8 @@ export default function BreakevenPage() {
   const simUnits = simInput === "" ? peUnitsCeil : Math.max(0, parseFloat(simInput) || 0);
   const simMax = Math.max(peUnitsCeil * 3, 10);
   const sim = useMemo(() => {
-    const revenueAt = simUnits * priceN;
-    const variableAt = simUnits * (costN + pe.variablePerUnit);
+    const revenueAt = simUnits * effPrice;
+    const variableAt = simUnits * effVarUnit;
     const profit = profitAtUnits(simUnits, contribution, totalFixed);
     return {
       units: simUnits,
@@ -207,7 +290,21 @@ export default function BreakevenPage() {
       profit,
       profitPct: revenueAt > 0 ? (profit / revenueAt) * 100 : 0,
     };
-  }, [simUnits, priceN, costN, pe.variablePerUnit, contribution, totalFixed, units]);
+  }, [simUnits, effPrice, effVarUnit, contribution, totalFixed, units]);
+
+  /** Qué se vende de cada producto de la mezcla en el escenario que está mirando el usuario. */
+  const mixAtSim = useMemo<MixLineAtUnits[]>(
+    () => (isMix && valid ? mixLinesAtLeaderUnits(mix.lines, simUnits) : []),
+    [isMix, valid, mix.lines, simUnits],
+  );
+  const mixTotals = useMemo(
+    () =>
+      mixAtSim.reduce(
+        (a, l) => ({ revenue: a.revenue + l.revenue, cost: a.cost + l.variableCost }),
+        { revenue: 0, cost: 0 },
+      ),
+    [mixAtSim],
+  );
 
   /** Escenarios rápidos por encima del punto de equilibrio. */
   const scenarios = useMemo(() => {
@@ -220,7 +317,7 @@ export default function BreakevenPage() {
       { label: "El doble", factor: 2 },
     ].map((s) => {
       const u = Math.ceil(units * s.factor);
-      const revenueAt = u * priceN;
+      const revenueAt = u * effPrice;
       const profit = profitAtUnits(u, contribution, totalFixed);
       return {
         ...s,
@@ -230,7 +327,27 @@ export default function BreakevenPage() {
         profitPct: revenueAt > 0 ? (profit / revenueAt) * 100 : 0,
       };
     });
-  }, [units, priceN, contribution, totalFixed]);
+  }, [units, effPrice, contribution, totalFixed]);
+
+  /** Un escenario de la mezcla listo para el PDF: qué se vende de cada producto y los totales. */
+  const buildMixScenario = (title: string, leaderUnits: number) => {
+    const lines = mixLinesAtLeaderUnits(mix.lines, leaderUnits);
+    return {
+      title,
+      leaderUnits,
+      lines: lines.map((l) => ({
+        name: l.name ?? "Producto",
+        qty: l.qty,
+        priceNoIva: l.priceNoIva,
+        unitCost: l.unitCost,
+        units: l.units,
+        revenue: l.revenue,
+        variableCost: l.variableCost,
+      })),
+      totalRevenue: lines.reduce((a, l) => a + l.revenue, 0),
+      totalCost: lines.reduce((a, l) => a + l.variableCost, 0),
+    };
+  };
 
   const exportPdf = () => {
     if (units == null || revenue == null) return;
@@ -238,17 +355,31 @@ export default function BreakevenPage() {
     const doc = buildBreakevenPdf({
       name: name.trim() || "Análisis sin nombre",
       localName: localId === "all" ? "General" : localName(parseInt(localId, 10)),
-      productName: recipe?.name ?? null,
-      priceNoIva: priceN,
-      costNoIva: costN,
+      productName: isMix
+        ? `${leaderName} + ${Math.max(mix.lines.length - 1, 0)} producto${mix.lines.length === 2 ? "" : "s"} más`
+        : recipe?.name ?? null,
+      unitLabel: isMix ? leaderName : null,
+      mix: isMix
+        ? {
+            leaderName,
+            leaderQty: mix.leaderQty,
+            scenarios: [
+              buildMixScenario("En el punto de equilibrio", Math.ceil(units)),
+              // La simulación solo va si el usuario efectivamente movió el slider.
+              ...(simInput !== "" && simUnits > 0 ? [buildMixScenario("Tu simulación", simUnits)] : []),
+            ],
+          }
+        : null,
+      priceNoIva: effPrice,
+      costNoIva: isMix ? mix.productCostPerLeaderUnit : costN,
       variableCosts: appliedVariableCosts.map((c) => ({
         label: c.label || "Costo variable",
         pct: c.pct,
         base: c.base,
         ivaRate: c.ivaRate,
-        amountPerUnit: variableCostAmount(c, priceN, costN),
+        amountPerUnit: isMix ? mixVariableCostPerLeaderUnit(mix.lines, c) : variableCostAmount(c, priceN, costN),
       })),
-      variablePerUnit: pe.variablePerUnit,
+      variablePerUnit: isMix ? mix.pctVariablePerLeaderUnit : pe.variablePerUnit,
       contributionMargin: contribution,
       contributionPct: pe.contributionPct,
       fixedCosts: fixed
@@ -315,25 +446,54 @@ export default function BreakevenPage() {
     mutationFn: async () => {
       if (!name.trim()) throw new Error("Poné un nombre al análisis");
       if (!valid) {
-        throw new Error(isMargin ? "El margen debe estar entre 0 y 100%" : "El precio de venta debe ser mayor al costo más los costos variables");
+        throw new Error(
+          isMargin
+            ? "El margen debe estar entre 0 y 100%"
+            : isMix
+              ? "Cargá el producto líder con precio, costo y cantidad; el margen de la mezcla tiene que ser positivo"
+              : "El precio de venta debe ser mayor al costo más los costos variables",
+        );
       }
       // En modo margen no hay precio por unidad: se usa una base nocional de 100 para conservar
       // la razón de contribución (precio 100, costo 100−margen%) → la facturación de PE es exacta.
-      const salePriceNoIva = isMargin ? 100 : priceN;
-      const variableCostNoIva = isMargin ? 100 - marginPct : costN;
+      // En modo mezcla se guarda todo reducido a UNA UNIDAD DEL LÍDER, con los % variables ya
+      // adentro del costo (por eso no se mandan comisiones: se contarían dos veces).
+      const salePriceNoIva = isMargin ? 100 : isMix ? mix.revenuePerLeaderUnit : priceN;
+      const variableCostNoIva = isMargin ? 100 - marginPct : isMix ? mix.variablePerLeaderUnit : costN;
+      const leaderRecipeId = mixRows[0]?.recipeId ? parseInt(mixRows[0].recipeId, 10) : null;
       const res = await apiRequest("POST", "/api/finance/breakeven", {
         name,
         localId: localId === "all" ? null : parseInt(localId, 10),
-        recipeId: isMargin || !recipeId ? null : parseInt(recipeId, 10),
+        recipeId: isMargin ? null : isMix ? leaderRecipeId : recipeId ? parseInt(recipeId, 10) : null,
         salePriceNoIva,
         variableCostNoIva,
         // Foto de los % aplicados: si mañana cambia el catálogo, este análisis no se mueve.
-        commissions: appliedVariableCosts.map((c) => ({
-          label: c.label ?? null,
-          pct: c.pct,
-          base: c.base,
-          ivaRate: c.base === "con_iva" ? c.ivaRate ?? 0 : undefined,
-        })),
+        commissions: isMix
+          ? []
+          : appliedVariableCosts.map((c) => ({
+              label: c.label ?? null,
+              pct: c.pct,
+              base: c.base,
+              ivaRate: c.base === "con_iva" ? c.ivaRate ?? 0 : undefined,
+            })),
+        productMix: isMix
+          ? {
+              leaderName,
+              leaderQty: mix.leaderQty,
+              variableCosts: appliedVariableCosts.map((c) => ({
+                label: c.label ?? null,
+                pct: c.pct,
+                base: c.base,
+                ivaRate: c.base === "con_iva" ? c.ivaRate ?? 0 : undefined,
+              })),
+              products: mix.lines.map((l) => ({
+                name: l.name ?? null,
+                priceNoIva: l.priceNoIva,
+                costNoIva: l.costNoIva,
+                qty: l.qty,
+              })),
+            }
+          : null,
         fixedCosts: fixed
           .filter((f) => parseFloat(f.amount) > 0)
           .map((f) => ({
@@ -377,6 +537,9 @@ export default function BreakevenPage() {
               <Button size="sm" variant={mode === "margin" ? "default" : "ghost"} onClick={() => setMode("margin")} data-testid="mode-margin">
                 Por margen %
               </Button>
+              <Button size="sm" variant={mode === "mix" ? "default" : "ghost"} onClick={() => setMode("mix")} data-testid="mode-mix">
+                Por producto líder
+              </Button>
             </div>
 
             {mode === "product" ? (
@@ -393,6 +556,72 @@ export default function BreakevenPage() {
                   <Label className="text-xs">Costo del producto (sin IVA)</Label>
                   <Input type="number" step="any" value={cost} onChange={(e) => setCost(e.target.value)} data-testid="input-cost" className="w-40" />
                 </div>
+              </div>
+            ) : mode === "mix" ? (
+              <div className="space-y-3">
+                <p className="text-xs text-muted-foreground">
+                  Elegí el producto <strong>líder</strong> y cuántas unidades vendés de él (ej: 10 empanadas). Después
+                  sumá los que lo acompañan indicando cuántos se venden <em>cada esas 10</em>. El punto de equilibrio
+                  sale en unidades del líder y el resto acompaña en proporción.
+                </p>
+                {mixRows.map((r, i) => (
+                  <div key={i} className="rounded-md border p-3 space-y-2">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-medium">
+                        {i === 0 ? "★ Producto líder" : `Producto ${i + 1}`}
+                      </span>
+                      {i > 0 && (
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          onClick={() => setMixRows((p) => p.filter((_, j) => j !== i))}
+                          data-testid={`button-remove-mix-${i}`}
+                        >
+                          <Trash2 className="h-4 w-4 text-destructive" />
+                        </Button>
+                      )}
+                    </div>
+                    <div className="grid gap-2 md:grid-cols-[minmax(0,1fr)_110px_110px_150px]">
+                      <div className="space-y-1">
+                        <Label className="text-xs">Producto (receta)</Label>
+                        <DataEntryCombobox
+                          options={recipeOptions}
+                          value={r.recipeId}
+                          onValueChange={(v) => onPickMixRecipe(i, v)}
+                          placeholder="Elegí un producto"
+                          searchPlaceholder="Buscar producto…"
+                          data-testid={`mix-recipe-${i}`}
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <Label className="text-xs">Precio (sin IVA)</Label>
+                        <Input type="number" step="any" value={r.price} onChange={(e) => updMixRow(i, { price: e.target.value })} data-testid={`mix-price-${i}`} />
+                      </div>
+                      <div className="space-y-1">
+                        <Label className="text-xs">Costo (sin IVA)</Label>
+                        <Input type="number" step="any" value={r.cost} onChange={(e) => updMixRow(i, { cost: e.target.value })} data-testid={`mix-cost-${i}`} />
+                      </div>
+                      <div className="space-y-1">
+                        <Label className="text-xs">
+                          {i === 0 ? "Unidades vendidas" : `Cada ${mixRows[0]?.qty || "…"} de ${leaderName}`}
+                        </Label>
+                        <Input type="number" step="any" value={r.qty} onChange={(e) => updMixRow(i, { qty: e.target.value })} data-testid={`mix-qty-${i}`} />
+                      </div>
+                    </div>
+                    {!r.recipeId && (
+                      <Input
+                        className="max-w-xs"
+                        placeholder={i === 0 ? "Nombre del producto (ej: Empanada)" : "Nombre del producto"}
+                        value={r.name}
+                        onChange={(e) => updMixRow(i, { name: e.target.value })}
+                        data-testid={`mix-name-${i}`}
+                      />
+                    )}
+                  </div>
+                ))}
+                <Button variant="outline" size="sm" onClick={() => setMixRows((p) => [...p, emptyMixRow()])} data-testid="button-add-mix">
+                  <Plus className="h-4 w-4 mr-1" /> Agregar producto
+                </Button>
               </div>
             ) : (
               <div className="space-y-1 max-w-xs">
@@ -467,17 +696,19 @@ export default function BreakevenPage() {
                   </p>
                 ) : (
                   <>
-                    <p className="text-xs text-muted-foreground">Tildá los que aplican a este producto.</p>
+                    <p className="text-xs text-muted-foreground">
+                      {isMix ? "Tildá los que aplican. Se calculan sobre cada producto de la mezcla." : "Tildá los que aplican a este producto."}
+                    </p>
                     <div className="rounded-md border divide-y">
                       {variableCosts.map((v) => {
                         const checked = selectedVarIds.includes(v.id);
                         const base = (v.base as VariableCostBase) ?? "sin_iva";
                         const pctN = parseFloat(String(v.pct)) || 0;
-                        const perUnit = variableCostAmount(
-                          { pct: pctN, base, ivaRate: v.ivaRate == null ? undefined : parseFloat(String(v.ivaRate)) || 0 },
-                          priceN,
-                          costN,
-                        );
+                        const item = { pct: pctN, base, ivaRate: v.ivaRate == null ? undefined : parseFloat(String(v.ivaRate)) || 0 };
+                        // Con mezcla el importe se muestra por unidad de líder (incluye acompañantes).
+                        const perUnit = isMix
+                          ? mixVariableCostPerLeaderUnit(mix.lines, item)
+                          : variableCostAmount(item, priceN, costN);
                         return (
                           <div key={v.id} className="flex items-center gap-3 px-3 py-2">
                             <Checkbox
@@ -531,7 +762,19 @@ export default function BreakevenPage() {
             <CardTitle className="text-base flex items-center gap-2"><Target className="h-4 w-4" /> Resultado</CardTitle>
           </CardHeader>
           <CardContent className="space-y-2 text-sm">
-            {!isMargin && pe.variablePerUnit > 0 && (
+            {isMix && (
+              <>
+                <div className="flex justify-between">
+                  <span className="text-muted-foreground">Facturación por u. de {leaderName}</span>
+                  <span className="font-mono">{formatCurrency(effPrice)}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-muted-foreground">Costo variable por u.</span>
+                  <span className="font-mono text-amber-600">− {formatCurrency(effVarUnit)}</span>
+                </div>
+              </>
+            )}
+            {!isMargin && !isMix && pe.variablePerUnit > 0 && (
               <div className="flex justify-between"><span className="text-muted-foreground">Costos variables ($/u)</span><span className="font-mono text-amber-600">− {formatCurrency(pe.variablePerUnit)}</span></div>
             )}
             {!isMargin && (
@@ -545,10 +788,18 @@ export default function BreakevenPage() {
             </div>
             <div className="flex justify-between"><span className="text-muted-foreground">Costos fijos</span><span className="font-mono">{formatCurrency(totalFixed)}</span></div>
             {!isMargin && (
-              <div className="flex justify-between border-t pt-2 font-bold"><span>PE (unidades)</span><span className="font-mono" data-testid="text-pe-units">{units == null ? "—" : units.toFixed(2)}</span></div>
+              <div className="flex justify-between border-t pt-2 font-bold"><span>PE ({isMix ? `u. de ${leaderName}` : "unidades"})</span><span className="font-mono" data-testid="text-pe-units">{units == null ? "—" : units.toFixed(2)}</span></div>
             )}
             <div className={`flex justify-between font-bold ${isMargin ? "border-t pt-2" : ""}`}><span>PE (facturación)</span><span className="font-mono" data-testid="text-pe-revenue">{revenue == null ? "—" : formatCurrency(revenue)}</span></div>
-            {!valid && <p className="text-xs text-red-600">{isMargin ? "El margen debe estar entre 0 y 100%." : "El precio debe superar al costo más los costos variables."}</p>}
+            {!valid && (
+              <p className="text-xs text-red-600">
+                {isMargin
+                  ? "El margen debe estar entre 0 y 100%."
+                  : isMix
+                    ? "Cargá el producto líder con precio, costo y cantidad. El margen de la mezcla debe ser positivo."
+                    : "El precio debe superar al costo más los costos variables."}
+              </p>
+            )}
             <Button className="w-full mt-2" onClick={() => saveMutation.mutate()} disabled={saveMutation.isPending || !valid} data-testid="button-save">
               <Save className="h-4 w-4 mr-2" /> {saveMutation.isPending ? "Guardando..." : "Guardar"}
             </Button>
@@ -579,7 +830,7 @@ export default function BreakevenPage() {
               <ResponsiveContainer width="100%" height={280}>
                 <LineChart data={chartData} margin={{ top: 8, right: 16, left: 8, bottom: 20 }}>
                   <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
-                  <XAxis dataKey="u" tick={{ fontSize: 11 }} label={{ value: "Unidades", position: "insideBottom", offset: -10, fontSize: 11 }} />
+                  <XAxis dataKey="u" tick={{ fontSize: 11 }} label={{ value: isMix ? `Unidades de ${leaderName}` : "Unidades", position: "insideBottom", offset: -10, fontSize: 11 }} />
                   <YAxis tick={{ fontSize: 10 }} tickFormatter={(v) => formatCurrency(v).replace("$", "").trim()} />
                   <Tooltip
                     formatter={(v: number) => formatCurrency(v)}
@@ -603,8 +854,13 @@ export default function BreakevenPage() {
               <div className="space-y-3">
                 <div className="rounded-lg border p-3">
                   <p className="text-xs text-muted-foreground">Necesitás vender</p>
-                  <p className="text-2xl font-bold">{units.toFixed(0)} <span className="text-sm font-normal text-muted-foreground">unidades</span></p>
-                  <p className="text-xs text-muted-foreground mt-1">para no ganar ni perder.</p>
+                  <p className="text-2xl font-bold">
+                    {units.toFixed(0)}{" "}
+                    <span className="text-sm font-normal text-muted-foreground">{isMix ? `u. de ${leaderName}` : "unidades"}</span>
+                  </p>
+                  <p className="text-xs text-muted-foreground mt-1">
+                    {isMix ? "para no ganar ni perder (el resto de la mezcla acompaña)." : "para no ganar ni perder."}
+                  </p>
                 </div>
                 <div className="rounded-lg border p-3">
                   <p className="text-xs text-muted-foreground">Equivale a facturar</p>
@@ -632,7 +888,7 @@ export default function BreakevenPage() {
           <CardContent className="space-y-5">
             <div className="grid gap-4 lg:grid-cols-[1fr_auto] items-end">
               <div className="space-y-2">
-                <Label className="text-xs">Unidades vendidas</Label>
+                <Label className="text-xs">{isMix ? `Unidades vendidas de ${leaderName}` : "Unidades vendidas"}</Label>
                 <Slider
                   value={[Math.min(simUnits, simMax)]}
                   min={0}
@@ -690,6 +946,52 @@ export default function BreakevenPage() {
                 <p className="text-xs text-muted-foreground mt-1">{sim.profitPct.toFixed(1)}% sobre ventas</p>
               </div>
             </div>
+
+            {/* Detalle por producto de la mezcla en el escenario que está mirando el usuario. */}
+            {isMix && mixAtSim.length > 0 && (
+              <div className="space-y-2">
+                <Label className="text-sm">
+                  Detalle por producto — {simUnits.toFixed(0)} u. de {leaderName}
+                </Label>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="bg-muted/50">
+                        <th className="text-left px-3 py-2 font-medium border-b">Producto</th>
+                        <th className="text-right px-3 py-2 font-medium border-b">Precio u.</th>
+                        <th className="text-right px-3 py-2 font-medium border-b">Costo u.</th>
+                        <th className="text-right px-3 py-2 font-medium border-b">Unidades</th>
+                        <th className="text-right px-3 py-2 font-medium border-b">Facturación</th>
+                        <th className="text-right px-3 py-2 font-medium border-b">Costo variable</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {mixAtSim.map((l, i) => (
+                        <tr key={i} className="border-b" data-testid={`mix-line-${i}`}>
+                          <td className="px-3 py-2">
+                            {l.name}
+                            {i === 0 && <span className="ml-1 text-xs text-muted-foreground">(líder)</span>}
+                          </td>
+                          <td className="px-3 py-2 text-right font-mono">{formatCurrency(l.priceNoIva)}</td>
+                          <td className="px-3 py-2 text-right font-mono text-amber-600">{formatCurrency(l.unitCost)}</td>
+                          <td className="px-3 py-2 text-right font-mono">{l.units.toFixed(1)}</td>
+                          <td className="px-3 py-2 text-right font-mono">{formatCurrency(l.revenue)}</td>
+                          <td className="px-3 py-2 text-right font-mono text-amber-600">{formatCurrency(l.variableCost)}</td>
+                        </tr>
+                      ))}
+                      <tr className="font-semibold">
+                        <td className="px-3 py-2" colSpan={4}>TOTAL</td>
+                        <td className="px-3 py-2 text-right font-mono" data-testid="text-mix-total-revenue">{formatCurrency(mixTotals.revenue)}</td>
+                        <td className="px-3 py-2 text-right font-mono" data-testid="text-mix-total-cost">{formatCurrency(mixTotals.cost)}</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  El costo unitario incluye el costo del producto más los costos variables en % que le apliquen.
+                </p>
+              </div>
+            )}
 
             <p className="text-xs text-muted-foreground">
               Pasado el punto de equilibrio los costos fijos ya están cubiertos: de cada unidad extra solo se descuentan
@@ -913,13 +1215,50 @@ export default function BreakevenPage() {
                 )}
               </div>
 
-              {Array.isArray((detail.analysis as any).commissions) && (detail.analysis as any).commissions.length > 0 && (
+              {(detail.analysis as any).productMix?.products?.length > 0 && (() => {
+                const m = (detail.analysis as any).productMix;
+                return (
+                  <div>
+                    <div className="flex items-center justify-between border-b pb-1 mb-2">
+                      <span className="font-medium">Mezcla de productos</span>
+                      <span className="text-xs text-muted-foreground">Líder: {m.leaderName || "—"}</span>
+                    </div>
+                    <ul className="space-y-1">
+                      {m.products.map((p: any, i: number) => (
+                        <li key={i} className="flex justify-between gap-3">
+                          <span className="text-muted-foreground truncate">
+                            {p.name || `Producto ${i + 1}`} —{" "}
+                            {i === 0
+                              ? `${parseFloat(String(p.qty)) || 0} u.`
+                              : `${parseFloat(String(p.qty)) || 0} cada ${parseFloat(String(m.leaderQty)) || 0}`}
+                          </span>
+                          <span className="font-mono whitespace-nowrap">
+                            {formatCurrency(parseFloat(String(p.priceNoIva)) || 0)} · costo{" "}
+                            {formatCurrency(parseFloat(String(p.costNoIva)) || 0)}
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
+                    <p className="text-xs text-muted-foreground mt-2">
+                      El precio y el costo de arriba están expresados por unidad del líder (ya incluyen la parte
+                      proporcional de los acompañantes y los costos variables en %).
+                    </p>
+                  </div>
+                );
+              })()}
+
+              {/* En los análisis con mezcla los % viajan dentro de productMix, no en commissions. */}
+              {(() => {
+                const applied: any[] = Array.isArray((detail.analysis as any).commissions) && (detail.analysis as any).commissions.length > 0
+                  ? (detail.analysis as any).commissions
+                  : (detail.analysis as any).productMix?.variableCosts ?? [];
+                return applied.length > 0 && (
                 <div>
                   <div className="flex items-center justify-between border-b pb-1 mb-2">
                     <span className="font-medium">Costos variables considerados</span>
                   </div>
                   <ul className="space-y-1">
-                    {(detail.analysis as any).commissions.map((c: any, i: number) => (
+                    {applied.map((c: any, i: number) => (
                       <li key={i} className="flex justify-between">
                         <span className="text-muted-foreground">
                           {c.label || "Costo variable"} — {VARIABLE_COST_BASE_LABELS[(c.base as VariableCostBase) ?? "sin_iva"]}
@@ -930,7 +1269,8 @@ export default function BreakevenPage() {
                     ))}
                   </ul>
                 </div>
-              )}
+                );
+              })()}
             </div>
           )}
         </DialogContent>

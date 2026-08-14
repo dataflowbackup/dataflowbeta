@@ -1215,6 +1215,14 @@ export const breakevenAnalyses = pgTable("breakeven_analyses", {
    * tienen "con_iva"/"sin_iva" y se siguen leyendo igual.
    */
   commissions: jsonb("commissions"),
+  /**
+   * Mezcla de productos con uno líder (ago-2026). { leaderName, leaderQty, variableCosts, products:
+   * [{ name, priceNoIva, costNoIva, qty }] }. Cuando está cargada, salePriceNoIva y
+   * variableCostNoIva son los importes POR UNIDAD DEL LÍDER (ya incluyen la parte proporcional de
+   * los acompañantes y los % variables), así que el PE en unidades es en unidades del líder.
+   * null en los análisis de un solo producto.
+   */
+  productMix: jsonb("product_mix"),
   createdBy: varchar("created_by").references(() => users.id),
   createdAt: timestamp("created_at").defaultNow(),
 });

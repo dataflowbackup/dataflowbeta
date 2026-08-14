@@ -7,10 +7,39 @@
 import { jsPDF } from "jspdf";
 import { VARIABLE_COST_BASE_LABELS, type VariableCostBase } from "@shared/breakeven";
 
+/** Una línea de la mezcla en un escenario concreto (punto de equilibrio o simulación). */
+export interface BreakevenPdfMixLine {
+  name: string;
+  /** Unidades por cada `leaderQty` del líder — la relación que cargó el usuario. */
+  qty: number;
+  priceNoIva: number;
+  /** Costo variable unitario: costo del producto + costos variables en %. */
+  unitCost: number;
+  units: number;
+  revenue: number;
+  variableCost: number;
+}
+
+export interface BreakevenPdfMixScenario {
+  title: string;
+  leaderUnits: number;
+  lines: BreakevenPdfMixLine[];
+  totalRevenue: number;
+  totalCost: number;
+}
+
 export interface BreakevenPdfInput {
   name: string;
   localName: string;
   productName: string | null;
+  /** Qué es "una unidad" en este análisis: el producto, o el producto líder de la mezcla. */
+  unitLabel?: string | null;
+  /** Mezcla de productos con uno líder. null en los análisis de un solo producto. */
+  mix?: {
+    leaderName: string;
+    leaderQty: number;
+    scenarios: BreakevenPdfMixScenario[];
+  } | null;
   priceNoIva: number;
   costNoIva: number;
   variableCosts: Array<{
@@ -173,20 +202,94 @@ export function buildBreakevenPdf(input: BreakevenPdfInput): jsPDF {
     doc.setTextColor(MUTED.r, MUTED.g, MUTED.b);
     doc.text(hint, bx + 12, y + 55);
   };
-  drawBox(M, "NECESITÁS VENDER", `${num(Math.ceil(input.units))} unidades`, "para no ganar ni perder");
+  drawBox(
+    M,
+    "NECESITÁS VENDER",
+    `${num(Math.ceil(input.units))} unidades`,
+    input.mix ? `de ${input.mix.leaderName} — el resto acompaña` : "para no ganar ni perder",
+  );
   drawBox(M + boxW + 14, "EQUIVALE A FACTURAR", money(input.revenue), "en el período de los costos fijos");
   y += boxH + 26;
 
+  // ---------- Mezcla de productos ----------
+  // Con producto líder todo se calcula sobre una unidad del líder, así que hace falta abrir qué se
+  // vende de cada acompañante, cuánto factura y cuánto cuesta.
+  if (input.mix && input.mix.scenarios.length > 0) {
+    const mix = input.mix;
+    const first = mix.scenarios[0];
+    sectionTitle("Mezcla de productos");
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(8);
+    doc.setTextColor(MUTED.r, MUTED.g, MUTED.b);
+    const composition =
+      `${first.lines.length} producto${first.lines.length === 1 ? "" : "s"} · Líder: ${mix.leaderName} ` +
+      `(${num(mix.leaderQty)} u.)` +
+      first.lines
+        .slice(1)
+        .map((l) => ` · ${l.name}: ${num(l.qty, 2)} cada ${num(mix.leaderQty)} de ${mix.leaderName}`)
+        .join("");
+    const lines = doc.splitTextToSize(composition, W) as string[];
+    ensure(lines.length * 11 + 6);
+    doc.text(lines, M, y);
+    y += lines.length * 11 + 10;
+
+    const mixCols: Col[] = [
+      { label: "Producto", w: W - 70 - 70 - 60 - 82 - 82 },
+      { label: "Precio u.", w: 70, align: "right" },
+      { label: "Costo u.", w: 70, align: "right" },
+      { label: "Unidades", w: 60, align: "right" },
+      { label: "Facturación", w: 82, align: "right" },
+      { label: "Costo var.", w: 82, align: "right" },
+    ];
+    for (const sc of mix.scenarios) {
+      ensure(24);
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(8.5);
+      doc.setTextColor(INK.r, INK.g, INK.b);
+      doc.text(`${sc.title} — ${num(Math.ceil(sc.leaderUnits))} u. de ${mix.leaderName}`, M, y);
+      y += 11;
+      table(mixCols, [
+        ...sc.lines.map((l) => ({
+          cells: [
+            l.name,
+            money(l.priceNoIva),
+            money(l.unitCost),
+            num(l.units, 1),
+            money(l.revenue),
+            money(l.variableCost),
+          ],
+        })),
+        {
+          cells: ["TOTAL", "", "", "", money(sc.totalRevenue), money(sc.totalCost)],
+          bold: true,
+        },
+      ]);
+    }
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(7.5);
+    doc.setTextColor(MUTED.r, MUTED.g, MUTED.b);
+    const noteLines = doc.splitTextToSize(
+      "El costo unitario incluye el costo del producto más los costos variables en % que le aplican. La suma de la " +
+        "facturación es la facturación total del escenario y la suma de los costos es el costo variable total.",
+      W,
+    ) as string[];
+    ensure(noteLines.length * 10 + 6);
+    doc.text(noteLines, M, y);
+    y += noteLines.length * 10 + 18;
+  }
+
   // ---------- Estructura por unidad ----------
-  sectionTitle("Estructura por unidad (sin IVA)");
+  sectionTitle(
+    input.unitLabel ? `Estructura por unidad de ${input.unitLabel} (sin IVA)` : "Estructura por unidad (sin IVA)",
+  );
   const unitCols: Col[] = [
     { label: "Concepto", w: W - 90 - 90 },
     { label: "Base", w: 90, align: "right" },
     { label: "Importe", w: 90, align: "right" },
   ];
   const unitRows: Array<{ cells: string[]; bold?: boolean; color?: { r: number; g: number; b: number } }> = [
-    { cells: ["Precio de venta", "", money(input.priceNoIva)], bold: true },
-    { cells: ["Costo del producto", "", `- ${money(input.costNoIva)}`], color: DANGER },
+    { cells: [input.mix ? "Facturación (líder + acompañantes)" : "Precio de venta", "", money(input.priceNoIva)], bold: true },
+    { cells: [input.mix ? "Costo de los productos" : "Costo del producto", "", `- ${money(input.costNoIva)}`], color: DANGER },
   ];
   for (const v of input.variableCosts) {
     const baseTxt =
@@ -229,7 +332,8 @@ export function buildBreakevenPdf(input: BreakevenPdfInput): jsPDF {
   doc.setFontSize(8);
   doc.setTextColor(MUTED.r, MUTED.g, MUTED.b);
   doc.text(
-    `Punto de equilibrio = costos fijos / margen de contribución = ${money(input.totalFixed)} / ${money(input.contributionMargin)} = ${num(input.units, 2)} unidades`,
+    `Punto de equilibrio = costos fijos / margen de contribución = ${money(input.totalFixed)} / ${money(input.contributionMargin)} = ${num(input.units, 2)}` +
+      (input.mix ? ` u. de ${input.mix.leaderName}` : " unidades"),
     M + 12,
     y + 31,
   );

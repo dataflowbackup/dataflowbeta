@@ -3933,6 +3933,24 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
           label: z.string().optional().nullable(),
           amount: z.coerce.number(),
         })).default([]),
+        // Mezcla con producto líder (ago-2026). Es una foto: precio y costo llegan ya reducidos a
+        // la unidad del líder, esto guarda de qué estaba compuesta.
+        productMix: z.object({
+          leaderName: z.string().nullable().optional(),
+          leaderQty: z.coerce.number(),
+          variableCosts: z.array(z.object({
+            label: z.string().optional().nullable(),
+            pct: z.coerce.number(),
+            base: z.enum(["costo", "con_iva", "sin_iva"]),
+            ivaRate: z.coerce.number().optional(),
+          })).optional().default([]),
+          products: z.array(z.object({
+            name: z.string().nullable().optional(),
+            priceNoIva: z.coerce.number(),
+            costNoIva: z.coerce.number(),
+            qty: z.coerce.number(),
+          })).min(1),
+        }).nullable().optional(),
       });
       const parsed = bodySchema.safeParse(req.body);
       if (!parsed.success) return res.status(400).json({ message: "Datos inválidos", errors: parsed.error.flatten() });
@@ -3953,6 +3971,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         salePriceNoIva: parsed.data.salePriceNoIva,
         variableCostNoIva: parsed.data.variableCostNoIva,
         commissions: parsed.data.commissions,
+        productMix: parsed.data.productMix ?? null,
         createdBy: actorId,
         fixedCosts: parsed.data.fixedCosts,
       });
