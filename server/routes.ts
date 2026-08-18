@@ -3203,12 +3203,28 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.post("/api/transactions/batch-categorize", isAuthenticated, async (req, res) => {
     try {
       const clientId = await getClientId(req);
-      const { transactionIds, categoryId, localId, dateFrom, dateTo, description, description2, descriptions, bankSource, mode } = req.body;
+      const { transactionIds, categoryId, localId, dateFrom, dateTo, description, description2, descriptions, bankSource, mode, cashRegisterId } = req.body;
 
       // mode "uncategorize" = descategorización masiva (quita la categoría a los que SÍ la tienen).
       const uncategorize = mode === "uncategorize";
+      // mode "assign-caja" = asignación masiva de caja: solo alcanza a los movimientos SIN caja,
+      // tengan o no categoría. Nunca pisa una caja ya asignada.
+      const assignCaja = mode === "assign-caja";
 
-      if (!uncategorize && !categoryId && categoryId !== null) {
+      let cajaIdToAssign: number | null = null;
+      if (assignCaja) {
+        cajaIdToAssign = parseInt(String(cashRegisterId), 10);
+        if (!Number.isFinite(cajaIdToAssign)) {
+          return res.status(400).json({ message: "Se requiere cashRegisterId" });
+        }
+        // La caja tiene que ser del propio cliente (incluye inactivas, por si se reasigna a una vieja).
+        const cajas = await storage.listCashRegisters(clientId, true);
+        if (!cajas.some(c => c.id === cajaIdToAssign)) {
+          return res.status(403).json({ message: "La caja no pertenece a este cliente" });
+        }
+      }
+
+      if (!uncategorize && !assignCaja && !categoryId && categoryId !== null) {
         return res.status(400).json({ message: "Se requiere categoryId" });
       }
 
@@ -3235,6 +3251,13 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const desc2Filter =
         typeof description2 === "string" && description2.trim().length > 0 ? description2.trim() : null;
 
+      // Estado que tiene que tener el movimiento para entrar en el lote:
+      //  categorizar → sin categoría · descategorizar → con categoría · asignar caja → sin caja.
+      const matchesTargetState = (t: (typeof allTransactions)[0]) => {
+        if (assignCaja) return (t as any).cashRegisterId == null;
+        return uncategorize ? Boolean(t.categoryId) : !t.categoryId;
+      };
+
       let idsToUpdate: number[] = [];
 
       if (transactionIds && Array.isArray(transactionIds) && transactionIds.length > 0) {
@@ -3246,11 +3269,18 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
             message: "Algunas transacciones no pertenecen a este cliente"
           });
         }
+        // En asignación de caja el invariante manda incluso con ids explícitos: no pisar cajas.
+        if (assignCaja) {
+          const byId = new Map(allTransactions.map(t => [t.id, t]));
+          idsToUpdate = idsToUpdate.filter(id => {
+            const t = byId.get(id);
+            return t != null && matchesTargetState(t);
+          });
+        }
       } else if (descFilters !== null || desc2Filter !== null) {
         idsToUpdate = allTransactions
           .filter(t => {
-            // categorizar → sólo sin categoría; descategorizar → sólo con categoría.
-            if (uncategorize ? !t.categoryId : Boolean(t.categoryId)) return false;
+            if (!matchesTargetState(t)) return false;
             if (!matchesDateRange(t)) return false;
             if (bankSource && t.bankSource !== bankSource) return false;
             if (descFilters !== null && !descFilters.includes(t.description ?? "")) return false;
@@ -3268,7 +3298,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
             const txDate = new Date(t.transactionDate);
             if (bankSource && t.bankSource !== bankSource) return false;
             if (!(txDate >= from && txDate <= to)) return false;
-            return uncategorize ? Boolean(t.categoryId) : !t.categoryId;
+            return matchesTargetState(t);
           })
           .map(t => t.id);
       }
@@ -3277,10 +3307,12 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         return res.status(400).json({ message: "No hay transacciones para actualizar" });
       }
 
-      const updateData: any = uncategorize
+      const updateData: any = assignCaja
+        ? { cashRegisterId: cajaIdToAssign }
+        : uncategorize
         ? { categoryId: null }
         : { categoryId: categoryId || null };
-      if (!uncategorize && localId !== undefined) updateData.localId = localId || null;
+      if (!uncategorize && !assignCaja && localId !== undefined) updateData.localId = localId || null;
       // UPDATE en lote (un solo statement por chunk) para no desbordar el timeout con miles de filas.
       const updated = await storage.batchUpdateTransactions(clientId, idsToUpdate, updateData);
 
@@ -3288,7 +3320,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         success: true,
         updated,
         total: idsToUpdate.length,
-        message: uncategorize
+        message: assignCaja
+          ? `Se asignó la caja a ${updated} de ${idsToUpdate.length} transacciones`
+          : uncategorize
           ? `Se descategorizaron ${updated} de ${idsToUpdate.length} transacciones`
           : `Se categorizaron ${updated} de ${idsToUpdate.length} transacciones`,
       });

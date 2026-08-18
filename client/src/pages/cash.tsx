@@ -42,6 +42,7 @@ import {
   CommandList,
 } from "@/components/ui/command";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Checkbox } from "@/components/ui/checkbox";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
@@ -80,6 +81,9 @@ interface TransactionWithRelations extends Transaction {
 }
 
 const CASH_BANK_SOURCE = "cash";
+
+/** Solapas de categorización del listado, mismo criterio que Extractos. */
+type CashFilterTab = "all" | "uncategorized" | "categorized";
 
 // Cuadre de caja: la fila de ajuste por diferencia usa esta clave fija (autogenerada).
 const CASH_ADJUST_KEY = "cash-adjust-diff";
@@ -488,6 +492,8 @@ export default function CashPage() {
   const [filterDateTo, setFilterDateTo] = useState("");
   /** Filtro por Mes Económico: "all" o un "YYYY-MM". */
   const [filterEconMonth, setFilterEconMonth] = useState<string>("all");
+  /** Solapa de categorización, igual que en Extractos: se aplica sobre el resto de los filtros. */
+  const [filterTab, setFilterTab] = useState<CashFilterTab>("all");
 
   const { data: categories = [] } = useQuery<TransactionCategory[]>({
     queryKey: ["/api/transaction-categories"],
@@ -536,8 +542,8 @@ export default function CashPage() {
   const [newCajaName, setNewCajaName] = useState("");
   const [editCajaId, setEditCajaId] = useState<string>("");
 
-  // Clasificación Masiva en Efectivo (modo: categorizar / descategorizar / borrar)
-  type MasivaMode = "categorize" | "uncategorize" | "delete";
+  // Clasificación Masiva en Efectivo (modo: categorizar / descategorizar / asignar caja / borrar)
+  type MasivaMode = "categorize" | "uncategorize" | "assign-caja" | "delete";
   const [isMasivaOpen, setIsMasivaOpen] = useState(false);
   const [masivaMode, setMasivaMode] = useState<MasivaMode>("categorize");
   const [masivaDateFrom, setMasivaDateFrom] = useState("");
@@ -547,11 +553,14 @@ export default function CashPage() {
   const [masivaSelectedDescs, setMasivaSelectedDescs] = useState<Set<string>>(new Set());
   const [masivaCategoryId, setMasivaCategoryId] = useState("");
   const [masivaNewLocalId, setMasivaNewLocalId] = useState("");
+  /** Caja a asignar en el modo "assign-caja". Solo alcanza a movimientos que hoy no tienen caja. */
+  const [masivaCajaId, setMasivaCajaId] = useState("");
 
   const openMasiva = (mode: MasivaMode) => {
     setMasivaMode(mode);
     setMasivaDateFrom(""); setMasivaDateTo(""); setMasivaLocalId(""); setMasivaDescSearch("");
     setMasivaSelectedDescs(new Set()); setMasivaCategoryId(""); setMasivaNewLocalId("");
+    setMasivaCajaId("");
     setIsMasivaOpen(true);
   };
 
@@ -704,6 +713,22 @@ export default function CashPage() {
     filterDateFrom,
     filterDateTo,
   ]);
+
+  /**
+   * Vista final del listado: los filtros de la barra + la solapa de categorización. Los KPIs de
+   * arriba siguen mirando `filteredTransactions` (sin la solapa), igual que en Extractos, para que
+   * elegir "Sin categorizar" no altere los totales del período.
+   */
+  const tabFilteredTransactions = useMemo(() => {
+    if (filterTab === "all") return filteredTransactions;
+    if (filterTab === "uncategorized") return filteredTransactions.filter((t) => !t.categoryId);
+    return filteredTransactions.filter((t) => t.categoryId);
+  }, [filteredTransactions, filterTab]);
+
+  const uncategorizedCount = useMemo(
+    () => filteredTransactions.filter((t) => !t.categoryId).length,
+    [filteredTransactions],
+  );
 
   /** Meses económicos presentes entre los movimientos de efectivo, del más nuevo al más viejo. */
   const econMonthFilterOptions = useMemo(() => {
@@ -1004,7 +1029,7 @@ export default function CashPage() {
   }, [categories, financialGroups]);
 
   const exportToExcel = () => {
-    const rows = filteredTransactions.map((t) => ({
+    const rows = tabFilteredTransactions.map((t) => ({
       Fecha: String(t.transactionDate ?? "").slice(0, 10),
       Descripción: t.description ?? "",
       Tipo: t.type === "income" ? "Ingreso" : "Egreso",
@@ -1189,12 +1214,14 @@ export default function CashPage() {
   });
 
   // Masiva — descripciones disponibles según el modo:
-  //  categorizar → sin categoría · descategorizar → con categoría · borrar → todas.
+  //  categorizar → sin categoría · descategorizar → con categoría · asignar caja → sin caja
+  //  (tengan o no categoría) · borrar → todas.
   const masivaGroupedDescs = useMemo(() => {
     let rows = transactions.filter((t) => {
       if (!t.description) return false;
       if (masivaMode === "categorize") return !t.categoryId;
       if (masivaMode === "uncategorize") return !!t.categoryId;
+      if (masivaMode === "assign-caja") return (t as any).cashRegisterId == null;
       return true; // delete
     });
     if (masivaDateFrom && masivaDateTo) {
@@ -1238,6 +1265,13 @@ export default function CashPage() {
         const res = await apiRequest("POST", "/api/transactions/batch-categorize", body);
         return res.json();
       }
+      if (masivaMode === "assign-caja") {
+        if (!masivaCajaId) throw new Error("Elegí una caja");
+        body.mode = "assign-caja";
+        body.cashRegisterId = parseInt(masivaCajaId, 10);
+        const res = await apiRequest("POST", "/api/transactions/batch-categorize", body);
+        return res.json();
+      }
       // categorize
       if (!masivaCategoryId) throw new Error("Elegí una categoría");
       body.categoryId = parseInt(masivaCategoryId, 10);
@@ -1253,11 +1287,14 @@ export default function CashPage() {
             ? `${n} movimiento(s) borrados`
             : masivaMode === "uncategorize"
             ? `${n} movimiento(s) descategorizados`
+            : masivaMode === "assign-caja"
+            ? `${n} movimiento(s) con caja asignada`
             : `${n} movimiento(s) categorizados`,
       });
       setIsMasivaOpen(false);
       setMasivaDateFrom(""); setMasivaDateTo(""); setMasivaLocalId(""); setMasivaDescSearch("");
       setMasivaSelectedDescs(new Set()); setMasivaCategoryId(""); setMasivaNewLocalId("");
+      setMasivaCajaId("");
       queryClient.invalidateQueries({ queryKey: ["/api/transactions"] });
       refetch();
     },
@@ -1418,8 +1455,12 @@ export default function CashPage() {
     () =>
       transactions.length === 0
         ? "No hay movimientos en efectivo registrados."
+        : filterTab === "uncategorized"
+        ? "No hay movimientos sin categorizar con estos filtros."
+        : filterTab === "categorized"
+        ? "No hay movimientos categorizados con estos filtros."
         : "Ningún movimiento coincide con los filtros.",
-    [transactions.length],
+    [transactions.length, filterTab],
   );
 
   const clearFilters = () => {
@@ -1431,6 +1472,7 @@ export default function CashPage() {
     setFilterEconMonth("all");
     setFilterDateFrom("");
     setFilterDateTo("");
+    setFilterTab("all");
   };
 
   const filtersActive =
@@ -1441,7 +1483,8 @@ export default function CashPage() {
     filterCajaIds.length > 0 ||
     filterEconMonth !== "all" ||
     filterDateFrom !== "" ||
-    filterDateTo !== "";
+    filterDateTo !== "" ||
+    filterTab !== "all";
 
   return (
     <div className="space-y-6">
@@ -1450,7 +1493,7 @@ export default function CashPage() {
         description="Movimientos de caja cargados manualmente; mismas categorías que en extractos."
         actions={
           <div className="flex flex-wrap items-center gap-2">
-            <Button variant="outline" onClick={exportToExcel} disabled={filteredTransactions.length === 0} data-testid="button-export-cash">
+            <Button variant="outline" onClick={exportToExcel} disabled={tabFilteredTransactions.length === 0} data-testid="button-export-cash">
               <Download className="h-4 w-4 mr-2" />
               Exportar
             </Button>
@@ -1461,6 +1504,10 @@ export default function CashPage() {
             <Button variant="outline" onClick={() => openMasiva("uncategorize")} data-testid="button-masiva-uncat-cash">
               <ListChecks className="h-4 w-4 mr-2" />
               Descategorizar Masivo
+            </Button>
+            <Button variant="outline" onClick={() => openMasiva("assign-caja")} data-testid="button-masiva-caja-cash">
+              <Wallet className="h-4 w-4 mr-2" />
+              Asignar Caja Masivo
             </Button>
             <Button variant="outline" onClick={() => openMasiva("delete")} data-testid="button-masiva-delete-cash" className="text-destructive hover:text-destructive">
               <Trash2 className="h-4 w-4 mr-2" />
@@ -1636,6 +1683,22 @@ export default function CashPage() {
           </div>
         </CardHeader>
         <CardContent className="space-y-4">
+          {/* Solapa de categorización — mismo criterio y contadores que Extractos. */}
+          <div className="flex flex-wrap items-center gap-4">
+            <Tabs value={filterTab} onValueChange={(v) => setFilterTab(v as CashFilterTab)}>
+              <TabsList>
+                <TabsTrigger value="all" data-testid="cash-filter-all">
+                  Todos ({filteredTransactions.length})
+                </TabsTrigger>
+                <TabsTrigger value="uncategorized" data-testid="cash-filter-uncategorized" className="text-amber-600">
+                  Sin categorizar ({uncategorizedCount})
+                </TabsTrigger>
+                <TabsTrigger value="categorized" data-testid="cash-filter-categorized">
+                  Categorizados ({filteredTransactions.length - uncategorizedCount})
+                </TabsTrigger>
+              </TabsList>
+            </Tabs>
+          </div>
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
             <div className="space-y-1 sm:col-span-2">
               <Label className="text-xs">Buscar en descripción</Label>
@@ -1743,7 +1806,7 @@ export default function CashPage() {
           ) : (
             <DataTable
               columns={columns}
-              data={filteredTransactions}
+              data={tabFilteredTransactions}
               pageSize={25}
               showSearch={false}
               emptyMessage={listEmptyMessage}
@@ -2096,6 +2159,7 @@ export default function CashPage() {
         if (!o) {
           setMasivaDateFrom(""); setMasivaDateTo(""); setMasivaLocalId(""); setMasivaDescSearch("");
           setMasivaSelectedDescs(new Set()); setMasivaCategoryId(""); setMasivaNewLocalId("");
+          setMasivaCajaId("");
         }
       }}>
         <DialogContent className="sm:max-w-2xl max-h-[min(90vh,880px)] h-[min(90vh,880px)] flex flex-col gap-0 p-0 overflow-hidden sm:rounded-lg">
@@ -2106,6 +2170,8 @@ export default function CashPage() {
                   ? "Borrado Masivo — Efectivo"
                   : masivaMode === "uncategorize"
                   ? "Descategorizar Masivo — Efectivo"
+                  : masivaMode === "assign-caja"
+                  ? "Asignar Caja Masivo — Efectivo"
                   : "Clasificación Masiva — Efectivo"}
               </DialogTitle>
               <DialogDescription>
@@ -2113,6 +2179,8 @@ export default function CashPage() {
                   ? "Filtrá por período, local y descripción; se BORRARÁN todos los movimientos de efectivo que coincidan. Esta acción no se puede deshacer."
                   : masivaMode === "uncategorize"
                   ? "Filtrá por período, local y descripción; se quitará la categoría a todos los movimientos categorizados que coincidan."
+                  : masivaMode === "assign-caja"
+                  ? "Filtrá por período, local y descripción; se asignará la caja elegida a todos los movimientos SIN caja que coincidan (tengan o no categoría). Los que ya tienen caja no se tocan."
                   : "Filtrá por período, local y descripción; asigná categoría a todos los movimientos sin categorizar que coincidan."}
               </DialogDescription>
             </DialogHeader>
@@ -2153,6 +2221,8 @@ export default function CashPage() {
                     ? "No hay movimientos sin categorizar"
                     : masivaMode === "uncategorize"
                     ? "No hay movimientos categorizados"
+                    : masivaMode === "assign-caja"
+                    ? "No hay movimientos sin caja"
                     : "No hay movimientos"}
                 </div>
               ) : masivaFilteredDescs.length === 0 ? (
@@ -2213,6 +2283,23 @@ export default function CashPage() {
                 </div>
               </>
             )}
+            {masivaMode === "assign-caja" && (
+              <div className="space-y-2">
+                <p className="text-sm font-medium">3. Caja a asignar</p>
+                <DataEntryCombobox
+                  options={cajaPickComboOptions}
+                  value={masivaCajaId}
+                  onValueChange={setMasivaCajaId}
+                  placeholder="Elegí la caja"
+                  searchPlaceholder="Buscar caja…"
+                />
+                {cashRegisters.length === 0 && (
+                  <p className="text-xs text-destructive">
+                    No hay cajas creadas. Creá una desde el botón "Cajas".
+                  </p>
+                )}
+              </div>
+            )}
             {masivaMode === "delete" && (masivaSelectedDescs.size > 0 || (masivaDateFrom && masivaDateTo)) && (
               <div className="rounded-lg border border-destructive/40 bg-destructive/5 p-3 text-sm text-destructive">
                 Se borrarán definitivamente todos los movimientos de efectivo que coincidan con el criterio. Revisá antes de confirmar.
@@ -2227,6 +2314,7 @@ export default function CashPage() {
                 disabled={
                   masivaMutation.isPending ||
                   (masivaMode === "categorize" && !masivaCategoryId) ||
+                  (masivaMode === "assign-caja" && !masivaCajaId) ||
                   (masivaSelectedDescs.size === 0 && !(masivaDateFrom && masivaDateTo))
                 }
                 onClick={() => masivaMutation.mutate()}
@@ -2237,6 +2325,8 @@ export default function CashPage() {
                   ? "Borrar movimientos"
                   : masivaMode === "uncategorize"
                   ? "Descategorizar"
+                  : masivaMode === "assign-caja"
+                  ? "Asignar caja"
                   : "Clasificar"}
               </Button>
             </div>
