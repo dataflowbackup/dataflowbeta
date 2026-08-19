@@ -141,6 +141,38 @@ interface MpReconciliationPayload {
   rows: MpReconciliationRow[];
 }
 
+/** Desfase de encadenamiento devuelto por el server (409) cuando el saldo inicial no cierra. */
+interface ChainMismatchPayload {
+  message: string;
+  previousClosingBalance: number;
+  currentOpeningBalance: number;
+  difference: number;
+}
+
+type ImportError = Error & { chainMismatch?: ChainMismatchPayload };
+
+/**
+ * Error de import que conserva el desfase de encadenamiento, para poder preguntar si se avanza
+ * igual en vez de cortar con un toast rojo.
+ */
+function buildImportError(message: string, payload: Record<string, unknown> | null): ImportError {
+  const err = new Error(message) as ImportError;
+  if (
+    payload &&
+    payload.code === "BALANCE_CHAIN_MISMATCH" &&
+    Number.isFinite(Number(payload.previousClosingBalance)) &&
+    Number.isFinite(Number(payload.currentOpeningBalance))
+  ) {
+    err.chainMismatch = {
+      message,
+      previousClosingBalance: Number(payload.previousClosingBalance),
+      currentOpeningBalance: Number(payload.currentOpeningBalance),
+      difference: Number(payload.difference ?? 0),
+    };
+  }
+  return err;
+}
+
 function isLocalDevHost(): boolean {
   if (typeof window === "undefined") return false;
   const h = window.location.hostname;
@@ -438,6 +470,8 @@ export default function BankStatementsPage() {
   const [uploadOpeningBalance, setUploadOpeningBalance] = useState<string>("");
   const [uploadClosingBalance, setUploadClosingBalance] = useState<string>("");
   const [uploadSkipContinuityCheck, setUploadSkipContinuityCheck] = useState(false);
+  /** Desfase de saldos detectado en el import: si está seteado, se pregunta si avanzar igual. */
+  const [chainMismatch, setChainMismatch] = useState<ChainMismatchPayload | null>(null);
   const [mpReconciliationOpen, setMpReconciliationOpen] = useState(false);
   const [mpReconciliation, setMpReconciliation] = useState<MpReconciliationPayload | null>(null);
   /** Evita toast de “suspendido” al cerrar el panel tras import OK. */
@@ -713,8 +747,10 @@ export default function BankStatementsPage() {
       if (!res.ok) {
         const text = await res.text();
         let errorMessage = "Error al importar";
+        let parsed: Record<string, unknown> | null = null;
         try {
           const error = JSON.parse(text);
+          parsed = error;
           errorMessage = error.message || errorMessage;
         } catch {
           errorMessage =
@@ -722,7 +758,7 @@ export default function BankStatementsPage() {
               ? "Timeout del servidor importando el extracto. Probá con un período más chico o avisame y lo pasamos a un proceso en segundo plano."
             : text || errorMessage;
         }
-        throw new Error(errorMessage);
+        throw buildImportError(errorMessage, parsed);
       }
       const data = await res.json();
 
@@ -782,10 +818,11 @@ export default function BankStatementsPage() {
         }
         if (last.status === "failed") {
           const p = last.payload as { message?: string } | undefined;
-          throw new Error(
+          throw buildImportError(
             last.errorMessage ||
               (p && typeof p.message === "string" ? p.message : null) ||
               "Error al importar el extracto",
+            (p ?? null) as Record<string, unknown> | null,
           );
         }
         const pl = last.payload;
@@ -807,6 +844,7 @@ export default function BankStatementsPage() {
       skippedReasons?: string[];
       batchOpeningBalance?: unknown;
       batchClosingBalance?: unknown;
+      chainOverrideDiff?: number | null;
       message?: string;
       saldoDisponibleTotal?: number;
       sumNetImportable?: number;
@@ -859,6 +897,9 @@ export default function BankStatementsPage() {
       if (data.batchClosingBalance != null && data.batchClosingBalance !== "") {
         description += `. Saldo final: ${formatCurrency(Number(data.batchClosingBalance))}`;
       }
+      if (data.chainOverrideDiff != null) {
+        description += `. Atención: se importó con un desfase de ${formatCurrency(Number(data.chainOverrideDiff))} respecto del cierre anterior`;
+      }
 
       // Diagnóstico MP (solo aplica si el banco fue Mercado Pago).
       if (data.mpDiagnostics) {
@@ -894,7 +935,12 @@ export default function BankStatementsPage() {
         setIsBranchMappingOpen(true);
       }
     },
-    onError: (error: Error) => {
+    onError: (error: ImportError) => {
+      // Desfase de saldos: no se corta, se pregunta si se importa igual.
+      if (error.chainMismatch) {
+        setChainMismatch(error.chainMismatch);
+        return;
+      }
       toast({ title: "Error al importar", description: error.message, variant: "destructive" });
     },
   });
@@ -955,7 +1001,7 @@ export default function BankStatementsPage() {
   });
 
   const buildUploadPayload = (
-    opts?: { absorbResidual?: boolean },
+    opts?: { absorbResidual?: boolean; forceContinuity?: boolean },
   ): { formData: FormData; queryString: string } | null => {
     if (!file || !uploadBankAccountId) return null;
     const formData = new FormData();
@@ -984,7 +1030,7 @@ export default function BankStatementsPage() {
     }
     if (uploadOpeningBalance.trim()) qs.set("openingBalance", uploadOpeningBalance.trim());
     if (uploadClosingBalance.trim()) qs.set("closingBalance", uploadClosingBalance.trim());
-    if (uploadSkipContinuityCheck) {
+    if (uploadSkipContinuityCheck || opts?.forceContinuity) {
       formData.append("skipContinuityCheck", "1");
       qs.set("skipContinuityCheck", "1");
     }
@@ -1010,6 +1056,21 @@ export default function BankStatementsPage() {
     }
     const payload = buildUploadPayload();
     if (!payload) return;
+    uploadMutation.mutate(payload);
+  };
+
+  /** Reintenta el mismo import omitiendo la validación de encadenamiento de saldos. */
+  const handleForceChainImport = () => {
+    const payload = buildUploadPayload({ forceContinuity: true });
+    setChainMismatch(null);
+    if (!payload) {
+      toast({
+        title: "No se pudo reintentar",
+        description: "Volvé a seleccionar el archivo y la cuenta.",
+        variant: "destructive",
+      });
+      return;
+    }
     uploadMutation.mutate(payload);
   };
 
@@ -2768,6 +2829,62 @@ export default function BankStatementsPage() {
           </div>
         </DialogContent>
       </Dialog>
+
+      <AlertDialog
+        open={chainMismatch != null}
+        onOpenChange={(open) => {
+          if (!open) setChainMismatch(null);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Los saldos no encadenan</AlertDialogTitle>
+            <AlertDialogDescription asChild>
+              <div className="text-sm text-muted-foreground space-y-3">
+                <p>
+                  El saldo inicial de este extracto no coincide con el cierre del último extracto
+                  cargado para esta cuenta/caja.
+                </p>
+                <div className="rounded-md border p-3 space-y-1 text-foreground">
+                  <div className="flex items-center justify-between gap-4">
+                    <span className="text-muted-foreground">Cierre del extracto anterior</span>
+                    <span className="font-mono">
+                      {formatCurrency(chainMismatch?.previousClosingBalance ?? 0)}
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between gap-4">
+                    <span className="text-muted-foreground">Saldo inicial de este extracto</span>
+                    <span className="font-mono">
+                      {formatCurrency(chainMismatch?.currentOpeningBalance ?? 0)}
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between gap-4 border-t pt-1">
+                    <span className="text-muted-foreground">Diferencia</span>
+                    <span className="font-mono font-semibold">
+                      {formatCurrency(chainMismatch?.difference ?? 0)}
+                    </span>
+                  </div>
+                </div>
+                <p>
+                  Puede haber movimientos faltantes entre un extracto y otro. Si igual querés cargar
+                  este extracto, se importa tal cual y queda registrado que se forzó el desfase.
+                </p>
+              </div>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel type="button">Cancelar</AlertDialogCancel>
+            <Button
+              type="button"
+              disabled={uploadMutation.isPending}
+              onClick={handleForceChainImport}
+              data-testid="button-force-chain-import"
+            >
+              {uploadMutation.isPending ? "Importando..." : "Importar igual"}
+            </Button>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       <AlertDialog
         open={purgeAccountTarget != null}

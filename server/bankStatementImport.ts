@@ -278,8 +278,13 @@ export async function runBankStatementImport(input: BankStatementImportInput): P
 
   const txCountForAccount = await storage.getTransactionCountForBankAccount(clientId, bankAccountId);
   const lastBatch = await storage.getLastFinancialImportBatchForAccount(clientId, bankAccountId);
+  /**
+   * Desfase de encadenamiento (saldo inicial de este extracto − cierre del anterior). Se calcula
+   * siempre: si no se omite la validación se corta con 409 (el front pregunta si avanzar igual),
+   * y si se omite queda asentado en el batch para poder auditar de dónde salió el hueco.
+   */
+  let chainOverrideDiff: number | null = null;
   if (
-    !skipContinuityCheck &&
     txCountForAccount > 0 &&
     lastBatch?.closingBalance != null &&
     openingBalanceToUse != null
@@ -288,17 +293,24 @@ export async function runBankStatementImport(input: BankStatementImportInput): P
     const currOpen = Number(openingBalanceToUse);
     const diff = Math.abs(prevClose - currOpen);
     if (diff > 0.01) {
-      return {
-        kind: "error",
-        status: 409,
-        body: {
-          message:
-            "El saldo inicial del extracto no coincide con el cierre del último extracto cargado para esta cuenta/caja.",
-          previousClosingBalance: prevClose,
-          currentOpeningBalance: currOpen,
-          difference: diff,
-        },
-      };
+      if (!skipContinuityCheck) {
+        return {
+          kind: "error",
+          status: 409,
+          body: {
+            code: "BALANCE_CHAIN_MISMATCH",
+            message:
+              "El saldo inicial del extracto no coincide con el cierre del último extracto cargado para esta cuenta/caja.",
+            previousClosingBalance: prevClose,
+            currentOpeningBalance: currOpen,
+            difference: diff,
+          },
+        };
+      }
+      chainOverrideDiff = Number((currOpen - prevClose).toFixed(2));
+      console.warn(
+        `[IMPORT] Encadenamiento forzado: cuenta ${bankAccountId}, cierre anterior ${prevClose}, saldo inicial ${currOpen}, diferencia ${chainOverrideDiff}`,
+      );
     }
   }
 
@@ -371,6 +383,7 @@ export async function runBankStatementImport(input: BankStatementImportInput): P
       closingBalance: closingBalanceToUse != null ? String(closingBalanceToUse) : undefined,
       periodStart: periodStartDetected ?? undefined,
       periodEnd: periodEndDetected ?? undefined,
+      chainOverrideDiff: chainOverrideDiff != null ? String(chainOverrideDiff) : undefined,
     } as unknown as InsertFinancialImportBatch);
   }
 
@@ -388,6 +401,7 @@ export async function runBankStatementImport(input: BankStatementImportInput): P
       batchClosingBalance: closingBalanceToUse,
       batchPeriodStart: periodStartDetected,
       batchPeriodEnd: periodEndDetected,
+      chainOverrideDiff,
       ...(bankId === "mercadopago"
         ? {
             mpDiagnostics: {

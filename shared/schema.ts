@@ -782,6 +782,12 @@ export const financialImportBatches = pgTable(
     closingBalance: decimal("closing_balance", { precision: 12, scale: 2 }),
     periodStart: date("period_start"),
     periodEnd: date("period_end"),
+    /**
+     * Si el import se forzó pese a que el saldo inicial no encadenaba con el cierre del extracto
+     * anterior, acá queda la diferencia (saldo inicial de este extracto − cierre del anterior).
+     * NULL = encadenó bien o no había extracto previo con cierre.
+     */
+    chainOverrideDiff: decimal("chain_override_diff", { precision: 12, scale: 2 }),
     createdAt: timestamp("created_at").defaultNow(),
   },
   (table) => [
