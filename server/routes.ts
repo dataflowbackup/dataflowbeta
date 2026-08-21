@@ -3203,13 +3203,30 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.post("/api/transactions/batch-categorize", isAuthenticated, async (req, res) => {
     try {
       const clientId = await getClientId(req);
-      const { transactionIds, categoryId, localId, filterLocalId, dateFrom, dateTo, description, description2, descriptions, bankSource, mode, cashRegisterId } = req.body;
+      const { transactionIds, categoryId, localId, filterLocalId, filterCategoryId, dateFrom, dateTo, description, description2, descriptions, bankSource, mode, cashRegisterId } = req.body;
 
       // mode "uncategorize" = descategorización masiva (quita la categoría a los que SÍ la tienen).
       const uncategorize = mode === "uncategorize";
       // mode "assign-caja" = asignación masiva de caja: solo alcanza a los movimientos SIN caja,
       // tengan o no categoría. Nunca pisa una caja ya asignada.
       const assignCaja = mode === "assign-caja";
+      // mode "assign-local" = asignación masiva de LOCAL: solo alcanza a los movimientos SIN local,
+      // tengan o no categoría, y NUNCA toca la categoría que ya tienen imputada. Lo único que
+      // escribe es `local_id`. Mismo invariante que assign-caja: no pisa un local ya asignado.
+      const assignLocal = mode === "assign-local";
+
+      let localIdToAssign: number | null = null;
+      if (assignLocal) {
+        localIdToAssign = parseInt(String(localId), 10);
+        if (!Number.isFinite(localIdToAssign)) {
+          return res.status(400).json({ message: "Se requiere el local a asignar" });
+        }
+        // El local tiene que ser del propio cliente.
+        const localesDelCliente = await storage.getLocals(clientId);
+        if (!localesDelCliente.some(l => l.id === localIdToAssign)) {
+          return res.status(403).json({ message: "El local no pertenece a este cliente" });
+        }
+      }
 
       let cajaIdToAssign: number | null = null;
       if (assignCaja) {
@@ -3224,7 +3241,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         }
       }
 
-      if (!uncategorize && !assignCaja && !categoryId && categoryId !== null) {
+      if (!uncategorize && !assignCaja && !assignLocal && !categoryId && categoryId !== null) {
         return res.status(400).json({ message: "Se requiere categoryId" });
       }
 
@@ -3263,10 +3280,28 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         return res.status(400).json({ message: "filterLocalId invalido" });
       }
 
+      // Filtro de BUSQUEDA por categoria. Igual que el de local, solo acota a que movimientos
+      // alcanza el lote: nunca modifica la categoria. "none" = los que no tienen ninguna.
+      const categoryFilterIsNone = filterCategoryId === "none";
+      const categoryFilter =
+        !categoryFilterIsNone && filterCategoryId !== undefined && filterCategoryId !== null &&
+        filterCategoryId !== "" && filterCategoryId !== "all"
+          ? parseInt(String(filterCategoryId), 10)
+          : null;
+      if (categoryFilter !== null && !Number.isFinite(categoryFilter)) {
+        return res.status(400).json({ message: "filterCategoryId invalido" });
+      }
+      const matchesCategoryFilter = (t: any) => {
+        if (categoryFilterIsNone) return t.categoryId == null;
+        if (categoryFilter !== null) return t.categoryId === categoryFilter;
+        return true;
+      };
+
       // Estado que tiene que tener el movimiento para entrar en el lote:
       //  categorizar → sin categoría · descategorizar → con categoría · asignar caja → sin caja.
       const matchesTargetState = (t: (typeof allTransactions)[0]) => {
         if (assignCaja) return (t as any).cashRegisterId == null;
+        if (assignLocal) return t.localId == null;
         return uncategorize ? Boolean(t.categoryId) : !t.categoryId;
       };
 
@@ -3281,8 +3316,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
             message: "Algunas transacciones no pertenecen a este cliente"
           });
         }
-        // En asignación de caja el invariante manda incluso con ids explícitos: no pisar cajas.
-        if (assignCaja) {
+        // En asignación de caja/local el invariante manda incluso con ids explícitos:
+        // nunca se pisa una caja ni un local ya asignados.
+        if (assignCaja || assignLocal) {
           const byId = new Map(allTransactions.map(t => [t.id, t]));
           idsToUpdate = idsToUpdate.filter(id => {
             const t = byId.get(id);
@@ -3296,6 +3332,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
             if (!matchesDateRange(t)) return false;
             if (bankSource && t.bankSource !== bankSource) return false;
             if (localFilter !== null && t.localId !== localFilter) return false;
+            if (!matchesCategoryFilter(t)) return false;
             if (descFilters !== null && !descFilters.includes(t.description ?? "")) return false;
             if (desc2Filter !== null && t.description2 !== desc2Filter) return false;
             return true;
@@ -3311,6 +3348,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
             const txDate = new Date(t.transactionDate);
             if (bankSource && t.bankSource !== bankSource) return false;
             if (localFilter !== null && t.localId !== localFilter) return false;
+            if (!matchesCategoryFilter(t)) return false;
             if (!(txDate >= from && txDate <= to)) return false;
             return matchesTargetState(t);
           })
@@ -3323,10 +3361,12 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
       const updateData: any = assignCaja
         ? { cashRegisterId: cajaIdToAssign }
+        : assignLocal
+        ? { localId: localIdToAssign }
         : uncategorize
         ? { categoryId: null }
         : { categoryId: categoryId || null };
-      if (!uncategorize && !assignCaja && localId !== undefined) updateData.localId = localId || null;
+      if (!uncategorize && !assignCaja && !assignLocal && localId !== undefined) updateData.localId = localId || null;
       // UPDATE en lote (un solo statement por chunk) para no desbordar el timeout con miles de filas.
       const updated = await storage.batchUpdateTransactions(clientId, idsToUpdate, updateData);
 
@@ -3336,6 +3376,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         total: idsToUpdate.length,
         message: assignCaja
           ? `Se asignó la caja a ${updated} de ${idsToUpdate.length} transacciones`
+          : assignLocal
+          ? `Se asignó el local a ${updated} de ${idsToUpdate.length} transacciones`
           : uncategorize
           ? `Se descategorizaron ${updated} de ${idsToUpdate.length} transacciones`
           : `Se categorizaron ${updated} de ${idsToUpdate.length} transacciones`,

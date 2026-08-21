@@ -71,6 +71,7 @@ import {
   Check,
   Filter,
   Download,
+  Store,
 } from "lucide-react";
 import * as XLSX from "xlsx";
 import { toISODate } from "@/lib/dateHelpers";
@@ -428,7 +429,10 @@ export default function BankStatementsPage() {
   const [isUploadOpen, setIsUploadOpen] = useState(false);
   const [isCategorizeOpen, setIsCategorizeOpen] = useState(false);
   const [isBatchCategorizeOpen, setIsBatchCategorizeOpen] = useState(false);
-  const [batchMode, setBatchMode] = useState<"categorize" | "uncategorize">("categorize");
+  const [batchMode, setBatchMode] = useState<"categorize" | "uncategorize" | "assign-local">("categorize");
+  // Filtro de BUSQUEDA por categoria: "" = todas, "none" = sin categoria, o el id.
+  // Solo acota el lote; nunca modifica la categoria de los movimientos.
+  const [batchFilterCategoryId, setBatchFilterCategoryId] = useState<string>("");
   const [selectedTransaction, setSelectedTransaction] = useState<TransactionWithRelations | null>(null);
   const [selectedCategoryId, setSelectedCategoryId] = useState<string>("");
   const [batchCategoryId, setBatchCategoryId] = useState<string>("");
@@ -976,7 +980,8 @@ export default function BankStatementsPage() {
       descriptions?: string[];
       description2?: string;
       bankSource?: string;
-      mode?: "uncategorize";
+      filterCategoryId?: string;
+      mode?: "uncategorize" | "assign-local";
     }) => {
       return apiRequest("POST", "/api/transactions/batch-categorize", data);
     },
@@ -995,6 +1000,7 @@ export default function BankStatementsPage() {
       setSelectedDescriptions(new Set());
       setSelectedDescription2("");
       setBatchBankSource("");
+      setBatchFilterCategoryId("");
     },
     onError: (error: Error) => {
       toast({ title: "Error en clasificacion masiva", description: error.message, variant: "destructive" });
@@ -1147,7 +1153,12 @@ export default function BankStatementsPage() {
 
   const handleBatchCategorize = () => {
     const uncategorize = batchMode === "uncategorize";
-    if (!uncategorize && !batchCategoryId) {
+    const assignLocal = batchMode === "assign-local";
+    if (assignLocal && (!batchLocalId || batchLocalId === "none")) {
+      toast({ title: "Elegí el local a asignar", variant: "destructive" });
+      return;
+    }
+    if (!uncategorize && !assignLocal && !batchCategoryId) {
       toast({ title: "Seleccione una categoria", variant: "destructive" });
       return;
     }
@@ -1175,28 +1186,46 @@ export default function BankStatementsPage() {
 
     // El filtro de local tiene que viajar al backend: si no, el lote alcanza a TODOS los
     // movimientos con esa descripcion y no solo a los del local que se ve en pantalla.
-    const filterLocal = batchFilterLocalId ? parseInt(batchFilterLocalId, 10) : NaN;
+    // En assign-local no aplica: por definicion son todos los que NO tienen local.
+    const filterLocal = !assignLocal && batchFilterLocalId ? parseInt(batchFilterLocalId, 10) : NaN;
 
     batchCategorizeMutation.mutate({
       ...(Number.isFinite(filterLocal) ? { filterLocalId: filterLocal } : {}),
+      ...(batchFilterCategoryId ? { filterCategoryId: batchFilterCategoryId } : {}),
       ...(hasDescriptions ? { descriptions: Array.from(selectedDescriptions) } : {}),
       ...(hasDescription2 ? { description2: selectedDescription2 } : {}),
       ...(batchBankSource ? { bankSource: batchBankSource } : {}),
       ...(hasSelection ? { transactionIds: Array.from(selectedTransactionIds) } : {}),
       ...(uncategorize ? { mode: "uncategorize" as const } : {}),
-      categoryId: uncategorize ? null : parseInt(batchCategoryId),
-      ...(!uncategorize && localSelected ? { localId: parseInt(batchLocalId) } : {}),
+      ...(assignLocal ? { mode: "assign-local" as const } : {}),
+      // En assign-local NO se manda categoryId: la categoria imputada no se toca.
+      categoryId: uncategorize || assignLocal ? null : parseInt(batchCategoryId),
+      ...(assignLocal || (!uncategorize && localSelected) ? { localId: parseInt(batchLocalId) } : {}),
       dateFrom: hasDateRange ? batchDateFrom : undefined,
       dateTo: hasDateRange ? batchDateTo : undefined,
     });
   };
 
-  // Categorizar → filtra sin categoría; Descategorizar → filtra con categoría.
-  const batchMatchesCategoryState = (hasCategory: boolean) =>
-    batchMode === "uncategorize" ? hasCategory : !hasCategory;
+  // Que movimientos entran en el lote segun el modo:
+  //  categorizar     → los que NO tienen categoria
+  //  descategorizar  → los que SI tienen categoria
+  //  asignar local   → los que NO tienen local, tengan o no categoria
+  const batchMatchesTargetState = (t: any) =>
+    batchMode === "assign-local"
+      ? t.localId == null
+      : batchMode === "uncategorize"
+      ? Boolean(t.categoryId)
+      : !t.categoryId;
+
+  // Filtro de busqueda por categoria: acota el lote sin modificarla.
+  const batchMatchesCategoryFilter = (t: any) => {
+    if (!batchFilterCategoryId) return true;
+    if (batchFilterCategoryId === "none") return t.categoryId == null;
+    return t.categoryId === parseInt(batchFilterCategoryId, 10);
+  };
 
   const groupedDescriptions = useMemo(() => {
-    let base = transactions.filter(t => batchMatchesCategoryState(Boolean(t.categoryId)) && t.description);
+    let base = transactions.filter(t => batchMatchesTargetState(t) && batchMatchesCategoryFilter(t) && t.description);
     if (batchDateFrom && batchDateTo) {
       base = base.filter(t => {
         const d = t.transactionDate ? String(t.transactionDate).slice(0, 10) : "";
@@ -1219,11 +1248,11 @@ export default function BankStatementsPage() {
     return Array.from(groups.entries())
       .map(([description, count]) => ({ description, count }))
       .sort((a, b) => b.count - a.count);
-  }, [transactions, batchMode, batchDateFrom, batchDateTo, batchFilterLocalId, batchBankSource]);
+  }, [transactions, batchMode, batchDateFrom, batchDateTo, batchFilterLocalId, batchBankSource, batchFilterCategoryId]);
 
   const groupedDescriptions2 = useMemo(() => {
     let base = transactions.filter(
-      (t) => batchMatchesCategoryState(Boolean(t.categoryId)) && (t.description2 && String(t.description2).trim()),
+      (t) => batchMatchesTargetState(t) && batchMatchesCategoryFilter(t) && (t.description2 && String(t.description2).trim()),
     );
     if (batchDateFrom && batchDateTo) {
       base = base.filter((t) => {
@@ -1252,7 +1281,7 @@ export default function BankStatementsPage() {
     return Array.from(groups.entries())
       .map(([description2, count]) => ({ description2, count }))
       .sort((a, b) => b.count - a.count);
-  }, [transactions, batchMode, batchDateFrom, batchDateTo, selectedDescriptions, batchDescSearch, batchBankSource]);
+  }, [transactions, batchMode, batchDateFrom, batchDateTo, selectedDescriptions, batchDescSearch, batchBankSource, batchFilterCategoryId]);
 
   const filteredGroupedDescriptions = useMemo(() => {
     const q = batchDescSearch.trim().toLowerCase();
@@ -1806,6 +1835,14 @@ export default function BankStatementsPage() {
             >
               <Tag className="h-4 w-4 mr-2" />
               Clasificacion Masiva
+            </Button>
+            <Button
+              variant="outline"
+              onClick={() => { setBatchMode("assign-local"); setIsBatchCategorizeOpen(true); }}
+              data-testid="button-batch-assign-local"
+            >
+              <Store className="h-4 w-4 mr-2" />
+              Asignacion masiva de Local
             </Button>
             <Button
               variant="outline"
@@ -3013,12 +3050,22 @@ export default function BankStatementsPage() {
         <DialogContent className="sm:max-w-2xl max-h-[min(90vh,880px)] h-[min(90vh,880px)] flex flex-col gap-0 p-0 overflow-hidden sm:rounded-lg">
           <div className="px-6 pt-6 pb-2 pr-12 shrink-0 border-b border-border/50">
             <DialogHeader>
-              <DialogTitle>{batchMode === "uncategorize" ? "Descategorizar Masivo" : "Clasificacion Masiva"}</DialogTitle>
+              <DialogTitle>
+                {batchMode === "uncategorize"
+                  ? "Descategorizar Masivo"
+                  : batchMode === "assign-local"
+                  ? "Asignacion masiva de Local"
+                  : "Clasificacion Masiva"}
+              </DialogTitle>
               <DialogDescription>
                 {batchMode === "uncategorize"
                   ? (selectedTransactionIds.size > 0
                       ? `Vas a quitar la categoría a ${selectedTransactionIds.size} transacciones seleccionadas`
                       : "Filtrá por periodo y/o descripción; se quitará la categoría a las que coincidan")
+                  : batchMode === "assign-local"
+                  ? (selectedTransactionIds.size > 0
+                      ? `Vas a asignar local a ${selectedTransactionIds.size} transacciones seleccionadas`
+                      : "Asigna local a los movimientos que no lo tienen. La categoría no se modifica.")
                   : (selectedTransactionIds.size > 0
                       ? `Vas a clasificar ${selectedTransactionIds.size} transacciones seleccionadas`
                       : "Filtra por periodo y/o descripcion, asigna categoria y local")}
@@ -3040,10 +3087,28 @@ export default function BankStatementsPage() {
                     <Input type="date" value={batchDateTo} onChange={(e) => { setBatchDateTo(e.target.value); setSelectedDescriptions(new Set()); setSelectedDescription2(""); }} data-testid="input-batch-date-to" />
                   </div>
                 </div>
-                <div className="space-y-1">
-                  <Label className="text-xs">Local (filtro de búsqueda)</Label>
-                  <BatchLocalCombobox locals={locals} value={batchFilterLocalId || "none"} onChange={(v) => { setBatchFilterLocalId(v === "none" ? "" : v); setSelectedDescriptions(new Set()); }} />
-                </div>
+                {batchMode !== "assign-local" && (
+                  <div className="space-y-1">
+                    <Label className="text-xs">Local (filtro de búsqueda)</Label>
+                    <BatchLocalCombobox locals={locals} value={batchFilterLocalId || "none"} onChange={(v) => { setBatchFilterLocalId(v === "none" ? "" : v); setSelectedDescriptions(new Set()); }} />
+                  </div>
+                )}
+                {batchMode !== "categorize" && (
+                  <div className="space-y-1">
+                    <Label className="text-xs">Categoría (filtro de búsqueda)</Label>
+                    <Select value={batchFilterCategoryId || "all"} onValueChange={(v) => { setBatchFilterCategoryId(v === "all" ? "" : v); setSelectedDescriptions(new Set()); setSelectedDescription2(""); }}>
+                      <SelectTrigger data-testid="select-batch-filter-category"><SelectValue placeholder="Todas las categorías" /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="all">Todas las categorías</SelectItem>
+                        {batchMode === "assign-local" && <SelectItem value="none">Sin categoría</SelectItem>}
+                        {categories.map((c) => (
+                          <SelectItem key={c.id} value={String(c.id)}>{c.name}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    <p className="text-xs text-muted-foreground">Solo acota la búsqueda: la categoría no se modifica.</p>
+                  </div>
+                )}
                 <div className="space-y-1">
                   <Label className="text-xs">Entidad (banco de origen)</Label>
                   <Select value={batchBankSource || "all"} onValueChange={(v) => { setBatchBankSource(v === "all" ? "" : v); setSelectedDescriptions(new Set()); setSelectedDescription2(""); }}>
@@ -3059,6 +3124,8 @@ export default function BankStatementsPage() {
                 <p className="text-xs text-muted-foreground">
                   {batchMode === "uncategorize"
                     ? "Solo se descategorizaran transacciones CON categoria"
+                    : batchMode === "assign-local"
+                    ? "Solo alcanza a los movimientos SIN local. Los que ya tienen local no se tocan, y la categoría imputada se respeta."
                     : "Solo se clasificaran transacciones SIN categoria"}
                 </p>
               </div>
@@ -3072,7 +3139,7 @@ export default function BankStatementsPage() {
                     <Input placeholder="Buscar en descripciones…" value={batchDescSearch} onChange={(e) => setBatchDescSearch(e.target.value)} className="max-w-md" />
                   )}
                   {groupedDescriptions.length === 0 ? (
-                    <div className="text-center py-4 text-sm text-muted-foreground rounded-lg bg-muted/50">{batchMode === "uncategorize" ? "No hay movimientos categorizados" : "No hay movimientos sin clasificar"}</div>
+                    <div className="text-center py-4 text-sm text-muted-foreground rounded-lg bg-muted/50">{batchMode === "uncategorize" ? "No hay movimientos categorizados" : batchMode === "assign-local" ? "No hay movimientos sin local" : "No hay movimientos sin clasificar"}</div>
                   ) : filteredGroupedDescriptions.length === 0 ? (
                     <div className="text-center py-3 text-sm text-muted-foreground rounded-lg bg-muted/50">Ninguna descripcion coincide</div>
                   ) : (
@@ -3133,6 +3200,16 @@ export default function BankStatementsPage() {
               </div>
             )}
 
+            {batchMode === "assign-local" && (
+              <div className="space-y-2">
+                <p className="text-sm font-medium">3. Local a asignar</p>
+                <p className="text-xs text-muted-foreground">
+                  Se le asignará a todos los movimientos que coincidan con el filtro y hoy no tengan local.
+                </p>
+                <BatchLocalCombobox locals={locals} value={batchLocalId} onChange={setBatchLocalId} />
+              </div>
+            )}
+
             {batchMode === "categorize" && (
               <>
                 <div className="space-y-2">
@@ -3147,6 +3224,26 @@ export default function BankStatementsPage() {
                 </div>
               </>
             )}
+
+            {batchMode === "assign-local" && batchLocalId && batchLocalId !== "none" &&
+              (selectedTransactionIds.size > 0 || (batchDateFrom && batchDateTo) || selectedDescriptions.size > 0 || selectedDescription2.trim()) && (
+                <div className="p-3 rounded-lg bg-amber-500/10 border border-amber-500/20">
+                  <div className="flex items-start gap-2">
+                    <AlertCircle className="h-4 w-4 text-amber-600 mt-0.5 shrink-0" />
+                    <div className="text-sm min-w-0">
+                      <p className="font-medium text-amber-700 dark:text-amber-300">Resumen</p>
+                      <p className="text-muted-foreground">
+                        Local a asignar: <span className="font-medium">{locals.find((l) => l.id === parseInt(batchLocalId, 10))?.name}</span>
+                        {selectedDescriptions.size > 0 && (<><br />{selectedDescriptions.size} descripción(es): <span className="font-medium">{Array.from(selectedDescriptions).join(", ")}</span></>)}
+                        {selectedDescription2.trim() && (<><br />Entidad: <span className="font-medium">{selectedDescription2}</span></>)}
+                        {batchDateFrom && batchDateTo && (<><br />Periodo: {batchDateFrom} a {batchDateTo}</>)}
+                        {selectedTransactionIds.size > 0 && (<><br />{selectedTransactionIds.size} transacciones seleccionadas</>)}
+                        <br />La categoría de estos movimientos <span className="font-medium">no se modifica</span>.
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              )}
 
             {batchMode === "categorize" && batchCategoryId &&
               (selectedTransactionIds.size > 0 || (batchDateFrom && batchDateTo) || selectedDescriptions.size > 0 || selectedDescription2.trim()) && (
@@ -3172,7 +3269,7 @@ export default function BankStatementsPage() {
           <div className="shrink-0 border-t px-6 py-4 flex flex-wrap justify-end gap-2 bg-background">
             <Button variant="outline" onClick={() => {
               setIsBatchCategorizeOpen(false); setBatchCategoryId(""); setBatchLocalId(""); setBatchDateFrom(""); setBatchDateTo("");
-              setSelectedDescriptions(new Set()); setSelectedDescription2(""); setBatchDescSearch(""); setBatchDesc2Search(""); setBatchFilterLocalId("");
+              setSelectedDescriptions(new Set()); setSelectedDescription2(""); setBatchDescSearch(""); setBatchDesc2Search(""); setBatchFilterLocalId(""); setBatchFilterCategoryId("");
             }} data-testid="button-cancel-batch">Cancelar</Button>
             <Button
               variant={batchMode === "uncategorize" ? "destructive" : "default"}
@@ -3180,6 +3277,7 @@ export default function BankStatementsPage() {
               disabled={
                 batchCategorizeMutation.isPending ||
                 (batchMode === "categorize" && !batchCategoryId) ||
+                (batchMode === "assign-local" && (!batchLocalId || batchLocalId === "none")) ||
                 (selectedTransactionIds.size === 0 && !batchDateFrom && !batchDateTo && selectedDescriptions.size === 0 && !selectedDescription2.trim())
               }
               data-testid="button-apply-batch"
@@ -3188,6 +3286,8 @@ export default function BankStatementsPage() {
                 ? "Procesando..."
                 : batchMode === "uncategorize"
                 ? "Descategorizar"
+                : batchMode === "assign-local"
+                ? "Asignar Local"
                 : "Aplicar Clasificacion"}
             </Button>
           </div>

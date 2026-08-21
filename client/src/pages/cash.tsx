@@ -70,6 +70,7 @@ import {
   AlertCircle,
   ListChecks,
   Wallet,
+  Store,
 } from "lucide-react";
 import { Progress } from "@/components/ui/progress";
 import type { Transaction, BankAccount, TransactionCategory, Local, FinancialGroup, CashRegister } from "@shared/schema";
@@ -543,7 +544,7 @@ export default function CashPage() {
   const [editCajaId, setEditCajaId] = useState<string>("");
 
   // Clasificación Masiva en Efectivo (modo: categorizar / descategorizar / asignar caja / borrar)
-  type MasivaMode = "categorize" | "uncategorize" | "assign-caja" | "delete";
+  type MasivaMode = "categorize" | "uncategorize" | "assign-caja" | "assign-local" | "delete";
   const [isMasivaOpen, setIsMasivaOpen] = useState(false);
   const [masivaMode, setMasivaMode] = useState<MasivaMode>("categorize");
   const [masivaDateFrom, setMasivaDateFrom] = useState("");
@@ -555,12 +556,16 @@ export default function CashPage() {
   const [masivaNewLocalId, setMasivaNewLocalId] = useState("");
   /** Caja a asignar en el modo "assign-caja". Solo alcanza a movimientos que hoy no tienen caja. */
   const [masivaCajaId, setMasivaCajaId] = useState("");
+  /** Local a asignar en el modo "assign-local". Solo alcanza a movimientos SIN local y nunca toca la categoria. */
+  const [masivaAssignLocalId, setMasivaAssignLocalId] = useState("");
+  /** Filtro de BUSQUEDA por categoria: "" = todas, "none" = sin categoria, o el id. No la modifica. */
+  const [masivaFilterCategoryId, setMasivaFilterCategoryId] = useState("");
 
   const openMasiva = (mode: MasivaMode) => {
     setMasivaMode(mode);
     setMasivaDateFrom(""); setMasivaDateTo(""); setMasivaLocalId(""); setMasivaDescSearch("");
     setMasivaSelectedDescs(new Set()); setMasivaCategoryId(""); setMasivaNewLocalId("");
-    setMasivaCajaId("");
+    setMasivaCajaId(""); setMasivaAssignLocalId(""); setMasivaFilterCategoryId("");
     setIsMasivaOpen(true);
   };
 
@@ -593,6 +598,12 @@ export default function CashPage() {
   const localFiltersItems = useMemo(
     () => localsSorted.map((l) => ({ id: l.id, name: l.name })),
     [localsSorted],
+  );
+
+  /** Opciones del filtro de BUSQUEDA por categoria de la masiva (no modifica la categoria). */
+  const masivaCategoryFilterItems = useMemo(
+    () => allCategoriesSorted.map((c) => ({ id: c.id, name: c.name })),
+    [allCategoriesSorted],
   );
 
   const cashLocalPickComboOptions = useMemo(
@@ -1222,6 +1233,8 @@ export default function CashPage() {
       if (masivaMode === "categorize") return !t.categoryId;
       if (masivaMode === "uncategorize") return !!t.categoryId;
       if (masivaMode === "assign-caja") return (t as any).cashRegisterId == null;
+      // assign-local: los que NO tienen local, tengan o no categoria.
+      if (masivaMode === "assign-local") return t.localId == null;
       return true; // delete
     });
     if (masivaDateFrom && masivaDateTo) {
@@ -1234,10 +1247,16 @@ export default function CashPage() {
       const lid = parseInt(masivaLocalId, 10);
       rows = rows.filter((t) => t.localId === lid);
     }
+    // Filtro de busqueda por categoria: acota el lote sin modificarla.
+    if (masivaFilterCategoryId) {
+      rows = masivaFilterCategoryId === "none"
+        ? rows.filter((t) => t.categoryId == null)
+        : rows.filter((t) => t.categoryId === parseInt(masivaFilterCategoryId, 10));
+    }
     const map = new Map<string, number>();
     for (const t of rows) map.set(t.description!, (map.get(t.description!) || 0) + 1);
     return Array.from(map.entries()).map(([description, count]) => ({ description, count })).sort((a, b) => b.count - a.count);
-  }, [transactions, masivaMode, masivaDateFrom, masivaDateTo, masivaLocalId]);
+  }, [transactions, masivaMode, masivaDateFrom, masivaDateTo, masivaLocalId, masivaFilterCategoryId]);
 
   const masivaFilteredDescs = useMemo(() => {
     const q = masivaDescSearch.trim().toLowerCase();
@@ -1265,6 +1284,17 @@ export default function CashPage() {
       // Filtro de busqueda por local: acota el lote a lo que se ve en pantalla. En
       // batch-categorize va como `filterLocalId` porque ahi `localId` es el local a ASIGNAR.
       if (masivaLocalId) body.filterLocalId = parseInt(masivaLocalId, 10);
+      if (masivaFilterCategoryId) body.filterCategoryId = masivaFilterCategoryId;
+
+      if (masivaMode === "assign-local") {
+        if (!masivaAssignLocalId) throw new Error("Elegí el local a asignar");
+        // Solo alcanza a los movimientos SIN local; la categoria imputada no se toca.
+        body.mode = "assign-local";
+        body.localId = parseInt(masivaAssignLocalId, 10);
+        delete body.filterLocalId;
+        const res = await apiRequest("POST", "/api/transactions/batch-categorize", body);
+        return res.json();
+      }
       if (masivaMode === "uncategorize") {
         body.mode = "uncategorize";
         const res = await apiRequest("POST", "/api/transactions/batch-categorize", body);
@@ -1292,6 +1322,8 @@ export default function CashPage() {
             ? `${n} movimiento(s) borrados`
             : masivaMode === "uncategorize"
             ? `${n} movimiento(s) descategorizados`
+            : masivaMode === "assign-local"
+            ? `Local asignado a ${n} movimiento(s)`
             : masivaMode === "assign-caja"
             ? `${n} movimiento(s) con caja asignada`
             : `${n} movimiento(s) categorizados`,
@@ -1299,7 +1331,7 @@ export default function CashPage() {
       setIsMasivaOpen(false);
       setMasivaDateFrom(""); setMasivaDateTo(""); setMasivaLocalId(""); setMasivaDescSearch("");
       setMasivaSelectedDescs(new Set()); setMasivaCategoryId(""); setMasivaNewLocalId("");
-      setMasivaCajaId("");
+      setMasivaCajaId(""); setMasivaAssignLocalId(""); setMasivaFilterCategoryId("");
       queryClient.invalidateQueries({ queryKey: ["/api/transactions"] });
       refetch();
     },
@@ -1513,6 +1545,10 @@ export default function CashPage() {
             <Button variant="outline" onClick={() => openMasiva("assign-caja")} data-testid="button-masiva-caja-cash">
               <Wallet className="h-4 w-4 mr-2" />
               Asignar Caja Masivo
+            </Button>
+            <Button variant="outline" onClick={() => openMasiva("assign-local")} data-testid="button-masiva-local-cash">
+              <Store className="h-4 w-4 mr-2" />
+              Asignación masiva de Local
             </Button>
             <Button variant="outline" onClick={() => openMasiva("delete")} data-testid="button-masiva-delete-cash" className="text-destructive hover:text-destructive">
               <Trash2 className="h-4 w-4 mr-2" />
@@ -2164,7 +2200,7 @@ export default function CashPage() {
         if (!o) {
           setMasivaDateFrom(""); setMasivaDateTo(""); setMasivaLocalId(""); setMasivaDescSearch("");
           setMasivaSelectedDescs(new Set()); setMasivaCategoryId(""); setMasivaNewLocalId("");
-          setMasivaCajaId("");
+          setMasivaCajaId(""); setMasivaAssignLocalId(""); setMasivaFilterCategoryId("");
         }
       }}>
         <DialogContent className="sm:max-w-2xl max-h-[min(90vh,880px)] h-[min(90vh,880px)] flex flex-col gap-0 p-0 overflow-hidden sm:rounded-lg">
@@ -2177,6 +2213,8 @@ export default function CashPage() {
                   ? "Descategorizar Masivo — Efectivo"
                   : masivaMode === "assign-caja"
                   ? "Asignar Caja Masivo — Efectivo"
+                  : masivaMode === "assign-local"
+                  ? "Asignación masiva de Local — Efectivo"
                   : "Clasificación Masiva — Efectivo"}
               </DialogTitle>
               <DialogDescription>
@@ -2186,6 +2224,8 @@ export default function CashPage() {
                   ? "Filtrá por período, local y descripción; se quitará la categoría a todos los movimientos categorizados que coincidan."
                   : masivaMode === "assign-caja"
                   ? "Filtrá por período, local y descripción; se asignará la caja elegida a todos los movimientos SIN caja que coincidan (tengan o no categoría). Los que ya tienen caja no se tocan."
+                  : masivaMode === "assign-local"
+                  ? "Filtrá por período y descripción; se asignará el local elegido a todos los movimientos SIN local que coincidan (tengan o no categoría). Los que ya tienen local no se tocan y la categoría imputada no se modifica."
                   : "Filtrá por período, local y descripción; asigná categoría a todos los movimientos sin categorizar que coincidan."}
               </DialogDescription>
             </DialogHeader>
@@ -2203,16 +2243,32 @@ export default function CashPage() {
                   <Input type="date" value={masivaDateTo} onChange={(e) => { setMasivaDateTo(e.target.value); setMasivaSelectedDescs(new Set()); }} />
                 </div>
               </div>
-              <div className="space-y-1">
-                <Label className="text-xs">Local</Label>
-                <FilterSearchableSelect
-                  value={masivaLocalId || "all"}
-                  onChange={(v) => { setMasivaLocalId(v === "all" ? "" : v); setMasivaSelectedDescs(new Set()); }}
-                  allLabel="Todos los locales"
-                  items={localFiltersItems}
-                  searchPlaceholder="Buscar local…"
-                />
-              </div>
+              {masivaMode !== "assign-local" && (
+                <div className="space-y-1">
+                  <Label className="text-xs">Local</Label>
+                  <FilterSearchableSelect
+                    value={masivaLocalId || "all"}
+                    onChange={(v) => { setMasivaLocalId(v === "all" ? "" : v); setMasivaSelectedDescs(new Set()); }}
+                    allLabel="Todos los locales"
+                    items={localFiltersItems}
+                    searchPlaceholder="Buscar local…"
+                  />
+                </div>
+              )}
+              {masivaMode !== "categorize" && (
+                <div className="space-y-1">
+                  <Label className="text-xs">Categoría (filtro de búsqueda)</Label>
+                  <FilterSearchableSelect
+                    value={masivaFilterCategoryId || "all"}
+                    onChange={(v) => { setMasivaFilterCategoryId(v === "all" ? "" : v); setMasivaSelectedDescs(new Set()); }}
+                    allLabel="Todas las categorías"
+                    items={masivaCategoryFilterItems}
+                    searchPlaceholder="Buscar categoría…"
+                    extraOptions={masivaMode === "assign-local" ? [{ value: "none", label: "Sin categoría" }] : []}
+                  />
+                  <p className="text-xs text-muted-foreground">Solo acota la búsqueda: la categoría no se modifica.</p>
+                </div>
+              )}
             </div>
 
             <div className="space-y-2">
@@ -2228,6 +2284,8 @@ export default function CashPage() {
                     ? "No hay movimientos categorizados"
                     : masivaMode === "assign-caja"
                     ? "No hay movimientos sin caja"
+                    : masivaMode === "assign-local"
+                    ? "No hay movimientos sin local"
                     : "No hay movimientos"}
                 </div>
               ) : masivaFilteredDescs.length === 0 ? (
@@ -2305,6 +2363,21 @@ export default function CashPage() {
                 )}
               </div>
             )}
+            {masivaMode === "assign-local" && (
+              <div className="space-y-2">
+                <p className="text-sm font-medium">3. Local a asignar</p>
+                <p className="text-xs text-muted-foreground">
+                  Se le asignará a todos los movimientos que coincidan y hoy no tengan local. La categoría no se modifica.
+                </p>
+                <FilterSearchableSelect
+                  value={masivaAssignLocalId || "all"}
+                  onChange={(v) => setMasivaAssignLocalId(v === "all" ? "" : v)}
+                  allLabel="Elegí el local"
+                  items={localFiltersItems}
+                  searchPlaceholder="Buscar local…"
+                />
+              </div>
+            )}
             {masivaMode === "delete" && (masivaSelectedDescs.size > 0 || (masivaDateFrom && masivaDateTo)) && (
               <div className="rounded-lg border border-destructive/40 bg-destructive/5 p-3 text-sm text-destructive">
                 Se borrarán definitivamente todos los movimientos de efectivo que coincidan con el criterio. Revisá antes de confirmar.
@@ -2320,6 +2393,7 @@ export default function CashPage() {
                   masivaMutation.isPending ||
                   (masivaMode === "categorize" && !masivaCategoryId) ||
                   (masivaMode === "assign-caja" && !masivaCajaId) ||
+                  (masivaMode === "assign-local" && !masivaAssignLocalId) ||
                   (masivaSelectedDescs.size === 0 && !(masivaDateFrom && masivaDateTo))
                 }
                 onClick={() => masivaMutation.mutate()}
@@ -2332,6 +2406,8 @@ export default function CashPage() {
                   ? "Descategorizar"
                   : masivaMode === "assign-caja"
                   ? "Asignar caja"
+                  : masivaMode === "assign-local"
+                  ? "Asignar local"
                   : "Clasificar"}
               </Button>
             </div>
