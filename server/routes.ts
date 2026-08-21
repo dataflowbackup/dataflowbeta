@@ -3203,7 +3203,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.post("/api/transactions/batch-categorize", isAuthenticated, async (req, res) => {
     try {
       const clientId = await getClientId(req);
-      const { transactionIds, categoryId, localId, dateFrom, dateTo, description, description2, descriptions, bankSource, mode, cashRegisterId } = req.body;
+      const { transactionIds, categoryId, localId, filterLocalId, dateFrom, dateTo, description, description2, descriptions, bankSource, mode, cashRegisterId } = req.body;
 
       // mode "uncategorize" = descategorización masiva (quita la categoría a los que SÍ la tienen).
       const uncategorize = mode === "uncategorize";
@@ -3251,6 +3251,18 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const desc2Filter =
         typeof description2 === "string" && description2.trim().length > 0 ? description2.trim() : null;
 
+      // Filtro de BUSQUEDA por local: acota a que movimientos alcanza el lote.
+      // Ojo: es distinto de `localId`, que es el local que se ASIGNA a los alcanzados.
+      // Antes no existia y la masiva alcanzaba a todos los movimientos del cliente aunque
+      // en pantalla se hubiera filtrado por un local (bug ago-2026).
+      const localFilter =
+        filterLocalId !== undefined && filterLocalId !== null && filterLocalId !== "" && filterLocalId !== "all"
+          ? parseInt(String(filterLocalId), 10)
+          : null;
+      if (localFilter !== null && !Number.isFinite(localFilter)) {
+        return res.status(400).json({ message: "filterLocalId invalido" });
+      }
+
       // Estado que tiene que tener el movimiento para entrar en el lote:
       //  categorizar → sin categoría · descategorizar → con categoría · asignar caja → sin caja.
       const matchesTargetState = (t: (typeof allTransactions)[0]) => {
@@ -3283,6 +3295,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
             if (!matchesTargetState(t)) return false;
             if (!matchesDateRange(t)) return false;
             if (bankSource && t.bankSource !== bankSource) return false;
+            if (localFilter !== null && t.localId !== localFilter) return false;
             if (descFilters !== null && !descFilters.includes(t.description ?? "")) return false;
             if (desc2Filter !== null && t.description2 !== desc2Filter) return false;
             return true;
@@ -3297,6 +3310,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
           .filter(t => {
             const txDate = new Date(t.transactionDate);
             if (bankSource && t.bankSource !== bankSource) return false;
+            if (localFilter !== null && t.localId !== localFilter) return false;
             if (!(txDate >= from && txDate <= to)) return false;
             return matchesTargetState(t);
           })

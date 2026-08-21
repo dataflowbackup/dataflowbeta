@@ -969,6 +969,7 @@ export default function BankStatementsPage() {
       transactionIds?: number[];
       categoryId: number | null;
       localId?: number | null;
+      filterLocalId?: number;
       dateFrom?: string;
       dateTo?: string;
       description?: string;
@@ -1172,7 +1173,12 @@ export default function BankStatementsPage() {
     // previo de los movimientos (antes mandaba null y los dejaba sin local).
     const localSelected = !!batchLocalId && batchLocalId !== "none";
 
+    // El filtro de local tiene que viajar al backend: si no, el lote alcanza a TODOS los
+    // movimientos con esa descripcion y no solo a los del local que se ve en pantalla.
+    const filterLocal = batchFilterLocalId ? parseInt(batchFilterLocalId, 10) : NaN;
+
     batchCategorizeMutation.mutate({
+      ...(Number.isFinite(filterLocal) ? { filterLocalId: filterLocal } : {}),
       ...(hasDescriptions ? { descriptions: Array.from(selectedDescriptions) } : {}),
       ...(hasDescription2 ? { description2: selectedDescription2 } : {}),
       ...(batchBankSource ? { bankSource: batchBankSource } : {}),

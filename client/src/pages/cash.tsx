@@ -1256,10 +1256,15 @@ export default function CashPage() {
       if (descs.length > 0) body.descriptions = descs;
 
       if (masivaMode === "delete") {
+        // batch-delete no asigna nada, asi que ahi el filtro de local viaja como `localId`.
         if (masivaLocalId) body.localId = parseInt(masivaLocalId, 10);
         const res = await apiRequest("POST", "/api/transactions/batch-delete", body);
         return res.json();
       }
+
+      // Filtro de busqueda por local: acota el lote a lo que se ve en pantalla. En
+      // batch-categorize va como `filterLocalId` porque ahi `localId` es el local a ASIGNAR.
+      if (masivaLocalId) body.filterLocalId = parseInt(masivaLocalId, 10);
       if (masivaMode === "uncategorize") {
         body.mode = "uncategorize";
         const res = await apiRequest("POST", "/api/transactions/batch-categorize", body);
