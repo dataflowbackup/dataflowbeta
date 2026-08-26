@@ -6,6 +6,14 @@ import { InternalLoanButton } from "@/components/internal-loan-button";
 import { SplitLocalsButton } from "@/components/split-locals-button";
 import { EconomicMonthCell, EconomicMonthHeader } from "@/components/economic-month-cell";
 import { EconomicMonthBulkDialog } from "@/components/economic-month-bulk-dialog";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { resolveEconomicMonth, economicMonthLabelWithYear } from "@shared/economicMonth";
 import { DataTable, Column } from "@/components/data-table";
 import { Button } from "@/components/ui/button";
@@ -71,6 +79,9 @@ import {
   ListChecks,
   Wallet,
   Store,
+  ChevronDown,
+  Settings,
+  CalendarRange,
 } from "lucide-react";
 import { Progress } from "@/components/ui/progress";
 import type { Transaction, BankAccount, TransactionCategory, Local, FinancialGroup, CashRegister } from "@shared/schema";
@@ -540,6 +551,7 @@ export default function CashPage() {
 
   const [batchCajaId, setBatchCajaId] = useState<string>("");
   const [isCajasOpen, setIsCajasOpen] = useState(false);
+  const [isEconomicMonthBulkOpen, setIsEconomicMonthBulkOpen] = useState(false);
   const [newCajaName, setNewCajaName] = useState("");
   const [editCajaId, setEditCajaId] = useState<string>("");
 
@@ -1530,34 +1542,77 @@ export default function CashPage() {
         description="Movimientos de caja cargados manualmente; mismas categorías que en extractos."
         actions={
           <div className="flex flex-wrap items-center gap-2">
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button variant="outline" data-testid="button-menu-masivas-cash">
+                  <ListChecks className="h-4 w-4 mr-2" />
+                  Acciones masivas
+                  <ChevronDown className="h-4 w-4 ml-2" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-64">
+                <DropdownMenuLabel>Acciones masivas</DropdownMenuLabel>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem onSelect={() => openMasiva("categorize")} data-testid="button-masiva-cash">
+                  <Filter className="h-4 w-4 mr-2" />
+                  Clasificación Masiva
+                </DropdownMenuItem>
+                <DropdownMenuItem onSelect={() => openMasiva("assign-caja")} data-testid="button-masiva-caja-cash">
+                  <Wallet className="h-4 w-4 mr-2" />
+                  Asignar Caja Masivo
+                </DropdownMenuItem>
+                <DropdownMenuItem onSelect={() => openMasiva("assign-local")} data-testid="button-masiva-local-cash">
+                  <Store className="h-4 w-4 mr-2" />
+                  Asignación masiva de Local
+                </DropdownMenuItem>
+                <DropdownMenuItem onSelect={() => openMasiva("uncategorize")} data-testid="button-masiva-uncat-cash">
+                  <ListChecks className="h-4 w-4 mr-2" />
+                  Descategorizar Masivo
+                </DropdownMenuItem>
+                <DropdownMenuItem onSelect={() => setIsEconomicMonthBulkOpen(true)} data-testid="button-economic-month-bulk">
+                  <CalendarRange className="h-4 w-4 mr-2" />
+                  Mes Económico Masivo
+                </DropdownMenuItem>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem
+                  onSelect={() => openMasiva("delete")}
+                  data-testid="button-masiva-delete-cash"
+                  className="text-destructive focus:text-destructive"
+                >
+                  <Trash2 className="h-4 w-4 mr-2" />
+                  Borrado Masivo
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button variant="outline" data-testid="button-menu-configuracion-cash">
+                  <Settings className="h-4 w-4 mr-2" />
+                  Configuración
+                  <ChevronDown className="h-4 w-4 ml-2" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-64">
+                <DropdownMenuLabel>Configuración</DropdownMenuLabel>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem
+                  onSelect={() => { setNewCajaName(""); setIsCajasOpen(true); }}
+                  data-testid="button-cajas"
+                >
+                  <Wallet className="h-4 w-4 mr-2" />
+                  Cajas
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+            <EconomicMonthBulkDialog
+              transactions={transactions as any}
+              locals={locals}
+              open={isEconomicMonthBulkOpen}
+              onOpenChange={setIsEconomicMonthBulkOpen}
+            />
             <Button variant="outline" onClick={exportToExcel} disabled={tabFilteredTransactions.length === 0} data-testid="button-export-cash">
               <Download className="h-4 w-4 mr-2" />
               Exportar
-            </Button>
-            <Button variant="outline" onClick={() => openMasiva("categorize")} data-testid="button-masiva-cash">
-              <Filter className="h-4 w-4 mr-2" />
-              Clasificación Masiva
-            </Button>
-            <Button variant="outline" onClick={() => openMasiva("uncategorize")} data-testid="button-masiva-uncat-cash">
-              <ListChecks className="h-4 w-4 mr-2" />
-              Descategorizar Masivo
-            </Button>
-            <Button variant="outline" onClick={() => openMasiva("assign-caja")} data-testid="button-masiva-caja-cash">
-              <Wallet className="h-4 w-4 mr-2" />
-              Asignar Caja Masivo
-            </Button>
-            <Button variant="outline" onClick={() => openMasiva("assign-local")} data-testid="button-masiva-local-cash">
-              <Store className="h-4 w-4 mr-2" />
-              Asignación masiva de Local
-            </Button>
-            <Button variant="outline" onClick={() => openMasiva("delete")} data-testid="button-masiva-delete-cash" className="text-destructive hover:text-destructive">
-              <Trash2 className="h-4 w-4 mr-2" />
-              Borrado Masivo
-            </Button>
-            <EconomicMonthBulkDialog transactions={transactions as any} locals={locals} />
-            <Button variant="outline" onClick={() => { setNewCajaName(""); setIsCajasOpen(true); }} data-testid="button-cajas">
-              <Wallet className="h-4 w-4 mr-2" />
-              Cajas
             </Button>
             <Button variant="outline" onClick={openImport} data-testid="button-import-cash">
               <Upload className="h-4 w-4 mr-2" />

@@ -56,14 +56,29 @@ export function EconomicMonthBulkDialog({
   transactions,
   locals,
   buttonClassName,
+  open: openProp,
+  onOpenChange,
 }: {
   transactions: BulkTx[];
   locals: LocalOption[];
   buttonClassName?: string;
+  /**
+   * Modo controlado (punto 3, ago-26): si se pasa `open`, el diálogo lo abre quien lo usa
+   * —hoy el menú "Acciones masivas" de Extractos/Efectivo— y este componente deja de
+   * renderizar su propio botón. Sin `open`, se comporta como antes: botón + estado propio.
+   */
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
 }) {
   const { toast } = useToast();
   const queryClient = useQueryClient();
-  const [open, setOpen] = useState(false);
+  const [openState, setOpenState] = useState(false);
+  const isControlled = openProp !== undefined;
+  const open = isControlled ? openProp : openState;
+  const setOpen = (next: boolean) => {
+    if (!isControlled) setOpenState(next);
+    onOpenChange?.(next);
+  };
 
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
@@ -133,15 +148,17 @@ export function EconomicMonthBulkDialog({
 
   return (
     <>
-      <Button
-        variant="outline"
-        className={buttonClassName}
-        onClick={() => setOpen(true)}
-        data-testid="button-economic-month-bulk"
-      >
-        <CalendarRange className="h-4 w-4 mr-2" />
-        Mes Económico Masivo
-      </Button>
+      {!isControlled && (
+        <Button
+          variant="outline"
+          className={buttonClassName}
+          onClick={() => setOpen(true)}
+          data-testid="button-economic-month-bulk"
+        >
+          <CalendarRange className="h-4 w-4 mr-2" />
+          Mes Económico Masivo
+        </Button>
+      )}
 
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent className="max-w-3xl max-h-[90vh] flex flex-col">

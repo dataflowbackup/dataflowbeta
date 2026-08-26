@@ -51,6 +51,14 @@ import { formatCurrency, formatDate } from "@/lib/formatters";
 import { cn } from "@/lib/utils";
 import { GenericBankMappingDialog } from "@/components/generic-bank-mapping-dialog";
 import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import {
   Upload,
   TrendingUp,
   TrendingDown,
@@ -72,6 +80,9 @@ import {
   Filter,
   Download,
   Store,
+  ChevronDown,
+  Settings,
+  CalendarRange,
 } from "lucide-react";
 import * as XLSX from "xlsx";
 import { toISODate } from "@/lib/dateHelpers";
@@ -483,6 +494,7 @@ export default function BankStatementsPage() {
   const mpPanelWasOpenRef = useRef(false);
   const [isAccountsDialogOpen, setIsAccountsDialogOpen] = useState(false);
   const [isGenericMappingOpen, setIsGenericMappingOpen] = useState(false);
+  const [isEconomicMonthBulkOpen, setIsEconomicMonthBulkOpen] = useState(false);
   const [purgeAccountTarget, setPurgeAccountTarget] = useState<BankAccountWithLocal | null>(null);
   const [newAccountName, setNewAccountName] = useState("");
   const [newAccountLocalId, setNewAccountLocalId] = useState<string>("none");
@@ -1798,6 +1810,68 @@ export default function BankStatementsPage() {
                 Clasificar {selectedTransactionIds.size} seleccionados
               </Button>
             )}
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button variant="outline" data-testid="button-menu-masivas">
+                  <ListChecks className="h-4 w-4 mr-2" />
+                  Acciones masivas
+                  <ChevronDown className="h-4 w-4 ml-2" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-64">
+                <DropdownMenuLabel>Acciones masivas</DropdownMenuLabel>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem
+                  onSelect={() => { setBatchMode("categorize"); setIsBatchCategorizeOpen(true); }}
+                  data-testid="button-batch-categorize-range"
+                >
+                  <Tag className="h-4 w-4 mr-2" />
+                  Clasificacion Masiva
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  onSelect={() => { setBatchMode("assign-local"); setIsBatchCategorizeOpen(true); }}
+                  data-testid="button-batch-assign-local"
+                >
+                  <Store className="h-4 w-4 mr-2" />
+                  Asignacion masiva de Local
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  onSelect={() => { setBatchMode("uncategorize"); setIsBatchCategorizeOpen(true); }}
+                  data-testid="button-batch-uncategorize"
+                >
+                  <ListChecks className="h-4 w-4 mr-2" />
+                  Descategorizar Masivo
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  onSelect={() => setIsEconomicMonthBulkOpen(true)}
+                  data-testid="button-economic-month-bulk"
+                >
+                  <CalendarRange className="h-4 w-4 mr-2" />
+                  Mes Económico Masivo
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button variant="outline" data-testid="button-menu-configuracion">
+                  <Settings className="h-4 w-4 mr-2" />
+                  Configuración
+                  <ChevronDown className="h-4 w-4 ml-2" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-64">
+                <DropdownMenuLabel>Configuración</DropdownMenuLabel>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem onSelect={() => setIsAccountsDialogOpen(true)} data-testid="button-bank-accounts">
+                  <Landmark className="h-4 w-4 mr-2" />
+                  Cuentas
+                </DropdownMenuItem>
+                <DropdownMenuItem onSelect={() => setIsGenericMappingOpen(true)} data-testid="button-generic-mapping">
+                  <ListChecks className="h-4 w-4 mr-2" />
+                  Extracto genérico
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
             <Button
               variant="outline"
               onClick={() => {
@@ -1828,39 +1902,12 @@ export default function BankStatementsPage() {
               <Download className="h-4 w-4 mr-2" />
               Exportar
             </Button>
-            <Button
-              variant="outline"
-              onClick={() => { setBatchMode("categorize"); setIsBatchCategorizeOpen(true); }}
-              data-testid="button-batch-categorize-range"
-            >
-              <Tag className="h-4 w-4 mr-2" />
-              Clasificacion Masiva
-            </Button>
-            <Button
-              variant="outline"
-              onClick={() => { setBatchMode("assign-local"); setIsBatchCategorizeOpen(true); }}
-              data-testid="button-batch-assign-local"
-            >
-              <Store className="h-4 w-4 mr-2" />
-              Asignacion masiva de Local
-            </Button>
-            <Button
-              variant="outline"
-              onClick={() => { setBatchMode("uncategorize"); setIsBatchCategorizeOpen(true); }}
-              data-testid="button-batch-uncategorize"
-            >
-              <ListChecks className="h-4 w-4 mr-2" />
-              Descategorizar Masivo
-            </Button>
-            <EconomicMonthBulkDialog transactions={transactions as any} locals={locals} />
-            <Button variant="outline" onClick={() => setIsAccountsDialogOpen(true)} data-testid="button-bank-accounts">
-              <Landmark className="h-4 w-4 mr-2" />
-              Cuentas
-            </Button>
-            <Button variant="outline" onClick={() => setIsGenericMappingOpen(true)} data-testid="button-generic-mapping">
-              <ListChecks className="h-4 w-4 mr-2" />
-              Extracto genérico
-            </Button>
+            <EconomicMonthBulkDialog
+              transactions={transactions as any}
+              locals={locals}
+              open={isEconomicMonthBulkOpen}
+              onOpenChange={setIsEconomicMonthBulkOpen}
+            />
             <Button onClick={() => setIsUploadOpen(true)} data-testid="button-import">
               <Upload className="h-4 w-4 mr-2" />
               Importar Excel

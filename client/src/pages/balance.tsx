@@ -577,7 +577,7 @@ export default function BalancePage() {
     let y = 50;
     doc.setFontSize(14);
     doc.setFont("helvetica", "bold");
-    doc.text("Balance Financiero", marginX, y);
+    doc.text("Estado de Resultado Financiero", marginX, y);
     doc.text(`${fullMonths[month - 1]} ${selectedYear}`, tableRight, y, { align: "right" });
     y += 18;
     doc.setFontSize(9);
@@ -1303,7 +1303,7 @@ export default function BalancePage() {
   return (
     <div className="space-y-6">
       <PageHeader
-        title="Balances Financieros"
+        title="Estado de Resultado Financiero"
         description="Estado de resultados mensual y anual"
         actions={
           <div className="flex gap-2">

@@ -75,7 +75,6 @@ interface MenuItem {
 interface MenuSection {
   title: string;
   items: MenuItem[];
-  defaultOpen?: boolean;
 }
 
 /** En false, la sección "Operaciones" no aparece en el menú lateral hasta activar ese módulo. */
@@ -84,7 +83,6 @@ const SHOW_OPERACIONES_SIDEBAR = false;
 const menuSections: MenuSection[] = [
   {
     title: "Catalogos",
-    defaultOpen: true,
     items: [
       { title: "Proveedores", url: "/proveedores", icon: Users },
       { title: "Rubros", url: "/rubros", icon: Tags },
@@ -95,8 +93,7 @@ const menuSections: MenuSection[] = [
     ],
   },
   {
-    title: "Facturacion",
-    defaultOpen: true,
+    title: "Facturas y Ctas Ctes",
     items: [
       { title: "Facturas", url: "/facturas", icon: FileText },
       { title: "Cuentas Corrientes", url: "/cuentas-corrientes", icon: Wallet },
@@ -105,7 +102,6 @@ const menuSections: MenuSection[] = [
   },
   {
     title: "Costos y Recetas",
-    defaultOpen: false,
     items: [
       { title: "Categorias", url: "/categorias-recetas", icon: Tags },
       { title: "Subcategorias", url: "/subcategorias-recetas", icon: FolderTree },
@@ -117,13 +113,12 @@ const menuSections: MenuSection[] = [
   },
   {
     title: "Financiero",
-    defaultOpen: false,
     items: [
       { title: "Extractos/Efectivo", url: "/extractos-efectivo", icon: Receipt },
       { title: "Categorias Mov.", url: "/categorias-movimientos", icon: Tags },
       { title: "Grupos Financ.", url: "/grupos-financieros", icon: FolderTree },
-      { title: "Balances Financieros", url: "/balance", icon: BarChart3 },
-      { title: "Balances Economicos", url: "/balances-economicos", icon: LineChart },
+      { title: "Estado de Resultado Financiero", url: "/balance", icon: LineChart },
+      { title: "Estado de Resultado Economico", url: "/balances-economicos", icon: BarChart3 },
       { title: "CMC", url: "/cmc", icon: ShoppingCart, permission: "cmc.view" },
       { title: "PAP", url: "/pap", icon: Truck, permission: "pap.view" },
       { title: "Valorizar Stock", url: "/valorizar-stock", icon: Package, permission: "stock_valuation.view" },
@@ -139,7 +134,6 @@ const menuSections: MenuSection[] = [
   },
   {
     title: "Operaciones",
-    defaultOpen: true,
     items: [
       { title: "Control Stock", url: "/stock", icon: Boxes },
       { title: "Auditorias", url: "/auditorias", icon: ClipboardCheck },
@@ -150,7 +144,6 @@ const menuSections: MenuSection[] = [
   },
   {
     title: "Configuracion",
-    defaultOpen: true,
     items: [
       { title: "Sociedades", url: "/sociedades", icon: Building2 },
       { title: "Equipo", url: "/equipo", icon: UsersRound },
@@ -168,16 +161,22 @@ function CollapsibleMenuSection({
   isActive: (url: string) => boolean;
 }) {
   const hasActiveItem = section.items.some((item) => isActive(item.url));
-  const [isOpen, setIsOpen] = useState(section.defaultOpen || hasActiveItem);
+  /**
+   * Punto 9 (ago-26): ninguna sección arranca desplegada. `userOpen` en null significa
+   * "sin decisión del usuario": ahí la sección sigue a la página actual. Como al iniciar
+   * sesión no hay ítem activo en ninguna sección, el menú abre todo plegado.
+   * Si el usuario pliega/despliega a mano, su decisión manda mientras siga en esa sección;
+   * al cambiar de sección se vuelve al automático.
+   */
+  const [userOpen, setUserOpen] = useState<boolean | null>(null);
+  const isOpen = userOpen ?? hasActiveItem;
 
   useEffect(() => {
-    if (hasActiveItem) {
-      setIsOpen(true);
-    }
+    setUserOpen(null);
   }, [hasActiveItem]);
 
   return (
-    <Collapsible open={isOpen} onOpenChange={setIsOpen}>
+    <Collapsible open={isOpen} onOpenChange={setUserOpen}>
       <SidebarGroup className="py-0">
         <CollapsibleTrigger className="flex w-full items-center justify-between px-2 py-1.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground hover:text-foreground transition-colors">
           <span>{section.title}</span>
@@ -236,7 +235,7 @@ export function AppSidebar() {
       icon: Upload,
     };
     return menuSections.map((section) =>
-      section.title === "Facturacion"
+      section.title === "Facturas y Ctas Ctes"
         ? { ...section, items: [...section.items, bulkItem] }
         : section,
     );

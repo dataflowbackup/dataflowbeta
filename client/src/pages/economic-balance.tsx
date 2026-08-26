@@ -304,7 +304,7 @@ export default function EconomicBalancePage() {
     let y = 50;
     doc.setFontSize(14);
     doc.setFont("helvetica", "bold");
-    doc.text("Balance Económico", marginX, y);
+    doc.text("Estado de Resultado Económico", marginX, y);
     doc.text(`${MONTH_NAMES_ES[month - 1]} ${year}`, tableRight, y, { align: "right" });
     y += 18;
     doc.setFontSize(9);
@@ -380,7 +380,7 @@ export default function EconomicBalancePage() {
   return (
     <div className="space-y-6">
       <PageHeader
-        title="Balances Económicos"
+        title="Estado de Resultado Económico"
         description="Rentabilidad devengada: ventas del sistema y gastos por mes económico"
         actions={
           <Button variant="outline" onClick={exportPdf} disabled={!data} data-testid="button-econ-export-pdf">

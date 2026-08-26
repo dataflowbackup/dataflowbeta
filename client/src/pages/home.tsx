@@ -57,7 +57,7 @@ const modules = [
     ],
   },
   {
-    title: "Facturacion",
+    title: "Facturas y Ctas Ctes",
     items: [
       { name: "Facturas", href: "/facturas", icon: FileText },
       { name: "Cuentas Corrientes", href: "/cuentas-corrientes", icon: DollarSign },
@@ -76,7 +76,7 @@ const modules = [
     title: "Financiero",
     items: [
       { name: "Extractos Bancarios", href: "/extractos", icon: Receipt },
-      { name: "Balance P&G", href: "/balance", icon: TrendingUp },
+      { name: "Estado de Resultado Financiero", href: "/balance", icon: TrendingUp },
       { name: "Dashboard", href: "/dashboard", icon: BarChart3 },
     ],
   },
