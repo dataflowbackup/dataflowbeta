@@ -1304,6 +1304,8 @@ export class DatabaseStorage implements IStorage {
     const latestPurchaseRows = await db
       .select({
         supplyId: invoiceItems.supplyId,
+        invoiceId: invoices.id,
+        invoiceNumber: invoices.invoiceNumber,
         invoiceDate: invoices.invoiceDate,
         quantity: invoiceItems.quantity,
         unitPrice: invoiceItems.unitPrice,
@@ -1315,6 +1317,8 @@ export class DatabaseStorage implements IStorage {
       .orderBy(desc(invoices.invoiceDate), desc(invoiceItems.id));
 
     const latestPurchaseBySupplyId = new Map<number, {
+      invoiceId: number;
+      invoiceNumber: string | null;
       invoiceDate: string | null;
       quantity: string;
       unitPrice: string;
@@ -1326,6 +1330,8 @@ export class DatabaseStorage implements IStorage {
       if (!supplyId || latestPurchaseBySupplyId.has(supplyId)) continue;
 
       latestPurchaseBySupplyId.set(supplyId, {
+        invoiceId: row.invoiceId,
+        invoiceNumber: row.invoiceNumber ?? null,
         invoiceDate: row.invoiceDate,
         quantity: String(row.quantity ?? "0"),
         unitPrice: String(row.unitPrice ?? "0"),
@@ -1342,6 +1348,9 @@ export class DatabaseStorage implements IStorage {
       lastPurchaseQuantity: latestPurchaseBySupplyId.get(r.supply.id)?.quantity ?? null,
       lastPurchaseUnitCost: latestPurchaseBySupplyId.get(r.supply.id)?.unitPrice ?? null,
       lastPurchaseDate: latestPurchaseBySupplyId.get(r.supply.id)?.invoiceDate ?? null,
+      // Punto 4 (ago-26): permite saltar desde el insumo a la factura de su ultima compra.
+      lastPurchaseInvoiceId: latestPurchaseBySupplyId.get(r.supply.id)?.invoiceId ?? null,
+      lastPurchaseInvoiceNumber: latestPurchaseBySupplyId.get(r.supply.id)?.invoiceNumber ?? null,
     }));
   }
 

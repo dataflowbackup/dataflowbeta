@@ -29,7 +29,8 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { formatCurrency, formatDate } from "@/lib/formatters";
-import { Edit, Trash2, Package, Upload, Download, Users, Building2, Eye } from "lucide-react";
+import { Edit, Trash2, Package, Upload, Download, Users, Building2, Eye, ExternalLink } from "lucide-react";
+import { Link } from "wouter";
 import { SupplyUsageDialog } from "@/components/catalog-usage-dialog";
 import type { Supply, Rubro, SubRubro, UnitOfMeasure, Supplier, SupplySupplier } from "@shared/schema";
 
@@ -45,6 +46,8 @@ interface SupplyWithRelations extends Supply {
   lastPurchaseQuantity?: string | number | null;
   lastPurchaseUnitCost?: string | number | null;
   lastPurchaseDate?: Date | string | null;
+  lastPurchaseInvoiceId?: number | null;
+  lastPurchaseInvoiceNumber?: string | null;
 }
 
 const formSchema = z.object({
@@ -388,11 +391,27 @@ export default function SuppliesPage() {
     {
       key: "lastPurchaseDate",
       header: "Ultima Compra",
+      // Punto 4 (ago-26): la fecha lleva a la factura de esa compra, donde se puede editar.
       cell: (row) =>
         row.lastPurchaseDate ? (
-          <span className="font-mono text-sm">
-            {formatDate(row.lastPurchaseDate)}
-          </span>
+          row.lastPurchaseInvoiceId ? (
+            <Link
+              href={`/facturas/${row.lastPurchaseInvoiceId}`}
+              onClick={(e) => e.stopPropagation()}
+              className="inline-flex items-center gap-1 font-mono text-sm text-primary hover:underline"
+              title={
+                row.lastPurchaseInvoiceNumber
+                  ? `Ver factura ${row.lastPurchaseInvoiceNumber}`
+                  : "Ver la factura de esta compra"
+              }
+              data-testid={`link-last-purchase-${row.id}`}
+            >
+              {formatDate(row.lastPurchaseDate)}
+              <ExternalLink className="h-3 w-3" />
+            </Link>
+          ) : (
+            <span className="font-mono text-sm">{formatDate(row.lastPurchaseDate)}</span>
+          )
         ) : (
           <span className="text-muted-foreground">-</span>
         ),

@@ -26,7 +26,7 @@ import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { formatCurrency, formatPercentage, formatNumber } from "@/lib/formatters";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Plus, Trash2, TrendingUp, DollarSign, Percent, Package, ChefHat, Upload, Check, ChevronsUpDown } from "lucide-react";
+import { Plus, Trash2, TrendingUp, DollarSign, Percent, Package, ChefHat, Upload, Check, ChevronsUpDown, ExternalLink } from "lucide-react";
 import { computeRecipeMetrics, RECIPE_IVA_RATE } from "@shared/recipePricing";
 import type { RecipeCategory, RecipeSubcategory, Supply, UnitOfMeasure, Recipe } from "@shared/schema";
 
@@ -35,6 +35,9 @@ interface SupplyWithUnit extends Supply {
   lastPurchaseUnitCost?: string | number | null;
   lastPurchaseValue?: string | number | null;
   lastPurchaseQuantity?: string | number | null;
+  lastPurchaseDate?: string | null;
+  lastPurchaseInvoiceId?: number | null;
+  lastPurchaseInvoiceNumber?: string | null;
 }
 
 interface RecipeWithCategory extends Recipe {
@@ -867,6 +870,28 @@ export default function RecipeFormPage() {
                               <Badge variant="secondary" className="font-mono text-xs">
                                 {supply.unitOfMeasure.abbreviation}
                               </Badge>
+                            )}
+                            {/*
+                              Punto 4 (ago-26): atajo a la factura de la ultima compra del insumo.
+                              Abre en otra pestana a proposito: la receta puede tener cambios sin
+                              guardar y navegar en la misma pestana los perderia.
+                            */}
+                            {!isSubRecipeIng && supply?.lastPurchaseInvoiceId && (
+                              <a
+                                href={`/facturas/${supply.lastPurchaseInvoiceId}`}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="inline-flex items-center gap-1 text-xs text-primary hover:underline"
+                                title={
+                                  supply.lastPurchaseInvoiceNumber
+                                    ? `Ver la factura ${supply.lastPurchaseInvoiceNumber} de la ultima compra`
+                                    : "Ver la factura de la ultima compra"
+                                }
+                                data-testid={`link-ingredient-last-purchase-${index}`}
+                              >
+                                Ultima compra
+                                <ExternalLink className="h-3 w-3" />
+                              </a>
                             )}
                             {isConfirmed && (
                               <Badge variant="default" className="gap-1 bg-green-600">
