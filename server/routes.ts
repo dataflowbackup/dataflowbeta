@@ -5112,6 +5112,70 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
   });
 
+  app.get("/api/afip/issued", isAuthenticated, async (req, res) => {
+    try {
+      const clientId = await getClientId(req);
+      const q = req.query as Record<string, string | undefined>;
+      res.json(
+        await storage.getAfipIssuedSummary(clientId, {
+          dateFrom: q.dateFrom || undefined,
+          dateTo: q.dateTo || undefined,
+          localId: q.localId && q.localId !== "all" ? parseInt(q.localId, 10) : undefined,
+          salePoint: q.salePoint && q.salePoint !== "all" ? parseInt(q.salePoint, 10) : undefined,
+          businessNameId: q.businessNameId && q.businessNameId !== "all" ? parseInt(q.businessNameId, 10) : undefined,
+        }),
+      );
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
+  app.post("/api/afip/issued/import", isAuthenticated, async (req, res) => {
+    try {
+      const clientId = await getClientId(req);
+      const userId = await getAuthenticatedUserId(req);
+      const parsed = z
+        .object({
+          businessNameId: z.coerce.number().int().positive({ message: "Elegí la sociedad del archivo" }),
+          cuit: z.string().nullable().optional(),
+          fileName: z.string().nullable().optional(),
+          format: z.enum(["xlsx", "csv"]).nullable().optional(),
+          aggregates: z
+            .array(
+              z.object({
+                fecha: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+                puntoVenta: z.number().int(),
+                tipoCodigo: z.number().int(),
+                tipoNombre: z.string(),
+                cantidad: z.number().int(),
+                netoGravado: z.number(),
+                netoNoGravado: z.number(),
+                opExentas: z.number(),
+                otrosTributos: z.number(),
+                totalIva: z.number(),
+                total: z.number(),
+              }),
+            )
+            .min(1, "El archivo no trae comprobantes"),
+        })
+        .safeParse(req.body);
+      if (!parsed.success) {
+        return res.status(400).json({ message: parsed.error.issues[0]?.message ?? "Datos inválidos" });
+      }
+
+      res.json(
+        await storage.importAfipIssuedVouchers(clientId, parsed.data.businessNameId, parsed.data.aggregates, {
+          cuit: parsed.data.cuit ?? null,
+          fileName: parsed.data.fileName ?? null,
+          format: parsed.data.format ?? null,
+          createdBy: userId ?? null,
+        }),
+      );
+    } catch (e: any) {
+      res.status(400).json({ message: e.message });
+    }
+  });
+
   app.get("/api/afip/batches", isAuthenticated, async (req, res) => {
     try {
       const clientId = await getClientId(req);

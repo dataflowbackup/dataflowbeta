@@ -1,5 +1,6 @@
 import { formatInvoiceVoucherDisplay } from "@shared/invoiceDisplay";
 import { resolveEconomicMonth } from "@shared/economicMonth";
+import { isCreditNote as isCreditNoteCode } from "@shared/afipComprobantesParser";
 import {
   normalizeSalesSourcePreferences,
   hasAtLeastOneSalesSource,
@@ -7266,6 +7267,219 @@ export class DatabaseStorage implements IStorage {
         sobranteTotal: sum(filteredSobrantes, (s) => s.total),
         sinProveedor: filteredRows.filter((r) => !r.supplierId).length,
         sinLocal: filteredRows.filter((r) => r.localId == null).length,
+      },
+    };
+  }
+
+  /**
+   * Importa comprobantes EMITIDOS ya resumidos por dia + punto de venta + tipo.
+   *
+   * Idempotente por (sociedad, fecha, punto de venta, tipo): volver a subir un periodo que se
+   * solapa reemplaza el resumen de esos dias en vez de sumarlo dos veces. Eso es importante
+   * aca: AFIP se descarga por rango y es normal que dos descargas compartan dias.
+   */
+  async importAfipIssuedVouchers(
+    clientId: number,
+    businessNameId: number,
+    aggregates: Array<{
+      fecha: string;
+      puntoVenta: number;
+      tipoCodigo: number;
+      tipoNombre: string;
+      cantidad: number;
+      netoGravado: number;
+      netoNoGravado: number;
+      opExentas: number;
+      otrosTributos: number;
+      totalIva: number;
+      total: number;
+    }>,
+    opts: { cuit: string | null; fileName?: string | null; format?: string | null; createdBy?: string | null },
+  ): Promise<{ batchId: number; insertados: number; reemplazados: number; puntosDeVentaNuevos: number[] }> {
+    if (aggregates.length === 0) throw new Error("El archivo no trae comprobantes para importar");
+    await this.assertBusinessNameBelongsToClient(clientId, businessNameId);
+
+    const fechas = aggregates.map((a) => a.fecha).sort();
+    const [batch] = await db
+      .insert(afipImportBatches)
+      .values({
+        clientId,
+        businessNameId,
+        kind: "issued",
+        format: opts.format ?? null,
+        fileName: opts.fileName ?? null,
+        cuit: opts.cuit ?? null,
+        periodFrom: fechas[0],
+        periodTo: fechas[fechas.length - 1],
+        createdBy: opts.createdBy ?? null,
+      })
+      .returning();
+
+    const existing = await db
+      .select({
+        id: afipIssuedVouchers.id,
+        voucherDate: afipIssuedVouchers.voucherDate,
+        salePoint: afipIssuedVouchers.salePoint,
+        voucherTypeCode: afipIssuedVouchers.voucherTypeCode,
+      })
+      .from(afipIssuedVouchers)
+      .where(and(eq(afipIssuedVouchers.clientId, clientId), eq(afipIssuedVouchers.businessNameId, businessNameId)));
+    const keyOf = (fecha: string, pv: number, tipo: number) => `${fecha}|${pv}|${tipo}`;
+    const existingByKey = new Map(existing.map((e) => [keyOf(String(e.voucherDate), e.salePoint, e.voucherTypeCode), e.id]));
+
+    const filas: any[] = [];
+    const idsAReemplazar: number[] = [];
+    let insertados = 0;
+    let reemplazados = 0;
+
+    for (const a of aggregates) {
+      const hit = existingByKey.get(keyOf(a.fecha, a.puntoVenta, a.tipoCodigo));
+      if (hit) {
+        idsAReemplazar.push(hit);
+        reemplazados++;
+      } else {
+        insertados++;
+      }
+      filas.push({
+        clientId,
+        businessNameId,
+        batchId: batch.id,
+        voucherDate: a.fecha,
+        salePoint: a.puntoVenta,
+        voucherTypeCode: a.tipoCodigo,
+        voucherTypeName: a.tipoNombre,
+        quantity: a.cantidad,
+        netGravado: String(a.netoGravado ?? 0),
+        netNoGravado: String(a.netoNoGravado ?? 0),
+        exempt: String(a.opExentas ?? 0),
+        otherTaxes: String(a.otrosTributos ?? 0),
+        totalIva: String(a.totalIva ?? 0),
+        total: String(a.total ?? 0),
+        createdBy: opts.createdBy ?? null,
+      });
+    }
+
+    const CHUNK_DELETE = 200;
+    for (let i = 0; i < idsAReemplazar.length; i += CHUNK_DELETE) {
+      await db.delete(afipIssuedVouchers).where(inArray(afipIssuedVouchers.id, idsAReemplazar.slice(i, i + CHUNK_DELETE)));
+    }
+    const CHUNK_INSERT = 50;
+    for (let i = 0; i < filas.length; i += CHUNK_INSERT) {
+      await db.insert(afipIssuedVouchers).values(filas.slice(i, i + CHUNK_INSERT));
+    }
+
+    await db
+      .update(afipImportBatches)
+      .set({ rowsImported: filas.length, rowsSkipped: 0 })
+      .where(eq(afipImportBatches.id, batch.id));
+
+    // Puntos de venta que trae el archivo y todavia no estan dados de alta: sin ellos no hay
+    // local asociado, asi que el filtro por local no los va a alcanzar.
+    const declared = await db
+      .select({ number: afipSalePoints.number })
+      .from(afipSalePoints)
+      .where(and(eq(afipSalePoints.clientId, clientId), eq(afipSalePoints.businessNameId, businessNameId)));
+    const declaredSet = new Set(declared.map((d) => d.number));
+    const puntosDeVentaNuevos = [...new Set(aggregates.map((a) => a.puntoVenta))]
+      .filter((pv) => !declaredSet.has(pv))
+      .sort((a, b) => a - b);
+
+    return { batchId: batch.id, insertados, reemplazados, puntosDeVentaNuevos };
+  }
+
+  /**
+   * Emitidos del periodo con su desglose por punto de venta.
+   *
+   * El local sale del punto de venta (AFIP no lo informa), por eso el filtro por local solo
+   * alcanza a los puntos de venta que estan dados de alta y tienen local asignado.
+   */
+  async getAfipIssuedSummary(
+    clientId: number,
+    filters: { dateFrom?: string; dateTo?: string; localId?: number; salePoint?: number; businessNameId?: number } = {},
+  ): Promise<any> {
+    const conds = [eq(afipIssuedVouchers.clientId, clientId)];
+    if (filters.dateFrom) conds.push(gte(afipIssuedVouchers.voucherDate, filters.dateFrom));
+    if (filters.dateTo) conds.push(lte(afipIssuedVouchers.voucherDate, filters.dateTo));
+    if (filters.salePoint != null) conds.push(eq(afipIssuedVouchers.salePoint, filters.salePoint));
+    if (filters.businessNameId != null) conds.push(eq(afipIssuedVouchers.businessNameId, filters.businessNameId));
+
+    const rows = await db
+      .select()
+      .from(afipIssuedVouchers)
+      .where(and(...conds))
+      .orderBy(desc(afipIssuedVouchers.voucherDate), asc(afipIssuedVouchers.salePoint));
+
+    const salePoints = await this.listAfipSalePoints(clientId);
+    const spByKey = new Map(salePoints.map((sp: any) => [`${sp.businessNameId}|${sp.number}`, sp]));
+
+    const num = (v: unknown) => parseFloat(String(v ?? 0)) || 0;
+    const enriched = rows
+      .map((r) => {
+        const sp = spByKey.get(`${r.businessNameId}|${r.salePoint}`) ?? null;
+        return {
+          id: r.id,
+          voucherDate: String(r.voucherDate),
+          salePoint: r.salePoint,
+          voucherTypeCode: r.voucherTypeCode,
+          voucherTypeName: r.voucherTypeName,
+          quantity: r.quantity ?? 0,
+          netGravado: num(r.netGravado),
+          totalIva: num(r.totalIva),
+          total: num(r.total),
+          businessNameId: r.businessNameId,
+          salePointId: sp?.id ?? null,
+          salePointName: sp?.fantasyName ?? null,
+          salesSystem: sp?.salesSystem ?? null,
+          localId: sp?.localId ?? null,
+          localName: sp?.local?.name ?? null,
+        };
+      })
+      .filter((r) => filters.localId == null || r.localId === filters.localId);
+
+    // Las notas de credito restan, para que el total facturado no quede inflado.
+    const signed = (r: { voucherTypeCode: number; total: number }) =>
+      isCreditNoteCode(r.voucherTypeCode) ? -r.total : r.total;
+
+    const porPuntoVenta = new Map<number, any>();
+    for (const r of enriched) {
+      let acc = porPuntoVenta.get(r.salePoint);
+      if (!acc) {
+        acc = {
+          salePoint: r.salePoint,
+          salePointId: r.salePointId,
+          salePointName: r.salePointName,
+          localId: r.localId,
+          localName: r.localName,
+          salesSystem: r.salesSystem,
+          cantidad: 0,
+          neto: 0,
+          iva: 0,
+          total: 0,
+        };
+        porPuntoVenta.set(r.salePoint, acc);
+      }
+      acc.cantidad += r.quantity;
+      acc.neto += isCreditNoteCode(r.voucherTypeCode) ? -r.netGravado : r.netGravado;
+      acc.iva += isCreditNoteCode(r.voucherTypeCode) ? -r.totalIva : r.totalIva;
+      acc.total += signed(r);
+    }
+
+    const round2 = (n: number) => Math.round(n * 100) / 100;
+    const desglose = [...porPuntoVenta.values()]
+      .map((a) => ({ ...a, neto: round2(a.neto), iva: round2(a.iva), total: round2(a.total) }))
+      .sort((a, b) => b.total - a.total);
+
+    return {
+      rows: enriched,
+      porPuntoVenta: desglose,
+      resumen: {
+        cantidad: enriched.reduce((s, r) => s + r.quantity, 0),
+        neto: round2(desglose.reduce((s, d) => s + d.neto, 0)),
+        iva: round2(desglose.reduce((s, d) => s + d.iva, 0)),
+        total: round2(desglose.reduce((s, d) => s + d.total, 0)),
+        puntosDeVenta: desglose.length,
+        sinDarDeAlta: desglose.filter((d) => !d.salePointId).map((d) => d.salePoint),
+        sinLocal: desglose.filter((d) => d.salePointId && d.localId == null).map((d) => d.salePoint),
       },
     };
   }

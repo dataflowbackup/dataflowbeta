@@ -44,6 +44,7 @@ import {
   readCsvFileNameHints,
   type ParseComprobantesResult,
 } from "@shared/afipComprobantesParser";
+import { ComprobantesEmitidos } from "@/components/comprobantes-emitidos";
 import type { Local, Supplier } from "@shared/schema";
 
 type Tab = "recibidos" | "emitidos";
@@ -707,30 +708,5 @@ function ImportRecibidosDialog({ open, onOpenChange }: { open: boolean; onOpenCh
         </DialogFooter>
       </DialogContent>
     </Dialog>
-  );
-}
-
-// ==========================================
-// COMPROBANTES EMITIDOS
-// ==========================================
-
-function ComprobantesEmitidos() {
-  return (
-    <div className="space-y-6">
-      <PageHeader
-        title="Comprobantes Emitidos"
-        description="Lo que la empresa facturó, desglosado por punto de venta"
-      />
-      <Card>
-        <CardContent className="py-10 text-center space-y-2">
-          <FileText className="h-8 w-8 mx-auto text-muted-foreground" />
-          <p className="text-sm font-medium">En preparación</p>
-          <p className="text-sm text-muted-foreground max-w-md mx-auto">
-            Acá van a estar el alta de puntos de venta y la importación de los comprobantes emitidos,
-            con el total desglosado por punto de venta.
-          </p>
-        </CardContent>
-      </Card>
-    </div>
   );
 }
