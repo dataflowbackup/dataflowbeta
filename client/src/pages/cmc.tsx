@@ -1,6 +1,8 @@
-import { useMemo, useState } from "react";
+import { useMemo, useState, useEffect } from "react";
+import { useSalesSources } from "@/hooks/useSalesSources";
 import { useQuery } from "@tanstack/react-query";
 import { PageHeader } from "@/components/page-header";
+import { usePersistentFilter } from "@/hooks/usePersistentFilter";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -40,11 +42,11 @@ function today(): string {
 }
 
 export default function CmcPage() {
-  const [dateFrom, setDateFrom] = useState(firstDayOfMonth());
-  const [dateTo, setDateTo] = useState(today());
-  const [localId, setLocalId] = useState("all");
-  const [mode, setMode] = useState<"amount" | "percent">("amount");
-  const [salesSource, setSalesSource] = useState("extractos");
+  const [dateFrom, setDateFrom] = usePersistentFilter("cmc.dateFrom", firstDayOfMonth());
+  const [dateTo, setDateTo] = usePersistentFilter("cmc.dateTo", today());
+  const [localId, setLocalId] = usePersistentFilter("cmc.localId", "all");
+  const [mode, setMode] = usePersistentFilter<"amount" | "percent">("cmc.mode", "amount");
+  const [salesSource, setSalesSource] = usePersistentFilter("cmc.salesSource", "extractos");
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
 
   const { data: locals = [] } = useQuery<Local[]>({ queryKey: ["/api/locals"] });
@@ -53,12 +55,22 @@ export default function CmcPage() {
     () => [{ value: "all", label: "Todos los locales" }, ...locals.map((l) => ({ value: String(l.id), label: l.name }))],
     [locals],
   );
+  // Punto 6 (ago-26): las fuentes que la empresa apago en Preferencias no se ofrecen.
+  const { isEnabled: isSalesSourceEnabled } = useSalesSources();
   const sourceOptions = [
     { value: "extractos", label: "Extractos" },
     { value: "datalive", label: "Datalive" },
     { value: "fudo", label: "FUDO" },
     { value: "shares", label: "Shares" },
-  ];
+  ].filter((o) => isSalesSourceEnabled(o.value));
+  // Si el origen elegido queda deshabilitado, se cae al primero disponible.
+  const allowedSources = sourceOptions.map((o) => o.value).join(",");
+  useEffect(() => {
+    const allowed = allowedSources ? allowedSources.split(",") : [];
+    if (allowed.length > 0 && !allowed.includes(salesSource)) {
+      setSalesSource(allowed[0] as typeof salesSource);
+    }
+  }, [allowedSources, salesSource]);
 
   const url = useMemo(() => {
     const p = new URLSearchParams();

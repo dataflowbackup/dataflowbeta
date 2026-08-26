@@ -3,6 +3,7 @@ import * as XLSX from "xlsx";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { useLocation, Link } from "wouter";
 import { PageHeader } from "@/components/page-header";
+import { usePersistentFilter } from "@/hooks/usePersistentFilter";
 import { DataTable, Column } from "@/components/data-table";
 import { ConfirmDialog } from "@/components/confirm-dialog";
 import { Button } from "@/components/ui/button";
@@ -63,7 +64,7 @@ export default function InvoicesPage() {
   const { toast } = useToast();
   const [, navigate] = useLocation();
   const [deleteInvoice, setDeleteInvoice] = useState<InvoiceWithRelations | null>(null);
-  const [filterStatus, setFilterStatus] = useState<FilterStatus>("all");
+  const [filterStatus, setFilterStatus] = usePersistentFilter<FilterStatus>("facturas.status", "all");
 
   const { data: suppliers = [] } = useQuery<Supplier[]>({
     queryKey: ["/api/suppliers"],
@@ -73,10 +74,10 @@ export default function InvoicesPage() {
     queryKey: ["/api/locals"],
   });
 
-  const [selectedLocalId, setSelectedLocalId] = useState<string>("all");
-  const [selectedSupplierId, setSelectedSupplierId] = useState<string>("all");
-  const [selectedExpenseType, setSelectedExpenseType] = useState<string>("all");
-  const [selectedActiveState, setSelectedActiveState] = useState<string>("active");
+  const [selectedLocalId, setSelectedLocalId] = usePersistentFilter<string>("facturas.localId", "all");
+  const [selectedSupplierId, setSelectedSupplierId] = usePersistentFilter<string>("facturas.supplierId", "all");
+  const [selectedExpenseType, setSelectedExpenseType] = usePersistentFilter<string>("facturas.expenseType", "all");
+  const [selectedActiveState, setSelectedActiveState] = usePersistentFilter<string>("facturas.activeState", "active");
   // Filtros por fecha (rango desde/hasta). Las fechas se guardan como "YYYY-MM-DD",
   // así que la comparación lexicográfica de strings ISO es correcta.
   const [emisionDesde, setEmisionDesde] = useState<string>("");

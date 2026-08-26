@@ -35,9 +35,13 @@ import {
   Target,
   Trash2,
   LineChart,
+  SlidersHorizontal,
 } from "lucide-react";
 import { useAuth } from "@/hooks/useAuth";
 import { usePermissions } from "@/hooks/usePermissions";
+import { useSalesSources } from "@/hooks/useSalesSources";
+import type { SalesSourceKey } from "@shared/salesSources";
+import { mappedRoutes } from "@/lib/nav-modules";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import {
   Sidebar,
@@ -70,6 +74,11 @@ interface MenuItem {
    * cuando el usuario tiene `view` sobre ese code (socio siempre pasa).
    */
   permission?: string;
+  /**
+   * Punto 6 (ago-26): item atado a un sistema de ventas. Si la empresa lo tiene
+   * apagado en Preferencias, el item no se muestra.
+   */
+  salesSource?: SalesSourceKey;
 }
 
 interface MenuSection {
@@ -124,10 +133,10 @@ const menuSections: MenuSection[] = [
       { title: "Valorizar Stock", url: "/valorizar-stock", icon: Package, permission: "stock_valuation.view" },
       { title: "CMV", url: "/cmv", icon: Calculator, permission: "cmv.view" },
       { title: "Punto de Equilibrio", url: "/punto-equilibrio", icon: Target, permission: "breakeven.view" },
-      { title: "Ventas Datalive", url: "/ventas-datalive", icon: Upload },
+      { title: "Ventas Datalive", url: "/ventas-datalive", icon: Upload, salesSource: "datalive" },
       { title: "Decomisos", url: "/decomisos", icon: Trash2 },
-      { title: "Ventas FUDO", url: "/ventas-fudo", icon: Upload },
-      { title: "Ventas Shares", url: "/ventas-shares", icon: Upload },
+      { title: "Ventas FUDO", url: "/ventas-fudo", icon: Upload, salesSource: "fudo" },
+      { title: "Ventas Shares", url: "/ventas-shares", icon: Upload, salesSource: "shares" },
       { title: "Objetivos Mensuales", url: "/objetivos-mensuales", icon: Target },
       { title: "Dashboard", url: "/dashboard", icon: BarChart3 },
     ],
@@ -149,6 +158,7 @@ const menuSections: MenuSection[] = [
       { title: "Equipo", url: "/equipo", icon: UsersRound },
       { title: "Permisos", url: "/permisos", icon: Shield },
       { title: "Notificaciones", url: "/notificaciones", icon: Bell },
+      { title: "Preferencias", url: "/preferencias", icon: SlidersHorizontal },
     ],
   },
 ];
@@ -214,6 +224,7 @@ export function AppSidebar() {
   const [location] = useLocation();
   const { user } = useAuth();
   const { can, isLoading: permsLoading } = usePermissions();
+  const { isEnabled: isSalesSourceEnabled } = useSalesSources();
 
   const { data: organization, isLoading: isOrgLoading } = useQuery<AuthOrganization | null>({
     queryKey: ["/api/auth/organization"],
@@ -226,6 +237,23 @@ export function AppSidebar() {
     enabled: !!user,
     staleTime: 60_000,
   });
+
+  // Punto 7 (ago-26): el mapa ruta -> modulo de `nav-modules.ts` decide cuando se limpian
+  // los filtros. Si alguien agrega una pantalla al menu y se olvida de mapearla, en
+  // desarrollo queda avisado por consola (en produccion no se chequea nada).
+  useEffect(() => {
+    if (!import.meta.env.DEV) return;
+    const mapped = mappedRoutes();
+    const missing = menuSections
+      .flatMap((section) => section.items.map((item) => item.url))
+      .filter((url) => !mapped.has(url));
+    if (missing.length > 0) {
+      console.warn(
+        "[nav-modules] Rutas del menu sin modulo asignado (los filtros se limpiaran al entrar):",
+        missing,
+      );
+    }
+  }, []);
 
   const sidebarSections = useMemo(() => {
     if (bulkImportAccess?.allowed !== true) return menuSections;
@@ -316,6 +344,13 @@ export function AppSidebar() {
             ...section,
             items: section.items.filter(
               (item) => !item.permission || permsLoading || can(item.permission, "view"),
+            ),
+          }))
+          // Punto 6: los items de un sistema de ventas apagado en Preferencias no se muestran.
+          .map((section) => ({
+            ...section,
+            items: section.items.filter(
+              (item) => !item.salesSource || isSalesSourceEnabled(item.salesSource),
             ),
           }))
           .filter((section) => section.items.length > 0)

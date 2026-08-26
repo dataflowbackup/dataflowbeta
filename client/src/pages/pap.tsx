@@ -1,6 +1,8 @@
-import { useMemo, useState } from "react";
+import { useMemo, useState, useEffect } from "react";
+import { useSalesSources } from "@/hooks/useSalesSources";
 import { useQuery } from "@tanstack/react-query";
 import { PageHeader } from "@/components/page-header";
+import { usePersistentFilter } from "@/hooks/usePersistentFilter";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -38,12 +40,12 @@ function today(): string {
 }
 
 export default function PapPage() {
-  const [dateFrom, setDateFrom] = useState(firstDayOfMonth());
-  const [dateTo, setDateTo] = useState(today());
-  const [localId, setLocalId] = useState("all");
-  const [supplierId, setSupplierId] = useState("all");
-  const [mode, setMode] = useState<"amount" | "percent">("amount");
-  const [salesSource, setSalesSource] = useState("extractos");
+  const [dateFrom, setDateFrom] = usePersistentFilter("pap.dateFrom", firstDayOfMonth());
+  const [dateTo, setDateTo] = usePersistentFilter("pap.dateTo", today());
+  const [localId, setLocalId] = usePersistentFilter("pap.localId", "all");
+  const [supplierId, setSupplierId] = usePersistentFilter("pap.supplierId", "all");
+  const [mode, setMode] = usePersistentFilter<"amount" | "percent">("pap.mode", "amount");
+  const [salesSource, setSalesSource] = usePersistentFilter("pap.salesSource", "extractos");
 
   const { data: locals = [] } = useQuery<Local[]>({ queryKey: ["/api/locals"] });
   const { data: suppliers = [] } = useQuery<Supplier[]>({ queryKey: ["/api/suppliers"] });
@@ -56,12 +58,22 @@ export default function PapPage() {
     () => [{ value: "all", label: "Todos los proveedores" }, ...suppliers.map((s) => ({ value: String(s.id), label: s.tradeName }))],
     [suppliers],
   );
+  // Punto 6 (ago-26): las fuentes que la empresa apago en Preferencias no se ofrecen.
+  const { isEnabled: isSalesSourceEnabled } = useSalesSources();
   const sourceOptions = [
     { value: "extractos", label: "Extractos" },
     { value: "datalive", label: "Datalive" },
     { value: "fudo", label: "FUDO" },
     { value: "shares", label: "Shares" },
-  ];
+  ].filter((o) => isSalesSourceEnabled(o.value));
+  // Si el origen elegido queda deshabilitado, se cae al primero disponible.
+  const allowedSources = sourceOptions.map((o) => o.value).join(",");
+  useEffect(() => {
+    const allowed = allowedSources ? allowedSources.split(",") : [];
+    if (allowed.length > 0 && !allowed.includes(salesSource)) {
+      setSalesSource(allowed[0] as typeof salesSource);
+    }
+  }, [allowedSources, salesSource]);
 
   const { data, isLoading } = useQuery<PapReport>({
     queryKey: ["/api/finance/pap", dateFrom, dateTo, localId, supplierId, salesSource],

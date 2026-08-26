@@ -1342,6 +1342,31 @@ export const dataliveVentas = pgTable(
   (table) => [uniqueIndex("datalive_ventas_client_local_fecha_uq").on(table.clientId, table.localId, table.fecha)],
 );
 
+// ==========================================
+// CLIENT PREFERENCES (punto 6, ago-26)
+// ==========================================
+// Preferencias por EMPRESA (no por usuario): lo que se apaga aca deja de estar
+// disponible para todos los usuarios de ese cliente. Tabla aditiva; si un cliente
+// todavia no tiene fila, valen los defaults (los tres sistemas de venta habilitados),
+// que es exactamente el comportamiento anterior.
+export const clientPreferences = pgTable(
+  "client_preferences",
+  {
+    id: serial("id").primaryKey(),
+    clientId: integer("client_id").notNull().references(() => clients.id, { onDelete: "cascade" }),
+    salesSourceFudo: boolean("sales_source_fudo").default(true),
+    salesSourceShares: boolean("sales_source_shares").default(true),
+    salesSourceDatalive: boolean("sales_source_datalive").default(true),
+    createdAt: timestamp("created_at").defaultNow(),
+    updatedAt: timestamp("updated_at").defaultNow(),
+  },
+  (table) => [uniqueIndex("client_preferences_client_uq").on(table.clientId)],
+);
+
+export const insertClientPreferencesSchema = createInsertSchema(clientPreferences).omit({ id: true, createdAt: true, updatedAt: true });
+export type InsertClientPreferences = z.infer<typeof insertClientPreferencesSchema>;
+export type ClientPreferences = typeof clientPreferences.$inferSelect;
+
 export const insertDataliveVentaSchema = createInsertSchema(dataliveVentas).omit({ id: true, createdAt: true, updatedAt: true });
 export type InsertDataliveVenta = z.infer<typeof insertDataliveVentaSchema>;
 export type DataliveVenta = typeof dataliveVentas.$inferSelect;

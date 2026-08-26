@@ -1,4 +1,4 @@
-import { useState, useMemo, useCallback, useRef } from "react";
+import { useState, useMemo, useCallback, useRef, useEffect } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import html2canvas from "html2canvas";
 import { jsPDF } from "jspdf";
@@ -20,6 +20,8 @@ import {
   CreditCard, BarChart3, ShoppingCart, ChefHat, Trophy, PiggyBank, Percent,
   AlertCircle, CheckCircle2, Trash2, FileDown,
 } from "lucide-react";
+import { useSalesSources } from "@/hooks/useSalesSources";
+import { usePersistentFilter } from "@/hooks/usePersistentFilter";
 import type { Local, CmvCalculation } from "@shared/schema";
 
 const MONTH_NAMES = ["Ene","Feb","Mar","Abr","May","Jun","Jul","Ago","Sep","Oct","Nov","Dic"];
@@ -194,22 +196,39 @@ export default function DashboardPage() {
   const now = new Date();
   const dashboardRef = useRef<HTMLDivElement>(null);
   const [pdfBusy, setPdfBusy] = useState(false);
-  const [year, setYear] = useState(now.getFullYear());
-  const [month, setMonth] = useState(now.getMonth() + 1);
-  const [globalLocalIds, setGlobalLocalIds] = useState<number[]>([]);
-  const [source, setSource] = useState<"fudo" | "datalive" | "shares">("fudo");
+  const [year, setYear] = usePersistentFilter("dashboard.year", now.getFullYear());
+  const [month, setMonth] = usePersistentFilter("dashboard.month", now.getMonth() + 1);
+  const [globalLocalIds, setGlobalLocalIds] = usePersistentFilter<number[]>("dashboard.localIds", []);
+  const [source, setSource] = usePersistentFilter<"fudo" | "datalive" | "shares">("dashboard.source", "fudo");
+  // Punto 6 (ago-26): solo se ofrecen los sistemas que la empresa tiene encendidos en Preferencias.
+  const { enabled: enabledSalesSources } = useSalesSources();
 
   // Week widget filters
-  const [weekStart, setWeekStart] = useState(currentWeekMonday());
-  const [weekLocalIds, setWeekLocalIds] = useState<number[]>([]);
-  const [weekSource, setWeekSource] = useState<"fudo" | "datalive" | "shares">("fudo");
+  const [weekStart, setWeekStart] = usePersistentFilter("dashboard.weekStart", currentWeekMonday());
+  const [weekLocalIds, setWeekLocalIds] = usePersistentFilter<number[]>("dashboard.weekLocalIds", []);
+  const [weekSource, setWeekSource] = usePersistentFilter<"fudo" | "datalive" | "shares">("dashboard.weekSource", "fudo");
   const [weekPdfMode, setWeekPdfMode] = useState(false); // encabezado que sale solo en el PDF
 
   // Top products/categories filters
-  const [topDateFrom, setTopDateFrom] = useState(`${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-01`);
-  const [topDateTo, setTopDateTo] = useState(now.toISOString().slice(0, 10));
-  const [topLocalIds, setTopLocalIds] = useState<number[]>([]);
-  const [topSource, setTopSource] = useState<"fudo" | "datalive" | "shares">("fudo");
+  const [topDateFrom, setTopDateFrom] = usePersistentFilter("dashboard.topDateFrom", `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-01`);
+  const [topDateTo, setTopDateTo] = usePersistentFilter("dashboard.topDateTo", now.toISOString().slice(0, 10));
+  const [topLocalIds, setTopLocalIds] = usePersistentFilter<number[]>("dashboard.topLocalIds", []);
+  const [topSource, setTopSource] = usePersistentFilter<"fudo" | "datalive" | "shares">("dashboard.topSource", "fudo");
+  // Si el origen elegido queda deshabilitado, se cae al primero habilitado en vez de
+  // quedar mostrando una fuente que la empresa ya no usa.
+  useEffect(() => {
+    if (enabledSalesSources.length === 0) return;
+    const fix = (
+      current: "fudo" | "datalive" | "shares",
+      set: (next: "fudo" | "datalive" | "shares") => void,
+    ) => {
+      if (!enabledSalesSources.includes(current)) set(enabledSalesSources[0]);
+    };
+    fix(source, setSource);
+    fix(weekSource, setWeekSource);
+    fix(topSource, setTopSource);
+  }, [enabledSalesSources.join(","), source, weekSource, topSource]);
+
   const [excludedProducts, setExcludedProducts] = useState<Set<string>>(new Set());
   const [excludedCategorias, setExcludedCategorias] = useState<Set<string>>(new Set());
 
@@ -449,7 +468,7 @@ export default function DashboardPage() {
               <div className="space-y-1">
                 <Label className="text-xs font-medium text-muted-foreground">Fuente de ventas</Label>
                 <div className="flex gap-1">
-                  {(["fudo","datalive","shares"] as const).map((s) => (
+                  {enabledSalesSources.map((s) => (
                     <button key={s} onClick={() => setSource(s)}
                       className={`px-3 py-1 rounded-md text-xs font-medium border transition-colors ${source === s ? "bg-primary text-primary-foreground border-primary" : "bg-background text-muted-foreground border-border hover:bg-muted"}`}>
                       {s === "fudo" ? "FUDO" : s === "datalive" ? "DATALIVE" : "SHARES"}
@@ -665,7 +684,7 @@ export default function DashboardPage() {
                 <Input type="date" value={weekStart} onChange={(e) => setWeekStart(e.target.value)} className="h-8 w-40 text-xs" />
               </div>
               <div className="flex gap-1">
-                {(["fudo","datalive","shares"] as const).map((s) => (
+                {enabledSalesSources.map((s) => (
                   <button key={s} onClick={() => setWeekSource(s)}
                     className={`px-2 py-1 rounded text-xs font-medium border transition-colors ${weekSource === s ? "bg-primary text-primary-foreground border-primary" : "bg-background text-muted-foreground border-border hover:bg-muted"}`}>
                     {s === "fudo" ? "FUDO" : s === "datalive" ? "DATALIVE" : "SHARES"}
@@ -837,7 +856,7 @@ export default function DashboardPage() {
                 <span className="text-muted-foreground">—</span>
                 <Input type="date" value={topDateTo} onChange={(e) => setTopDateTo(e.target.value)} className="h-7 w-36 text-xs" />
                 <div className="flex gap-1">
-                  {(["fudo","datalive","shares"] as const).map((s) => (
+                  {enabledSalesSources.map((s) => (
                     <button key={s} onClick={() => setTopSource(s)}
                       className={`px-2 py-0.5 rounded text-xs font-medium border transition-colors ${topSource === s ? "bg-primary text-primary-foreground border-primary" : "bg-background text-muted-foreground border-border hover:bg-muted"}`}>
                       {s === "fudo" ? "FUDO" : s === "datalive" ? "DATA" : "SHARES"}

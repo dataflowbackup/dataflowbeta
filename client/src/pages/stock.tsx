@@ -4,6 +4,7 @@ import { useForm, useWatch } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import { PageHeader } from "@/components/page-header";
+import { usePersistentFilter } from "@/hooks/usePersistentFilter";
 import { DataTable, Column } from "@/components/data-table";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -47,7 +48,7 @@ type AdjustmentFormData = z.infer<typeof adjustmentSchema>;
 export default function StockPage() {
   const { toast } = useToast();
   const [isDialogOpen, setIsDialogOpen] = useState(false);
-  const [selectedLocal, setSelectedLocal] = useState<string>("all");
+  const [selectedLocal, setSelectedLocal] = usePersistentFilter<string>("stock.localId", "all");
 
   const stockLevelsUrl = selectedLocal === "all" 
     ? "/api/stock-levels" 

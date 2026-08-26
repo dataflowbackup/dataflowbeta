@@ -1,8 +1,10 @@
 ﻿import { useQuery, useMutation } from "@tanstack/react-query";
-import { useMemo, useState } from "react";
+import { useMemo, useState, useEffect } from "react";
+import { useSalesSources } from "@/hooks/useSalesSources";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { PageHeader } from "@/components/page-header";
+import { usePersistentFilter } from "@/hooks/usePersistentFilter";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -88,12 +90,28 @@ export default function EconomicBalancePage() {
   const now = new Date();
   const currentYear = now.getFullYear();
 
-  const [selectedYear, setSelectedYear] = useState(String(currentYear));
-  const [selectedMonth, setSelectedMonth] = useState(String(now.getMonth() + 1));
-  const [selectedLocalIds, setSelectedLocalIds] = useState<number[]>([]);
+  const [selectedYear, setSelectedYear] = usePersistentFilter("balanceEconomico.year", String(currentYear));
+  const [selectedMonth, setSelectedMonth] = usePersistentFilter("balanceEconomico.month", String(now.getMonth() + 1));
+  const [selectedLocalIds, setSelectedLocalIds] = usePersistentFilter<number[]>("balanceEconomico.localIds", []);
   /** Varias fuentes a la vez: cada local suele facturar con un sistema distinto. */
-  const [salesSources, setSalesSources] = useState<SalesSource[]>(["datalive"]);
-  const [viewMode, setViewMode] = useState("monthly");
+  const [salesSources, setSalesSources] = usePersistentFilter<SalesSource[]>("balanceEconomico.salesSources", ["datalive"]);
+  // Punto 6 (ago-26): solo se ofrecen los sistemas encendidos en Preferencias.
+  const { enabled: enabledSalesSources } = useSalesSources();
+  const availableSourceOptions = SALES_SOURCE_OPTIONS.filter((o) =>
+    (enabledSalesSources as readonly string[]).includes(o.value),
+  );
+
+  // Si alguna fuente elegida quedo deshabilitada, se la saca de la seleccion; si no
+  // queda ninguna, se toma la primera habilitada para no dejar la pantalla sin ventas.
+  useEffect(() => {
+    if (enabledSalesSources.length === 0) return;
+    setSalesSources((prev) => {
+      const kept = prev.filter((v) => (enabledSalesSources as readonly string[]).includes(v));
+      if (kept.length === prev.length) return prev;
+      return kept.length > 0 ? kept : [enabledSalesSources[0] as SalesSource];
+    });
+  }, [enabledSalesSources.join(",")]);
+  const [viewMode, setViewMode] = usePersistentFilter("balanceEconomico.viewMode", "monthly");
   const [expandedGroupIds, setExpandedGroupIds] = useState<number[]>([]);
   const [ventasOpen, setVentasOpen] = useState(false);
 
@@ -456,7 +474,7 @@ export default function EconomicBalancePage() {
                 </p>
               </div>
               <div className="space-y-1">
-                {SALES_SOURCE_OPTIONS.map((s) => (
+                {availableSourceOptions.map((s) => (
                   <label
                     key={s.value}
                     className="flex cursor-pointer items-center gap-2 rounded px-1 py-1 hover:bg-muted"

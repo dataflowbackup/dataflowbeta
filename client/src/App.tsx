@@ -1,4 +1,4 @@
-import { Switch, Route } from "wouter";
+import { Switch, Route, useLocation } from "wouter";
 import { queryClient } from "./lib/queryClient";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { Toaster } from "@/components/ui/toaster";
@@ -8,6 +8,8 @@ import { ThemeToggle } from "@/components/theme-toggle";
 import { useAuth } from "@/hooks/useAuth";
 import { ForcePasswordChangeGate } from "@/components/force-password-change-dialog";
 import { AppSidebar } from "@/components/app-sidebar";
+import { syncFilterScope } from "@/lib/filter-scope";
+import { moduleForPath } from "@/lib/nav-modules";
 import { SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
 import { Skeleton } from "@/components/ui/skeleton";
 import NotFound from "@/pages/not-found";
@@ -56,12 +58,25 @@ import EmployeesPage from "@/pages/employees";
 import AuditsPage from "@/pages/audits";
 import PermissionsPage from "@/pages/permissions";
 import NotificationsPage from "@/pages/notifications";
+import PreferencesPage from "@/pages/preferences";
 import AttendancePage from "@/pages/attendance";
 import PayrollPage from "@/pages/payroll";
 import TeamPage from "@/pages/team";
 import JoinPage from "@/pages/join";
 import AuthPage from "@/pages/auth-page";
 import BusinessNamesPage from "@/pages/business-names";
+
+/**
+ * Punto 7 (ago-26): sincroniza el modulo activo con el guardado de filtros.
+ *
+ * Corre durante el render (no en un efecto) para que, cuando el usuario cambia de
+ * modulo, la limpieza ocurra ANTES de que la pantalla nueva lea su estado inicial.
+ */
+function FilterScopeGuard() {
+  const [location] = useLocation();
+  syncFilterScope(moduleForPath(location));
+  return null;
+}
 
 function AppRouter() {
   return (
@@ -112,6 +127,7 @@ function AppRouter() {
       <Route path="/auditorias" component={AuditsPage} />
       <Route path="/permisos" component={PermissionsPage} />
       <Route path="/notificaciones" component={NotificationsPage} />
+      <Route path="/preferencias" component={PreferencesPage} />
       <Route path="/asistencia" component={AttendancePage} />
       <Route path="/liquidaciones" component={PayrollPage} />
       <Route path="/equipo" component={TeamPage} />
@@ -138,6 +154,7 @@ function AuthenticatedLayout() {
             <ThemeToggle />
           </header>
           <main className="flex-1 overflow-auto p-6">
+            <FilterScopeGuard />
             <AppRouter />
           </main>
         </div>

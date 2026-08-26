@@ -3,6 +3,7 @@ import { useState, useMemo } from "react";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { PageHeader } from "@/components/page-header";
+import { usePersistentFilter } from "@/hooks/usePersistentFilter";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -97,11 +98,11 @@ export default function BalancePage() {
   const currentYear = currentDate.getFullYear();
   const currentMonth = currentDate.getMonth() + 1;
 
-  const [selectedYear, setSelectedYear] = useState(currentYear.toString());
-  const [selectedMonth, setSelectedMonth] = useState(currentMonth.toString());
+  const [selectedYear, setSelectedYear] = usePersistentFilter("balance.year", currentYear.toString());
+  const [selectedMonth, setSelectedMonth] = usePersistentFilter("balance.month", currentMonth.toString());
   // Punto 19: selección libre de uno o varios locales. [] = todos.
-  const [selectedLocalIds, setSelectedLocalIds] = useState<number[]>([]);
-  const [viewMode, setViewMode] = useState<string>("monthly");
+  const [selectedLocalIds, setSelectedLocalIds] = usePersistentFilter<number[]>("balance.localIds", []);
+  const [viewMode, setViewMode] = usePersistentFilter<string>("balance.viewMode", "monthly");
   /**
    * Criterio con el que se mide la rentabilidad:
    *  - "pagado": lo que efectivamente se pagó en el mes (como siempre).

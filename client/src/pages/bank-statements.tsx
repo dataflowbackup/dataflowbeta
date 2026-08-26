@@ -7,6 +7,7 @@ import { EconomicMonthCell, EconomicMonthHeader } from "@/components/economic-mo
 import { EconomicMonthBulkDialog } from "@/components/economic-month-bulk-dialog";
 import { resolveEconomicMonth, economicMonthLabelWithYear, economicMonthRange } from "@shared/economicMonth";
 import { DataTable, Column } from "@/components/data-table";
+import { usePersistentFilter } from "@/hooks/usePersistentFilter";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -452,8 +453,8 @@ export default function BankStatementsPage() {
   const [batchDateTo, setBatchDateTo] = useState<string>("");
   const [file, setFile] = useState<File | null>(null);
   const [selectedBankId, setSelectedBankId] = useState<string>("galicia");
-  const [filterTab, setFilterTab] = useState<FilterTab>("all");
-  const [bankFilter, setBankFilter] = useState<string>("all");
+  const [filterTab, setFilterTab] = usePersistentFilter<FilterTab>("extractos.filterTab", "all");
+  const [bankFilter, setBankFilter] = usePersistentFilter<string>("extractos.bankFilter", "all");
   const [isBranchMappingOpen, setIsBranchMappingOpen] = useState(false);
   const [unmappedBranches, setUnmappedBranches] = useState<string[]>([]);
   const [branchMappings, setBranchMappings] = useState<BranchMapping[]>([]);
@@ -469,17 +470,17 @@ export default function BankStatementsPage() {
   const [isDeleteBatchOpen, setIsDeleteBatchOpen] = useState(false);
   const [deleteBatchTarget, setDeleteBatchTarget] = useState<ImportBatch | null>(null);
   const [deleteConfirmCode, setDeleteConfirmCode] = useState("");
-  const [listFilterLocalId, setListFilterLocalId] = useState<string>("all");
-  const [listFilterCategoryId, setListFilterCategoryId] = useState<string>("all");
-  const [listFilterGroupId, setListFilterGroupId] = useState<string>("all");
+  const [listFilterLocalId, setListFilterLocalId] = usePersistentFilter<string>("extractos.localId", "all");
+  const [listFilterCategoryId, setListFilterCategoryId] = usePersistentFilter<string>("extractos.categoryId", "all");
+  const [listFilterGroupId, setListFilterGroupId] = usePersistentFilter<string>("extractos.groupId", "all");
   // Punto 4 (jul-27): filtro por Cuenta (bank_accounts), distinto de la pestaña de Entidad/banco.
-  const [listFilterAccountId, setListFilterAccountId] = useState<string>("all");
-  const [listFilterDateFrom, setListFilterDateFrom] = useState("");
-  const [listFilterDateTo, setListFilterDateTo] = useState("");
+  const [listFilterAccountId, setListFilterAccountId] = usePersistentFilter<string>("extractos.accountId", "all");
+  const [listFilterDateFrom, setListFilterDateFrom] = usePersistentFilter("extractos.dateFrom", "");
+  const [listFilterDateTo, setListFilterDateTo] = usePersistentFilter("extractos.dateTo", "");
   /** Filtro por Mes Económico: "all" o un "YYYY-MM". */
-  const [listFilterEconMonth, setListFilterEconMonth] = useState<string>("all");
-  const [listFilterType, setListFilterType] = useState<"all" | "income" | "expense">("all");
-  const [listSearch, setListSearch] = useState("");
+  const [listFilterEconMonth, setListFilterEconMonth] = usePersistentFilter<string>("extractos.econMonth", "all");
+  const [listFilterType, setListFilterType] = usePersistentFilter<"all" | "income" | "expense">("extractos.type", "all");
+  const [listSearch, setListSearch] = usePersistentFilter("extractos.search", "");
   const [uploadBankAccountId, setUploadBankAccountId] = useState("");
   const [uploadDefaultLocalId, setUploadDefaultLocalId] = useState<string>("none");
   const [uploadOpeningBalance, setUploadOpeningBalance] = useState<string>("");

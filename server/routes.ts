@@ -7,6 +7,7 @@ import { setupLocalAuth, isAuthenticatedLocal } from "./auth";
 import multer from "multer";
 import * as XLSX from "xlsx";
 import { z } from "zod";
+import { hasAtLeastOneSalesSource } from "@shared/salesSources";
 import {
   getAvailableBanks,
 } from "./bankParsers";
@@ -4947,6 +4948,54 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     try {
       const perms = await storage.getPermissions();
       res.json(perms);
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
+  // ==========================================
+  // PREFERENCIAS DE LA EMPRESA (punto 6, ago-26)
+  // ==========================================
+  // Que sistemas de venta usa el cliente. La LECTURA la necesita cualquier usuario
+  // autenticado (el menu lateral y los selectores de origen dependen de esto);
+  // la ESCRITURA queda reservada al socio, porque es configuracion de la empresa.
+
+  app.get("/api/preferences/sales-sources", isAuthenticated, async (req, res) => {
+    try {
+      const clientId = await getClientId(req);
+      res.json(await storage.getSalesSourcePreferences(clientId));
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
+  app.put("/api/preferences/sales-sources", isAuthenticated, async (req, res) => {
+    try {
+      const actorId = await getAuthenticatedUserId(req);
+      if (!actorId) return res.status(401).json({ message: "No autenticado" });
+      const clientId = await getClientId(req);
+      const role = String((await storage.getUserRoleInClient(actorId, clientId)) ?? "")
+        .trim()
+        .toLowerCase();
+      if (role !== "socio") {
+        return res.status(403).json({ message: "Solo el socio puede cambiar las preferencias de la empresa" });
+      }
+
+      const parsed = z
+        .object({
+          fudo: z.boolean(),
+          shares: z.boolean(),
+          datalive: z.boolean(),
+        })
+        .safeParse(req.body);
+      if (!parsed.success) {
+        return res.status(400).json({ message: "Datos invalidos" });
+      }
+      if (!hasAtLeastOneSalesSource(parsed.data)) {
+        return res.status(400).json({ message: "Tiene que quedar habilitado al menos un sistema de ventas" });
+      }
+
+      res.json(await storage.updateSalesSourcePreferences(clientId, parsed.data));
     } catch (e: any) {
       res.status(500).json({ message: e.message });
     }

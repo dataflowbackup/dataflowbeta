@@ -1,6 +1,8 @@
-import { useMemo, useState } from "react";
+import { useMemo, useState, useEffect } from "react";
+import { useSalesSources } from "@/hooks/useSalesSources";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { PageHeader } from "@/components/page-header";
+import { usePersistentFilter } from "@/hooks/usePersistentFilter";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
@@ -103,10 +105,10 @@ function money(v: string | number | null): number {
 // ─── Dashboard ───────────────────────────────────────────────────────────────
 
 function Dashboard({ records, locals, goals }: { records: CmvSaved[]; locals: Local[]; goals: MonthlyGoalRow[] }) {
-  const [filterFrom, setFilterFrom] = useState("");
-  const [filterTo, setFilterTo] = useState("");
-  const [filterSource, setFilterSource] = useState("all");
-  const [filterLocals, setFilterLocals] = useState<number[]>([]);
+  const [filterFrom, setFilterFrom] = usePersistentFilter("cmv.listFrom", "");
+  const [filterTo, setFilterTo] = usePersistentFilter("cmv.listTo", "");
+  const [filterSource, setFilterSource] = usePersistentFilter("cmv.listSource", "all");
+  const [filterLocals, setFilterLocals] = usePersistentFilter<number[]>("cmv.listLocals", []);
   const [localPopoverOpen, setLocalPopoverOpen] = useState(false);
 
   const toggleLocal = (id: number) =>
@@ -174,13 +176,21 @@ function Dashboard({ records, locals, goals }: { records: CmvSaved[]; locals: Lo
     "Venta $": money(r.ventaNeta),
   }));
 
+  // Punto 6 (ago-26): las fuentes que la empresa apago en Preferencias no se ofrecen.
+  const { isEnabled: isSalesSourceEnabled } = useSalesSources();
   const sourceOptions = [
     { value: "all", label: "Todas las fuentes" },
     { value: "extractos", label: "Extractos" },
     { value: "datalive", label: "Datalive" },
     { value: "fudo", label: "FUDO" },
     { value: "shares", label: "Shares" },
-  ];
+  ].filter((o) => isSalesSourceEnabled(o.value));
+  // El filtro del listado vuelve a "Todas las fuentes" si la que estaba se deshabilito.
+  const allowedFilterSources = sourceOptions.map((o) => o.value).join(",");
+  useEffect(() => {
+    const allowed = allowedFilterSources ? allowedFilterSources.split(",") : [];
+    if (allowed.length > 0 && !allowed.includes(filterSource)) setFilterSource("all");
+  }, [allowedFilterSources, filterSource]);
 
   const hasFilters = filterFrom || filterTo || filterSource !== "all" || filterLocals.length > 0;
 
@@ -391,12 +401,14 @@ function Dashboard({ records, locals, goals }: { records: CmvSaved[]; locals: Lo
 // ─── Página principal ─────────────────────────────────────────────────────────
 
 export default function CmvPage() {
-  const [localId, setLocalId] = useState("all");
+  const [localId, setLocalId] = usePersistentFilter("cmv.localId", "all");
   const [stockInicialId, setStockInicialId] = useState("");
   const [stockFinalId, setStockFinalId] = useState("");
-  const [dateFrom, setDateFrom] = useState(firstDayOfYear());
-  const [dateTo, setDateTo] = useState(today());
-  const [salesSource, setSalesSource] = useState<"extractos" | "datalive" | "fudo" | "shares">("extractos");
+  const [dateFrom, setDateFrom] = usePersistentFilter("cmv.dateFrom", firstDayOfYear());
+  const [dateTo, setDateTo] = usePersistentFilter("cmv.dateTo", today());
+  const [salesSource, setSalesSource] = usePersistentFilter<"extractos" | "datalive" | "fudo" | "shares">("cmv.salesSource", "extractos");
+  // Punto 6 (ago-26): las fuentes que la empresa apago en Preferencias no se ofrecen.
+  const { isEnabled: isCalcSalesSourceEnabled } = useSalesSources();
   const [ivaIncluded, setIvaIncluded] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
 
@@ -432,7 +444,15 @@ export default function CmvPage() {
     { value: "datalive", label: "Datalive" },
     { value: "fudo", label: "FUDO" },
     { value: "shares", label: "Shares" },
-  ];
+  ].filter((o) => isCalcSalesSourceEnabled(o.value));
+  // Si el origen elegido para el calculo queda deshabilitado, se cae al primero disponible.
+  const allowedCalcSources = sourceOptions.map((o) => o.value).join(",");
+  useEffect(() => {
+    const allowed = allowedCalcSources ? allowedCalcSources.split(",") : [];
+    if (allowed.length > 0 && !allowed.includes(salesSource)) {
+      setSalesSource(allowed[0] as typeof salesSource);
+    }
+  }, [allowedCalcSources, salesSource]);
   const ivaOptions = [
     { value: "sin", label: "Sin IVA (÷1,21)" },
     { value: "con", label: "Con IVA (bruto)" },

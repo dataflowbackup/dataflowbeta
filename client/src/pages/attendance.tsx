@@ -1,6 +1,7 @@
 import { useState, useMemo } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { PageHeader } from "@/components/page-header";
+import { usePersistentFilter } from "@/hooks/usePersistentFilter";
 import { DataTable, Column } from "@/components/data-table";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -51,9 +52,9 @@ export default function AttendancePage() {
   const [isClockDialogOpen, setIsClockDialogOpen] = useState(false);
   const [clockAction, setClockAction] = useState<"in" | "out">("in");
   const [selectedEmployeeId, setSelectedEmployeeId] = useState<number | null>(null);
-  const [selectedLocalId, setSelectedLocalId] = useState<number | null>(null);
+  const [selectedLocalId, setSelectedLocalId] = usePersistentFilter<number | null>("asistencia.localId", null);
   const [clockNotes, setClockNotes] = useState("");
-  const [dateFilter, setDateFilter] = useState<string>(new Date().toISOString().split("T")[0]);
+  const [dateFilter, setDateFilter] = usePersistentFilter<string>("asistencia.date", new Date().toISOString().split("T")[0]);
 
   const today = new Date().toISOString().split("T")[0];
 

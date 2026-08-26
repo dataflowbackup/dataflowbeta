@@ -16,6 +16,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { resolveEconomicMonth, economicMonthLabelWithYear } from "@shared/economicMonth";
 import { DataTable, Column } from "@/components/data-table";
+import { usePersistentFilter } from "@/hooks/usePersistentFilter";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -496,16 +497,16 @@ export default function CashPage() {
   const [editLocalId, setEditLocalId] = useState<string>("none");
   const [deleteTarget, setDeleteTarget] = useState<TransactionWithRelations | null>(null);
 
-  const [filterSearch, setFilterSearch] = useState("");
-  const [filterType, setFilterType] = useState<"all" | "income" | "expense">("all");
-  const [filterLocalId, setFilterLocalId] = useState<string>("all");
-  const [filterCategoryId, setFilterCategoryId] = useState<string>("all");
-  const [filterDateFrom, setFilterDateFrom] = useState("");
-  const [filterDateTo, setFilterDateTo] = useState("");
+  const [filterSearch, setFilterSearch] = usePersistentFilter("efectivo.search", "");
+  const [filterType, setFilterType] = usePersistentFilter<"all" | "income" | "expense">("efectivo.type", "all");
+  const [filterLocalId, setFilterLocalId] = usePersistentFilter<string>("efectivo.localId", "all");
+  const [filterCategoryId, setFilterCategoryId] = usePersistentFilter<string>("efectivo.categoryId", "all");
+  const [filterDateFrom, setFilterDateFrom] = usePersistentFilter("efectivo.dateFrom", "");
+  const [filterDateTo, setFilterDateTo] = usePersistentFilter("efectivo.dateTo", "");
   /** Filtro por Mes Económico: "all" o un "YYYY-MM". */
-  const [filterEconMonth, setFilterEconMonth] = useState<string>("all");
+  const [filterEconMonth, setFilterEconMonth] = usePersistentFilter<string>("efectivo.econMonth", "all");
   /** Solapa de categorización, igual que en Extractos: se aplica sobre el resto de los filtros. */
-  const [filterTab, setFilterTab] = useState<CashFilterTab>("all");
+  const [filterTab, setFilterTab] = usePersistentFilter<CashFilterTab>("efectivo.filterTab", "all");
 
   const { data: categories = [] } = useQuery<TransactionCategory[]>({
     queryKey: ["/api/transaction-categories"],
@@ -536,7 +537,7 @@ export default function CashPage() {
    * Filtro por Caja, multi-selección: cada entrada es el id de una caja o "none" (sin caja), que se
    * puede combinar con cajas reales. Vacío = todas.
    */
-  const [filterCajaIds, setFilterCajaIds] = useState<string[]>([]);
+  const [filterCajaIds, setFilterCajaIds] = usePersistentFilter<string[]>("efectivo.cajaIds", []);
   const toggleFilterCaja = (key: string) =>
     setFilterCajaIds((prev) => (prev.includes(key) ? prev.filter((k) => k !== key) : [...prev, key]));
 

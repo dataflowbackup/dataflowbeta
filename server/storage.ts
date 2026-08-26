@@ -1,5 +1,10 @@
 import { formatInvoiceVoucherDisplay } from "@shared/invoiceDisplay";
 import { resolveEconomicMonth } from "@shared/economicMonth";
+import {
+  normalizeSalesSourcePreferences,
+  hasAtLeastOneSalesSource,
+  type SalesSourcePreferences,
+} from "@shared/salesSources";
 import { computeRecipeMetrics, recipeGrossPrice, recipeRemovesIva } from "@shared/recipePricing";
 import { db } from "./db";
 import { eq, and, desc, asc, gte, lte, sql, isNull, isNotNull, inArray, or, lt } from "drizzle-orm";
@@ -55,6 +60,7 @@ import {
   breakevenVariableCosts,
   cmvCalculations,
   dataliveVentas,
+  clientPreferences,
   fudoVentas,
   fudoPagos,
   fudoProductos,
@@ -6705,6 +6711,65 @@ export class DatabaseStorage implements IStorage {
       topGastos: monthlyGastos.sort((a, b) => b.value - a.value).slice(0, 3),
       topRentabilidad: monthlyRentabilidad.sort((a, b) => b.value - a.value).slice(0, 3),
     };
+  }
+
+  // ==========================================
+  // PREFERENCIAS DE LA EMPRESA (punto 6, ago-26)
+  // ==========================================
+
+  /**
+   * Preferencias del cliente. Si todavia no tiene fila, devuelve los defaults SIN
+   * escribir nada: una lectura no tiene por que crear registros, y el default ya
+   * equivale al comportamiento anterior (los tres sistemas habilitados).
+   */
+  async getSalesSourcePreferences(clientId: number): Promise<SalesSourcePreferences> {
+    const [row] = await db
+      .select()
+      .from(clientPreferences)
+      .where(eq(clientPreferences.clientId, clientId))
+      .limit(1);
+
+    if (!row) return normalizeSalesSourcePreferences(null);
+
+    return normalizeSalesSourcePreferences({
+      fudo: row.salesSourceFudo,
+      shares: row.salesSourceShares,
+      datalive: row.salesSourceDatalive,
+    });
+  }
+
+  async updateSalesSourcePreferences(
+    clientId: number,
+    prefs: SalesSourcePreferences,
+  ): Promise<SalesSourcePreferences> {
+    const normalized = normalizeSalesSourcePreferences(prefs);
+    if (!hasAtLeastOneSalesSource(normalized)) {
+      throw new Error("Tiene que quedar habilitado al menos un sistema de ventas");
+    }
+
+    const values = {
+      salesSourceFudo: normalized.fudo,
+      salesSourceShares: normalized.shares,
+      salesSourceDatalive: normalized.datalive,
+      updatedAt: new Date(),
+    };
+
+    const [existing] = await db
+      .select({ id: clientPreferences.id })
+      .from(clientPreferences)
+      .where(eq(clientPreferences.clientId, clientId))
+      .limit(1);
+
+    if (existing) {
+      await db
+        .update(clientPreferences)
+        .set(values)
+        .where(eq(clientPreferences.clientId, clientId));
+    } else {
+      await db.insert(clientPreferences).values({ clientId, ...values });
+    }
+
+    return normalized;
   }
 }
 
