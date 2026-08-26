@@ -30,6 +30,7 @@ export const MODULE_ROUTES: Record<string, string[]> = {
   ],
   Financiero: [
     "/extractos-efectivo",
+    "/mis-comprobantes",
     "/extractos",
     "/efectivo",
     "/categorias-movimientos",

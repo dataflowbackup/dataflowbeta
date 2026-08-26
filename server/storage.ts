@@ -61,6 +61,10 @@ import {
   cmvCalculations,
   dataliveVentas,
   clientPreferences,
+  afipSalePoints,
+  afipImportBatches,
+  afipReceivedVouchers,
+  afipIssuedVouchers,
   fudoVentas,
   fudoPagos,
   fudoProductos,
@@ -143,6 +147,8 @@ import {
   type ClientBank,
   type InsertBusinessName,
   type BusinessName,
+  type AfipSalePoint,
+  type AfipImportBatch,
   type InsertCounterparty,
   type Counterparty,
   type InsertCounterpartyIdentifier,
@@ -6711,6 +6717,598 @@ export class DatabaseStorage implements IStorage {
       topGastos: monthlyGastos.sort((a, b) => b.value - a.value).slice(0, 3),
       topRentabilidad: monthlyRentabilidad.sort((a, b) => b.value - a.value).slice(0, 3),
     };
+  }
+
+  // ==========================================
+  // MIS COMPROBANTES AFIP (punto 1, ago-26)
+  // ==========================================
+
+  /** Puntos de venta del cliente, con el nombre del local y de la sociedad ya resueltos. */
+  async listAfipSalePoints(clientId: number): Promise<any[]> {
+    const rows = await db
+      .select({
+        salePoint: afipSalePoints,
+        local: locals,
+        businessName: businessNames,
+      })
+      .from(afipSalePoints)
+      .leftJoin(locals, eq(afipSalePoints.localId, locals.id))
+      .leftJoin(businessNames, eq(afipSalePoints.businessNameId, businessNames.id))
+      .where(eq(afipSalePoints.clientId, clientId))
+      .orderBy(asc(afipSalePoints.businessNameId), asc(afipSalePoints.number));
+
+    return rows.map((r) => ({
+      ...r.salePoint,
+      local: r.local ?? null,
+      businessNameLabel: r.businessName?.name ?? null,
+      businessNameCuit: r.businessName?.cuit ?? null,
+    }));
+  }
+
+  async createAfipSalePoint(clientId: number, data: {
+    businessNameId: number;
+    number: number;
+    fantasyName?: string | null;
+    localId?: number | null;
+    salesSystem?: string | null;
+  }): Promise<AfipSalePoint> {
+    await this.assertBusinessNameBelongsToClient(clientId, data.businessNameId);
+    if (data.localId != null) await this.assertLocalBelongsToClient(clientId, data.localId);
+
+    const [existing] = await db
+      .select({ id: afipSalePoints.id })
+      .from(afipSalePoints)
+      .where(and(
+        eq(afipSalePoints.clientId, clientId),
+        eq(afipSalePoints.businessNameId, data.businessNameId),
+        eq(afipSalePoints.number, data.number),
+      ))
+      .limit(1);
+    if (existing) throw new Error("Esa sociedad ya tiene un punto de venta con ese número");
+
+    const [created] = await db
+      .insert(afipSalePoints)
+      .values({
+        clientId,
+        businessNameId: data.businessNameId,
+        number: data.number,
+        fantasyName: data.fantasyName ?? null,
+        localId: data.localId ?? null,
+        salesSystem: data.salesSystem ?? "none",
+      })
+      .returning();
+    return created;
+  }
+
+  async updateAfipSalePoint(clientId: number, id: number, data: {
+    businessNameId?: number;
+    number?: number;
+    fantasyName?: string | null;
+    localId?: number | null;
+    salesSystem?: string | null;
+    active?: boolean;
+  }): Promise<AfipSalePoint> {
+    const [current] = await db
+      .select()
+      .from(afipSalePoints)
+      .where(and(eq(afipSalePoints.id, id), eq(afipSalePoints.clientId, clientId)))
+      .limit(1);
+    if (!current) throw new Error("Punto de venta no encontrado");
+
+    const businessNameId = data.businessNameId ?? current.businessNameId;
+    const number = data.number ?? current.number;
+    if (data.businessNameId != null) await this.assertBusinessNameBelongsToClient(clientId, data.businessNameId);
+    if (data.localId != null) await this.assertLocalBelongsToClient(clientId, data.localId);
+
+    // El par (sociedad, numero) sigue siendo unico despues del cambio.
+    const [clash] = await db
+      .select({ id: afipSalePoints.id })
+      .from(afipSalePoints)
+      .where(and(
+        eq(afipSalePoints.clientId, clientId),
+        eq(afipSalePoints.businessNameId, businessNameId),
+        eq(afipSalePoints.number, number),
+      ))
+      .limit(1);
+    if (clash && clash.id !== id) throw new Error("Esa sociedad ya tiene un punto de venta con ese número");
+
+    const [updated] = await db
+      .update(afipSalePoints)
+      .set({
+        businessNameId,
+        number,
+        fantasyName: data.fantasyName !== undefined ? data.fantasyName : current.fantasyName,
+        localId: data.localId !== undefined ? data.localId : current.localId,
+        salesSystem: data.salesSystem ?? current.salesSystem,
+        active: data.active ?? current.active,
+        updatedAt: new Date(),
+      })
+      .where(and(eq(afipSalePoints.id, id), eq(afipSalePoints.clientId, clientId)))
+      .returning();
+    return updated;
+  }
+
+  async deleteAfipSalePoint(clientId: number, id: number): Promise<void> {
+    const result = await db
+      .delete(afipSalePoints)
+      .where(and(eq(afipSalePoints.id, id), eq(afipSalePoints.clientId, clientId)));
+    if (((result as any).rowCount ?? (result as any).rowsAffected ?? 0) === 0) throw new Error("Punto de venta no encontrado");
+  }
+
+  private async assertBusinessNameBelongsToClient(clientId: number, businessNameId: number): Promise<void> {
+    const [row] = await db
+      .select({ id: businessNames.id })
+      .from(businessNames)
+      .where(and(eq(businessNames.id, businessNameId), eq(businessNames.clientId, clientId)))
+      .limit(1);
+    if (!row) throw new Error("La sociedad no pertenece a esta empresa");
+  }
+
+  private async assertLocalBelongsToClient(clientId: number, localId: number): Promise<void> {
+    const [row] = await db
+      .select({ id: locals.id })
+      .from(locals)
+      .where(and(eq(locals.id, localId), eq(locals.clientId, clientId)))
+      .limit(1);
+    if (!row) throw new Error("El local no pertenece a esta empresa");
+  }
+
+  /** Sociedad cuyo CUIT coincide con el que declara el archivo de AFIP. */
+  async findBusinessNameByCuit(clientId: number, cuit: string): Promise<BusinessName | null> {
+    const digits = String(cuit ?? "").replace(/\D/g, "");
+    if (!digits) return null;
+    const rows = await db
+      .select()
+      .from(businessNames)
+      .where(eq(businessNames.clientId, clientId));
+    return rows.find((r) => String(r.cuit ?? "").replace(/\D/g, "") === digits) ?? null;
+  }
+
+  /**
+   * Importa comprobantes RECIBIDOS. Idempotente por (CUIT emisor, tipo, punto de venta, numero):
+   * volver a subir un periodo que se solapa con otro NO duplica, actualiza la fila existente.
+   *
+   * El proveedor se resuelve por CUIT contra el catalogo; si no existe, el comprobante se guarda
+   * igual con supplierId en null (justamente es uno de los casos que hay que revisar).
+   */
+  async importAfipReceivedVouchers(
+    clientId: number,
+    vouchers: Array<{
+      fecha: string;
+      tipoCodigo: number;
+      tipoNombre: string;
+      tipoSistema: string | null;
+      puntoVenta: number;
+      numeroDesde: number;
+      numeroHasta: number;
+      codigoAutorizacion: string;
+      docTipo: string;
+      docNumero: string;
+      denominacion: string;
+      moneda: string;
+      tipoCambio: number;
+      netoGravado: number;
+      netoNoGravado: number;
+      opExentas: number;
+      otrosTributos: number;
+      totalIva: number;
+      total: number;
+      ivaPorAlicuota: Record<string, number>;
+    }>,
+    opts: { businessNameId: number | null; cuit: string | null; fileName?: string | null; format?: string | null; createdBy?: string | null },
+  ): Promise<{ batchId: number; insertados: number; actualizados: number; proveedoresNoEncontrados: number }> {
+    if (vouchers.length === 0) throw new Error("El archivo no trae comprobantes para importar");
+
+    // Catalogo de proveedores por CUIT, una sola lectura para todo el lote.
+    const supplierRows = await db
+      .select({ id: suppliers.id, cuit: suppliers.cuit })
+      .from(suppliers)
+      .where(eq(suppliers.clientId, clientId));
+    const supplierByCuit = new Map<string, number>();
+    for (const s of supplierRows) {
+      const digits = String(s.cuit ?? "").replace(/\D/g, "");
+      if (digits) supplierByCuit.set(digits, s.id);
+    }
+
+    const fechas = vouchers.map((v) => v.fecha).sort();
+    const [batch] = await db
+      .insert(afipImportBatches)
+      .values({
+        clientId,
+        businessNameId: opts.businessNameId ?? null,
+        kind: "received",
+        format: opts.format ?? null,
+        fileName: opts.fileName ?? null,
+        cuit: opts.cuit ?? null,
+        periodFrom: fechas[0],
+        periodTo: fechas[fechas.length - 1],
+        createdBy: opts.createdBy ?? null,
+      })
+      .returning();
+
+    // Lo ya cargado del mismo cliente, para decidir insert vs update sin una consulta por fila.
+    const existing = await db
+      .select({
+        id: afipReceivedVouchers.id,
+        issuerCuit: afipReceivedVouchers.issuerCuit,
+        voucherTypeCode: afipReceivedVouchers.voucherTypeCode,
+        salePoint: afipReceivedVouchers.salePoint,
+        numberFrom: afipReceivedVouchers.numberFrom,
+      })
+      .from(afipReceivedVouchers)
+      .where(eq(afipReceivedVouchers.clientId, clientId));
+    const keyOf = (cuit: string, tipo: number, pv: number, nro: number) => `${cuit}|${tipo}|${pv}|${nro}`;
+    const existingByKey = new Map(existing.map((e) => [keyOf(String(e.issuerCuit ?? ""), e.voucherTypeCode, e.salePoint, e.numberFrom), e.id]));
+
+    let insertados = 0;
+    let actualizados = 0;
+    let proveedoresNoEncontrados = 0;
+    const filas: any[] = [];
+    const idsAReemplazar: number[] = [];
+
+    for (const v of vouchers) {
+      const supplierId = supplierByCuit.get(v.docNumero) ?? null;
+      if (!supplierId) proveedoresNoEncontrados++;
+
+      const values = {
+        clientId,
+        businessNameId: opts.businessNameId ?? null,
+        batchId: batch.id,
+        voucherDate: v.fecha,
+        voucherTypeCode: v.tipoCodigo,
+        voucherTypeName: v.tipoNombre,
+        voucherSystemType: v.tipoSistema,
+        salePoint: v.puntoVenta,
+        numberFrom: v.numeroDesde,
+        numberTo: v.numeroHasta,
+        authorizationCode: v.codigoAutorizacion,
+        issuerDocType: v.docTipo,
+        issuerCuit: v.docNumero,
+        issuerName: v.denominacion,
+        supplierId,
+        currency: v.moneda,
+        exchangeRate: String(v.tipoCambio ?? 1),
+        netGravado: String(v.netoGravado ?? 0),
+        netNoGravado: String(v.netoNoGravado ?? 0),
+        exempt: String(v.opExentas ?? 0),
+        otherTaxes: String(v.otrosTributos ?? 0),
+        totalIva: String(v.totalIva ?? 0),
+        total: String(v.total ?? 0),
+        net0: String(v.ivaPorAlicuota?.neto0 ?? 0),
+        iva2_5: String(v.ivaPorAlicuota?.iva2_5 ?? 0),
+        net2_5: String(v.ivaPorAlicuota?.neto2_5 ?? 0),
+        iva5: String(v.ivaPorAlicuota?.iva5 ?? 0),
+        net5: String(v.ivaPorAlicuota?.neto5 ?? 0),
+        iva10_5: String(v.ivaPorAlicuota?.iva10_5 ?? 0),
+        net10_5: String(v.ivaPorAlicuota?.neto10_5 ?? 0),
+        iva21: String(v.ivaPorAlicuota?.iva21 ?? 0),
+        net21: String(v.ivaPorAlicuota?.neto21 ?? 0),
+        iva27: String(v.ivaPorAlicuota?.iva27 ?? 0),
+        net27: String(v.ivaPorAlicuota?.neto27 ?? 0),
+        createdBy: opts.createdBy ?? null,
+      };
+
+      const existingId = existingByKey.get(keyOf(v.docNumero, v.tipoCodigo, v.puntoVenta, v.numeroDesde));
+      if (existingId) {
+        idsAReemplazar.push(existingId);
+        actualizados++;
+      } else {
+        insertados++;
+      }
+      filas.push(values);
+    }
+
+    // Se escribe POR LOTES, no fila por fila: un archivo de AFIP trae ~2.000 comprobantes y
+    // una consulta por cada uno contra Turso seria lentisimo y ademas quema cuota de la base.
+    // Los que ya existian se borran y se vuelven a insertar, que deja el mismo resultado que
+    // un update pero con dos consultas en lugar de dos mil.
+    const CHUNK_DELETE = 200;
+    for (let i = 0; i < idsAReemplazar.length; i += CHUNK_DELETE) {
+      await db
+        .delete(afipReceivedVouchers)
+        .where(inArray(afipReceivedVouchers.id, idsAReemplazar.slice(i, i + CHUNK_DELETE)));
+    }
+
+    // 20 filas por insert: son ~35 columnas cada una y SQLite corta a las 999 variables.
+    const CHUNK_INSERT = 20;
+    for (let i = 0; i < filas.length; i += CHUNK_INSERT) {
+      await db.insert(afipReceivedVouchers).values(filas.slice(i, i + CHUNK_INSERT));
+    }
+
+    await db
+      .update(afipImportBatches)
+      .set({ rowsImported: insertados + actualizados, rowsSkipped: 0 })
+      .where(eq(afipImportBatches.id, batch.id));
+
+    return { batchId: batch.id, insertados, actualizados, proveedoresNoEncontrados };
+  }
+
+  /** Comprobantes recibidos del periodo, con el proveedor del sistema ya resuelto. */
+  async listAfipReceivedVouchers(
+    clientId: number,
+    filters: { dateFrom?: string; dateTo?: string; supplierId?: number; businessNameId?: number } = {},
+  ): Promise<any[]> {
+    const conds = [eq(afipReceivedVouchers.clientId, clientId)];
+    if (filters.dateFrom) conds.push(gte(afipReceivedVouchers.voucherDate, filters.dateFrom));
+    if (filters.dateTo) conds.push(lte(afipReceivedVouchers.voucherDate, filters.dateTo));
+    if (filters.supplierId != null) conds.push(eq(afipReceivedVouchers.supplierId, filters.supplierId));
+    if (filters.businessNameId != null) conds.push(eq(afipReceivedVouchers.businessNameId, filters.businessNameId));
+
+    const rows = await db
+      .select({
+        voucher: afipReceivedVouchers,
+        supplier: suppliers,
+      })
+      .from(afipReceivedVouchers)
+      .leftJoin(suppliers, eq(afipReceivedVouchers.supplierId, suppliers.id))
+      .where(and(...conds))
+      .orderBy(desc(afipReceivedVouchers.voucherDate), desc(afipReceivedVouchers.id));
+
+    return rows.map((r) => ({
+      ...r.voucher,
+      supplier: r.supplier ? { id: r.supplier.id, tradeName: r.supplier.tradeName, cuit: r.supplier.cuit } : null,
+    }));
+  }
+
+  /**
+   * Cruce de los comprobantes RECIBIDOS de AFIP contra las Facturas cargadas.
+   *
+   * Se calcula AL VUELO, no se persiste: asi, a medida que se cargan las facturas que faltaban,
+   * la diferencia baja sola sin tener que volver a importar ni recalcular nada.
+   *
+   * Dos niveles de coincidencia, como se acordo el 26-ago:
+   *  - EXACTA:  CUIT emisor + tipo + punto de venta + numero.
+   *  - PROBABLE: CUIT emisor + numero, ignorando el punto de venta. Existe porque hay facturas
+   *    cargadas antes de que el sistema pidiera punto de venta, que lo tienen vacio.
+   * La FECHA no se exige para dar por encontrada una factura (el cuarteto ya es unico); la
+   * diferencia de dias se informa como observacion.
+   *
+   * Estados de cada comprobante de AFIP:
+   *  - "ok"        esta cargado y el importe coincide.
+   *  - "importe"   esta cargado pero el total no coincide.
+   *  - "probable"  aparecio por numero + CUIT, sin poder confirmar el punto de venta.
+   *  - "faltante"  AFIP lo tiene y el sistema no.
+   * Y aparte, las facturas del sistema que AFIP no informa quedan como "sobrante".
+   */
+  async getAfipReceivedReconciliation(
+    clientId: number,
+    filters: { dateFrom?: string; dateTo?: string; supplierId?: number; localId?: number } = {},
+  ): Promise<any> {
+    const vouchers = await this.listAfipReceivedVouchers(clientId, {
+      dateFrom: filters.dateFrom,
+      dateTo: filters.dateTo,
+      supplierId: filters.supplierId,
+    });
+
+    // Las facturas se buscan con un margen de 45 dias sobre el periodo pedido: la fecha cargada
+    // a mano puede no ser exactamente la de emision y no queremos falsos faltantes por eso.
+    const shiftDays = (iso: string, days: number) => {
+      const d = new Date(`${iso}T00:00:00`);
+      d.setDate(d.getDate() + days);
+      return d.toISOString().slice(0, 10);
+    };
+    const invoiceConds = [eq(invoices.clientId, clientId)];
+    if (filters.dateFrom) invoiceConds.push(gte(invoices.invoiceDate, shiftDays(filters.dateFrom, -45)));
+    if (filters.dateTo) invoiceConds.push(lte(invoices.invoiceDate, shiftDays(filters.dateTo, 45)));
+
+    const invoiceRows = await db
+      .select({
+        id: invoices.id,
+        localId: invoices.localId,
+        localName: locals.name,
+        supplierId: invoices.supplierId,
+        supplierName: suppliers.tradeName,
+        supplierCuit: suppliers.cuit,
+        salePoint: invoices.invoiceSalePoint,
+        number: invoices.invoiceNumber,
+        type: invoices.invoiceType,
+        date: invoices.invoiceDate,
+        total: invoices.total,
+        status: invoices.status,
+      })
+      .from(invoices)
+      .leftJoin(locals, eq(invoices.localId, locals.id))
+      .leftJoin(suppliers, eq(invoices.supplierId, suppliers.id))
+      .where(and(...invoiceConds));
+
+    const digits = (v: unknown) => String(v ?? "").replace(/\D/g, "");
+    const numOf = (v: unknown) => {
+      const d = digits(v);
+      return d ? parseInt(d, 10) : null;
+    };
+
+    // Indices de las facturas: por clave exacta y por (CUIT + numero) para el nivel probable.
+    const exactKey = (cuit: string, type: string, sp: number, num: number) => `${cuit}|${type}|${sp}|${num}`;
+    const loseKey = (cuit: string, num: number) => `${cuit}|${num}`;
+
+    const byExact = new Map<string, any>();
+    const byLoose = new Map<string, any[]>();
+    const usedInvoiceIds = new Set<number>();
+
+    for (const inv of invoiceRows) {
+      // Las anuladas no cuentan: no deberian aparecer como cargadas ni como sobrantes.
+      if (inv.status && inv.status !== "active") continue;
+      const cuit = digits(inv.supplierCuit);
+      const num = numOf(inv.number);
+      if (!cuit || num == null) continue;
+      const sp = numOf(inv.salePoint);
+      if (sp != null) byExact.set(exactKey(cuit, String(inv.type ?? ""), sp, num), inv);
+      const lk = loseKey(cuit, num);
+      if (!byLoose.has(lk)) byLoose.set(lk, []);
+      byLoose.get(lk)!.push(inv);
+    }
+
+    const AMOUNT_TOLERANCE = 1; // un peso, para no marcar diferencias por redondeo
+    const daysBetween = (a: string, b: string) =>
+      Math.round((new Date(`${a}T00:00:00`).getTime() - new Date(`${b}T00:00:00`).getTime()) / 86400000);
+
+    const rows = vouchers.map((v: any) => {
+      const cuit = digits(v.issuerCuit);
+      const total = parseFloat(String(v.total ?? 0)) || 0;
+      const num = v.numberFrom;
+      const systemType = v.voucherSystemType ?? "";
+
+      let match: any = null;
+      let matchLevel: "exacta" | "probable" | null = null;
+
+      if (cuit && systemType) {
+        const hit = byExact.get(exactKey(cuit, systemType, v.salePoint, num));
+        if (hit) {
+          match = hit;
+          matchLevel = "exacta";
+        }
+      }
+      if (!match && cuit) {
+        // Nivel probable: mismo CUIT y mismo numero, con el punto de venta sin cargar.
+        const candidates = (byLoose.get(loseKey(cuit, num)) ?? []).filter(
+          (c) => numOf(c.salePoint) == null && !usedInvoiceIds.has(c.id),
+        );
+        if (candidates.length > 0) {
+          match = candidates[0];
+          matchLevel = "probable";
+        }
+      }
+
+      if (match) usedInvoiceIds.add(match.id);
+
+      const invoiceTotal = match ? parseFloat(String(match.total ?? 0)) || 0 : null;
+      const amountDiff = invoiceTotal != null ? Math.round((total - invoiceTotal) * 100) / 100 : null;
+      const dateDiff = match ? daysBetween(v.voucherDate, String(match.date)) : null;
+
+      let status: "ok" | "importe" | "probable" | "faltante";
+      if (!match) status = "faltante";
+      else if (amountDiff != null && Math.abs(amountDiff) > AMOUNT_TOLERANCE) status = "importe";
+      else if (matchLevel === "probable") status = "probable";
+      else status = "ok";
+
+      return {
+        id: v.id,
+        voucherDate: v.voucherDate,
+        voucherTypeCode: v.voucherTypeCode,
+        voucherTypeName: v.voucherTypeName,
+        voucherSystemType: v.voucherSystemType,
+        salePoint: v.salePoint,
+        numberFrom: v.numberFrom,
+        issuerCuit: v.issuerCuit,
+        issuerName: v.issuerName,
+        supplierId: v.supplierId,
+        supplierName: v.supplier?.tradeName ?? null,
+        total,
+        totalIva: parseFloat(String(v.totalIva ?? 0)) || 0,
+        netGravado: parseFloat(String(v.netGravado ?? 0)) || 0,
+        status,
+        matchLevel,
+        invoiceId: match?.id ?? null,
+        invoiceTotal,
+        invoiceDate: match ? String(match.date) : null,
+        amountDiff,
+        dateDiff,
+        localId: match?.localId ?? null,
+        localName: match?.localName ?? null,
+      };
+    });
+
+    // Facturas cargadas que AFIP no informa. Se miran solo dentro del periodo pedido, para no
+    // marcar como sobrante algo que simplemente cae fuera del archivo importado.
+    const inPeriod = (d: string) =>
+      (!filters.dateFrom || d >= filters.dateFrom) && (!filters.dateTo || d <= filters.dateTo);
+
+    const sobrantes = invoiceRows
+      .filter((inv) => {
+        if (inv.status && inv.status !== "active") return false;
+        if (usedInvoiceIds.has(inv.id)) return false;
+        if (!inPeriod(String(inv.date))) return false;
+        if (filters.supplierId != null && inv.supplierId !== filters.supplierId) return false;
+        return true;
+      })
+      .map((inv) => ({
+        invoiceId: inv.id,
+        invoiceDate: String(inv.date),
+        invoiceType: inv.type,
+        salePoint: inv.salePoint,
+        number: inv.number,
+        supplierId: inv.supplierId,
+        supplierName: inv.supplierName,
+        supplierCuit: inv.supplierCuit,
+        total: parseFloat(String(inv.total ?? 0)) || 0,
+        localId: inv.localId,
+        localName: inv.localName,
+        /** Sin CUIT cargado el cruce es imposible: se avisa para que se complete la ficha. */
+        reason: digits(inv.supplierCuit) ? "no_informado" : "proveedor_sin_cuit",
+      }));
+
+    // El filtro por LOCAL se aplica DESPUES del cruce: el local de un comprobante de AFIP sale
+    // de la factura que le matcheo, asi que los que no matchearon no tienen local.
+    const filteredRows =
+      filters.localId != null ? rows.filter((r) => r.localId === filters.localId) : rows;
+    const filteredSobrantes =
+      filters.localId != null ? sobrantes.filter((s) => s.localId === filters.localId) : sobrantes;
+
+    const sum = (list: any[], pick: (x: any) => number) => Math.round(list.reduce((s, x) => s + pick(x), 0) * 100) / 100;
+    const byStatus = (st: string) => filteredRows.filter((r) => r.status === st);
+
+    return {
+      rows: filteredRows,
+      sobrantes: filteredSobrantes,
+      resumen: {
+        totalComprobantes: filteredRows.length,
+        totalAfip: sum(filteredRows, (r) => r.total),
+        ok: byStatus("ok").length,
+        okTotal: sum(byStatus("ok"), (r) => r.total),
+        probable: byStatus("probable").length,
+        probableTotal: sum(byStatus("probable"), (r) => r.total),
+        importe: byStatus("importe").length,
+        importeTotal: sum(byStatus("importe"), (r) => r.total),
+        importeDiff: sum(byStatus("importe"), (r) => r.amountDiff ?? 0),
+        faltante: byStatus("faltante").length,
+        faltanteTotal: sum(byStatus("faltante"), (r) => r.total),
+        sobrante: filteredSobrantes.length,
+        sobranteTotal: sum(filteredSobrantes, (s) => s.total),
+        sinProveedor: filteredRows.filter((r) => !r.supplierId).length,
+        sinLocal: filteredRows.filter((r) => r.localId == null).length,
+      },
+    };
+  }
+
+  /** Lotes de importacion, para mostrarlos y poder deshacerlos. */
+  async listAfipImportBatches(clientId: number, kind?: string): Promise<AfipImportBatch[]> {
+    const conds = [eq(afipImportBatches.clientId, clientId)];
+    if (kind) conds.push(eq(afipImportBatches.kind, kind));
+    return db
+      .select()
+      .from(afipImportBatches)
+      .where(and(...conds))
+      .orderBy(desc(afipImportBatches.id));
+  }
+
+  /**
+   * Deshace una importacion: borra los comprobantes que entraron en ese lote.
+   * Los que ya existian y solo se ACTUALIZARON quedan apuntando al lote nuevo, asi que se
+   * borran tambien; volver a subir el archivo los recrea igual.
+   */
+  async deleteAfipImportBatch(clientId: number, batchId: number): Promise<{ borrados: number }> {
+    const [batch] = await db
+      .select()
+      .from(afipImportBatches)
+      .where(and(eq(afipImportBatches.id, batchId), eq(afipImportBatches.clientId, clientId)))
+      .limit(1);
+    if (!batch) throw new Error("Lote no encontrado");
+
+    let borrados = 0;
+    if (batch.kind === "received") {
+      const result = await db
+        .delete(afipReceivedVouchers)
+        .where(and(eq(afipReceivedVouchers.clientId, clientId), eq(afipReceivedVouchers.batchId, batchId)));
+      borrados = (result as any).rowCount ?? (result as any).rowsAffected ?? 0;
+    } else {
+      const result = await db
+        .delete(afipIssuedVouchers)
+        .where(and(eq(afipIssuedVouchers.clientId, clientId), eq(afipIssuedVouchers.batchId, batchId)));
+      borrados = (result as any).rowCount ?? (result as any).rowsAffected ?? 0;
+    }
+
+    await db.delete(afipImportBatches).where(eq(afipImportBatches.id, batchId));
+    return { borrados };
   }
 
   // ==========================================

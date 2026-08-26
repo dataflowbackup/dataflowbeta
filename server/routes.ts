@@ -4954,6 +4954,184 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   });
 
   // ==========================================
+  // MIS COMPROBANTES AFIP (punto 1, ago-26)
+  // ==========================================
+  // El parseo del archivo se hace en el BROWSER (shared/afipComprobantesParser), igual que en
+  // Ventas Datalive: aca solo se persiste lo ya normalizado.
+
+  app.get("/api/afip/sale-points", isAuthenticated, async (req, res) => {
+    try {
+      const clientId = await getClientId(req);
+      res.json(await storage.listAfipSalePoints(clientId));
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
+  const salePointSchema = z.object({
+    businessNameId: z.coerce.number().int().positive(),
+    number: z.coerce.number().int().min(1, "El punto de venta tiene que ser mayor a 0"),
+    fantasyName: z.string().trim().max(255).optional().nullable(),
+    localId: z.coerce.number().int().positive().optional().nullable(),
+    salesSystem: z.enum(["fudo", "shares", "datalive", "none"]).optional(),
+  });
+
+  app.post("/api/afip/sale-points", isAuthenticated, async (req, res) => {
+    try {
+      const clientId = await getClientId(req);
+      const parsed = salePointSchema.safeParse(req.body);
+      if (!parsed.success) {
+        return res.status(400).json({ message: parsed.error.issues[0]?.message ?? "Datos inválidos" });
+      }
+      res.json(await storage.createAfipSalePoint(clientId, parsed.data));
+    } catch (e: any) {
+      res.status(400).json({ message: e.message });
+    }
+  });
+
+  app.put("/api/afip/sale-points/:id", isAuthenticated, async (req, res) => {
+    try {
+      const clientId = await getClientId(req);
+      const parsed = salePointSchema.partial().extend({ active: z.boolean().optional() }).safeParse(req.body);
+      if (!parsed.success) {
+        return res.status(400).json({ message: parsed.error.issues[0]?.message ?? "Datos inválidos" });
+      }
+      res.json(await storage.updateAfipSalePoint(clientId, parseInt(req.params.id, 10), parsed.data));
+    } catch (e: any) {
+      res.status(400).json({ message: e.message });
+    }
+  });
+
+  app.delete("/api/afip/sale-points/:id", isAuthenticated, async (req, res) => {
+    try {
+      const clientId = await getClientId(req);
+      await storage.deleteAfipSalePoint(clientId, parseInt(req.params.id, 10));
+      res.json({ ok: true });
+    } catch (e: any) {
+      res.status(400).json({ message: e.message });
+    }
+  });
+
+  /** Sociedad que corresponde a un CUIT, para resolver sola la del archivo importado. */
+  app.get("/api/afip/business-name-by-cuit/:cuit", isAuthenticated, async (req, res) => {
+    try {
+      const clientId = await getClientId(req);
+      const found = await storage.findBusinessNameByCuit(clientId, req.params.cuit);
+      res.json(found ? { id: found.id, name: found.name, cuit: found.cuit } : null);
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
+  app.get("/api/afip/received", isAuthenticated, async (req, res) => {
+    try {
+      const clientId = await getClientId(req);
+      const q = req.query as Record<string, string | undefined>;
+      res.json(
+        await storage.listAfipReceivedVouchers(clientId, {
+          dateFrom: q.dateFrom || undefined,
+          dateTo: q.dateTo || undefined,
+          supplierId: q.supplierId && q.supplierId !== "all" ? parseInt(q.supplierId, 10) : undefined,
+          businessNameId:
+            q.businessNameId && q.businessNameId !== "all" ? parseInt(q.businessNameId, 10) : undefined,
+        }),
+      );
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
+  const receivedVoucherSchema = z.object({
+    fecha: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+    tipoCodigo: z.number().int(),
+    tipoNombre: z.string(),
+    tipoSistema: z.string().nullable(),
+    puntoVenta: z.number().int(),
+    numeroDesde: z.number().int(),
+    numeroHasta: z.number().int(),
+    codigoAutorizacion: z.string(),
+    docTipo: z.string(),
+    docNumero: z.string(),
+    denominacion: z.string(),
+    moneda: z.string(),
+    tipoCambio: z.number(),
+    netoGravado: z.number(),
+    netoNoGravado: z.number(),
+    opExentas: z.number(),
+    otrosTributos: z.number(),
+    totalIva: z.number(),
+    total: z.number(),
+    ivaPorAlicuota: z.record(z.number()),
+  });
+
+  app.post("/api/afip/received/import", isAuthenticated, async (req, res) => {
+    try {
+      const clientId = await getClientId(req);
+      const userId = await getAuthenticatedUserId(req);
+      const parsed = z
+        .object({
+          businessNameId: z.coerce.number().int().positive().nullable().optional(),
+          cuit: z.string().nullable().optional(),
+          fileName: z.string().nullable().optional(),
+          format: z.enum(["xlsx", "csv"]).nullable().optional(),
+          vouchers: z.array(receivedVoucherSchema).min(1, "El archivo no trae comprobantes"),
+        })
+        .safeParse(req.body);
+      if (!parsed.success) {
+        return res.status(400).json({ message: parsed.error.issues[0]?.message ?? "Datos inválidos" });
+      }
+
+      const result = await storage.importAfipReceivedVouchers(clientId, parsed.data.vouchers, {
+        businessNameId: parsed.data.businessNameId ?? null,
+        cuit: parsed.data.cuit ?? null,
+        fileName: parsed.data.fileName ?? null,
+        format: parsed.data.format ?? null,
+        createdBy: userId ?? null,
+      });
+      res.json(result);
+    } catch (e: any) {
+      res.status(400).json({ message: e.message });
+    }
+  });
+
+  /** Cruce de recibidos contra Facturas. Se recalcula en cada consulta, a proposito. */
+  app.get("/api/afip/received/reconciliation", isAuthenticated, async (req, res) => {
+    try {
+      const clientId = await getClientId(req);
+      const q = req.query as Record<string, string | undefined>;
+      res.json(
+        await storage.getAfipReceivedReconciliation(clientId, {
+          dateFrom: q.dateFrom || undefined,
+          dateTo: q.dateTo || undefined,
+          supplierId: q.supplierId && q.supplierId !== "all" ? parseInt(q.supplierId, 10) : undefined,
+          localId: q.localId && q.localId !== "all" ? parseInt(q.localId, 10) : undefined,
+        }),
+      );
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
+  app.get("/api/afip/batches", isAuthenticated, async (req, res) => {
+    try {
+      const clientId = await getClientId(req);
+      const kind = (req.query.kind as string) || undefined;
+      res.json(await storage.listAfipImportBatches(clientId, kind));
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
+  app.delete("/api/afip/batches/:id", isAuthenticated, async (req, res) => {
+    try {
+      const clientId = await getClientId(req);
+      res.json(await storage.deleteAfipImportBatch(clientId, parseInt(req.params.id, 10)));
+    } catch (e: any) {
+      res.status(400).json({ message: e.message });
+    }
+  });
+
+  // ==========================================
   // PREFERENCIAS DE LA EMPRESA (punto 6, ago-26)
   // ==========================================
   // Que sistemas de venta usa el cliente. La LECTURA la necesita cualquier usuario

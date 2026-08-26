@@ -1343,6 +1343,187 @@ export const dataliveVentas = pgTable(
 );
 
 // ==========================================
+// MIS COMPROBANTES AFIP (punto 1, ago-26)
+// ==========================================
+// Modulo "Mis Comprobantes": lo que AFIP tiene registrado a nombre de la empresa, para
+// cruzarlo contra lo cargado en el sistema. Tablas nuevas, todas aditivas:
+//
+//  - afip_sale_points        catalogo de puntos de venta (sociedad + numero + local).
+//  - afip_import_batches     lote de cada importacion, para poder deshacerla entera.
+//  - afip_received_vouchers  comprobantes RECIBIDOS, uno por fila (son pocos: ~2.000 al ano).
+//  - afip_issued_vouchers    comprobantes EMITIDOS, RESUMIDOS por dia + punto de venta + tipo.
+//
+// Por que los emitidos van resumidos: una sola sociedad emite ~11.000 comprobantes por mes
+// (medido sobre el export real de agosto 2026). Al detalle serian ~130.000 filas por ano por
+// sociedad; resumidos son ~90 por mes, sin perder un peso ni el desglose por punto de venta.
+
+/** Punto de venta AFIP. El numero es unico POR SOCIEDAD: dos sociedades pueden tener el 0001. */
+export const afipSalePoints = pgTable(
+  "afip_sale_points",
+  {
+    id: serial("id").primaryKey(),
+    clientId: integer("client_id").notNull().references(() => clients.id, { onDelete: "cascade" }),
+    businessNameId: integer("business_name_id").notNull().references(() => businessNames.id),
+    /** Numero de punto de venta tal como lo da AFIP (7, 8, 105...). */
+    number: integer("number").notNull(),
+    fantasyName: varchar("fantasy_name", { length: 255 }),
+    localId: integer("local_id").references(() => locals.id),
+    /** Por que sistema factura: "fudo" | "shares" | "datalive" | "none". Uno solo, nunca varios. */
+    salesSystem: varchar("sales_system", { length: 20 }).default("none"),
+    active: boolean("active").default(true),
+    createdAt: timestamp("created_at").defaultNow(),
+    updatedAt: timestamp("updated_at").defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("afip_sale_points_client_bn_number_uq").on(table.clientId, table.businessNameId, table.number),
+  ],
+);
+
+export const insertAfipSalePointSchema = createInsertSchema(afipSalePoints).omit({ id: true, createdAt: true, updatedAt: true });
+export type InsertAfipSalePoint = z.infer<typeof insertAfipSalePointSchema>;
+export type AfipSalePoint = typeof afipSalePoints.$inferSelect;
+
+/** Lote de importacion: permite deshacer una carga entera si se subio el archivo equivocado. */
+export const afipImportBatches = pgTable("afip_import_batches", {
+  id: serial("id").primaryKey(),
+  clientId: integer("client_id").notNull().references(() => clients.id, { onDelete: "cascade" }),
+  businessNameId: integer("business_name_id").references(() => businessNames.id),
+  /** "received" | "issued" */
+  kind: varchar("kind", { length: 20 }).notNull(),
+  /** "xlsx" | "csv" */
+  format: varchar("format", { length: 10 }),
+  fileName: varchar("file_name", { length: 255 }),
+  cuit: varchar("cuit", { length: 13 }),
+  periodFrom: date("period_from"),
+  periodTo: date("period_to"),
+  rowsImported: integer("rows_imported").default(0),
+  rowsSkipped: integer("rows_skipped").default(0),
+  createdBy: varchar("created_by").references(() => users.id),
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
+export const insertAfipImportBatchSchema = createInsertSchema(afipImportBatches).omit({ id: true, createdAt: true });
+export type InsertAfipImportBatch = z.infer<typeof insertAfipImportBatchSchema>;
+export type AfipImportBatch = typeof afipImportBatches.$inferSelect;
+
+/**
+ * Comprobante RECIBIDO, uno por fila.
+ *
+ * Unico por (cliente, CUIT emisor, tipo, punto de venta, numero): re-importar el mismo periodo
+ * no duplica nada. NO guarda el local: el local sale de la factura que le matchea, y el cruce se
+ * calcula al vuelo para que se actualice solo a medida que se cargan las facturas que faltaban.
+ */
+export const afipReceivedVouchers = pgTable(
+  "afip_received_vouchers",
+  {
+    id: serial("id").primaryKey(),
+    clientId: integer("client_id").notNull().references(() => clients.id, { onDelete: "cascade" }),
+    /** Sociedad receptora, resuelta por el CUIT que declara el archivo. */
+    businessNameId: integer("business_name_id").references(() => businessNames.id),
+    batchId: integer("batch_id").references(() => afipImportBatches.id, { onDelete: "set null" }),
+
+    voucherDate: date("voucher_date").notNull(),
+    /** Codigo AFIP (1, 6, 11...) y su nombre; systemType es como lo llama Facturas ("A", "NC-B"). */
+    voucherTypeCode: integer("voucher_type_code").notNull(),
+    voucherTypeName: varchar("voucher_type_name", { length: 60 }),
+    voucherSystemType: varchar("voucher_system_type", { length: 20 }),
+    salePoint: integer("sale_point").notNull(),
+    numberFrom: integer("number_from").notNull(),
+    numberTo: integer("number_to"),
+    authorizationCode: varchar("authorization_code", { length: 30 }),
+
+    issuerDocType: varchar("issuer_doc_type", { length: 20 }),
+    issuerCuit: varchar("issuer_cuit", { length: 13 }),
+    issuerName: varchar("issuer_name", { length: 255 }),
+    /** Proveedor del sistema, resuelto por CUIT al importar. Null = proveedor no dado de alta. */
+    supplierId: integer("supplier_id").references(() => suppliers.id),
+
+    currency: varchar("currency", { length: 10 }).default("$"),
+    exchangeRate: decimal("exchange_rate", { precision: 12, scale: 4 }).default("1"),
+
+    netGravado: decimal("net_gravado", { precision: 14, scale: 2 }).default("0"),
+    netNoGravado: decimal("net_no_gravado", { precision: 14, scale: 2 }).default("0"),
+    exempt: decimal("exempt", { precision: 14, scale: 2 }).default("0"),
+    otherTaxes: decimal("other_taxes", { precision: 14, scale: 2 }).default("0"),
+    totalIva: decimal("total_iva", { precision: 14, scale: 2 }).default("0"),
+    total: decimal("total", { precision: 14, scale: 2 }).default("0"),
+
+    // Desglose por alicuota: hoy no se usa, pero es lo que despues permite comparar el IVA
+    // cargado contra el que informa AFIP y armar el libro de IVA compras sin reimportar.
+    net0: decimal("net_0", { precision: 14, scale: 2 }).default("0"),
+    iva2_5: decimal("iva_2_5", { precision: 14, scale: 2 }).default("0"),
+    net2_5: decimal("net_2_5", { precision: 14, scale: 2 }).default("0"),
+    iva5: decimal("iva_5", { precision: 14, scale: 2 }).default("0"),
+    net5: decimal("net_5", { precision: 14, scale: 2 }).default("0"),
+    iva10_5: decimal("iva_10_5", { precision: 14, scale: 2 }).default("0"),
+    net10_5: decimal("net_10_5", { precision: 14, scale: 2 }).default("0"),
+    iva21: decimal("iva_21", { precision: 14, scale: 2 }).default("0"),
+    net21: decimal("net_21", { precision: 14, scale: 2 }).default("0"),
+    iva27: decimal("iva_27", { precision: 14, scale: 2 }).default("0"),
+    net27: decimal("net_27", { precision: 14, scale: 2 }).default("0"),
+
+    createdBy: varchar("created_by").references(() => users.id),
+    createdAt: timestamp("created_at").defaultNow(),
+    updatedAt: timestamp("updated_at").defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("afip_received_uq").on(
+      table.clientId,
+      table.issuerCuit,
+      table.voucherTypeCode,
+      table.salePoint,
+      table.numberFrom,
+    ),
+  ],
+);
+
+export const insertAfipReceivedVoucherSchema = createInsertSchema(afipReceivedVouchers).omit({ id: true, createdAt: true, updatedAt: true });
+export type InsertAfipReceivedVoucher = z.infer<typeof insertAfipReceivedVoucherSchema>;
+export type AfipReceivedVoucher = typeof afipReceivedVouchers.$inferSelect;
+
+/** Comprobantes EMITIDOS, resumidos por dia + punto de venta + tipo. */
+export const afipIssuedVouchers = pgTable(
+  "afip_issued_vouchers",
+  {
+    id: serial("id").primaryKey(),
+    clientId: integer("client_id").notNull().references(() => clients.id, { onDelete: "cascade" }),
+    businessNameId: integer("business_name_id").notNull().references(() => businessNames.id),
+    batchId: integer("batch_id").references(() => afipImportBatches.id, { onDelete: "set null" }),
+
+    voucherDate: date("voucher_date").notNull(),
+    salePoint: integer("sale_point").notNull(),
+    voucherTypeCode: integer("voucher_type_code").notNull(),
+    voucherTypeName: varchar("voucher_type_name", { length: 60 }),
+    /** Cuantos comprobantes de ese tipo se emitieron ese dia en ese punto de venta. */
+    quantity: integer("quantity").default(0),
+
+    netGravado: decimal("net_gravado", { precision: 14, scale: 2 }).default("0"),
+    netNoGravado: decimal("net_no_gravado", { precision: 14, scale: 2 }).default("0"),
+    exempt: decimal("exempt", { precision: 14, scale: 2 }).default("0"),
+    otherTaxes: decimal("other_taxes", { precision: 14, scale: 2 }).default("0"),
+    totalIva: decimal("total_iva", { precision: 14, scale: 2 }).default("0"),
+    total: decimal("total", { precision: 14, scale: 2 }).default("0"),
+
+    createdBy: varchar("created_by").references(() => users.id),
+    createdAt: timestamp("created_at").defaultNow(),
+    updatedAt: timestamp("updated_at").defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("afip_issued_uq").on(
+      table.clientId,
+      table.businessNameId,
+      table.voucherDate,
+      table.salePoint,
+      table.voucherTypeCode,
+    ),
+  ],
+);
+
+export const insertAfipIssuedVoucherSchema = createInsertSchema(afipIssuedVouchers).omit({ id: true, createdAt: true, updatedAt: true });
+export type InsertAfipIssuedVoucher = z.infer<typeof insertAfipIssuedVoucherSchema>;
+export type AfipIssuedVoucher = typeof afipIssuedVouchers.$inferSelect;
+
+// ==========================================
 // CLIENT PREFERENCES (punto 6, ago-26)
 // ==========================================
 // Preferencias por EMPRESA (no por usuario): lo que se apaga aca deja de estar

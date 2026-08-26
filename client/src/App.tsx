@@ -59,6 +59,7 @@ import AuditsPage from "@/pages/audits";
 import PermissionsPage from "@/pages/permissions";
 import NotificationsPage from "@/pages/notifications";
 import PreferencesPage from "@/pages/preferences";
+import MisComprobantesPage from "@/pages/mis-comprobantes";
 import AttendancePage from "@/pages/attendance";
 import PayrollPage from "@/pages/payroll";
 import TeamPage from "@/pages/team";
@@ -128,6 +129,7 @@ function AppRouter() {
       <Route path="/permisos" component={PermissionsPage} />
       <Route path="/notificaciones" component={NotificationsPage} />
       <Route path="/preferencias" component={PreferencesPage} />
+      <Route path="/mis-comprobantes" component={MisComprobantesPage} />
       <Route path="/asistencia" component={AttendancePage} />
       <Route path="/liquidaciones" component={PayrollPage} />
       <Route path="/equipo" component={TeamPage} />

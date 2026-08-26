@@ -36,6 +36,7 @@ import {
   Trash2,
   LineChart,
   SlidersHorizontal,
+  FileCheck2,
 } from "lucide-react";
 import { useAuth } from "@/hooks/useAuth";
 import { usePermissions } from "@/hooks/usePermissions";
@@ -124,6 +125,7 @@ const menuSections: MenuSection[] = [
     title: "Financiero",
     items: [
       { title: "Extractos/Efectivo", url: "/extractos-efectivo", icon: Receipt },
+      { title: "Mis Comprobantes", url: "/mis-comprobantes", icon: FileCheck2 },
       { title: "Categorias Mov.", url: "/categorias-movimientos", icon: Tags },
       { title: "Grupos Financ.", url: "/grupos-financieros", icon: FolderTree },
       { title: "Estado de Resultado Financiero", url: "/balance", icon: LineChart },
