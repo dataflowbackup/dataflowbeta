@@ -73,6 +73,9 @@ import {
   sharesVentas,
   sharesProductos,
   productRecipeMappings,
+  productCosts,
+  cmvProductoCalculations,
+  cmvProductoLines,
   monthlyGoals,
   decomisos,
   decomisoProductMappings,
@@ -138,6 +141,9 @@ import {
   type BankAccount,
   type CashRegister,
   type ProductRecipeMapping,
+  type ProductCost,
+  type CmvProductoCalculation,
+  type CmvProductoLine,
   type InsertFinancialImportBatch,
   type FinancialImportBatch,
   type InsertFinancialImportJob,
@@ -4908,6 +4914,370 @@ export class DatabaseStorage implements IStorage {
       .where(and(eq(cmvCalculations.id, id), eq(cmvCalculations.clientId, clientId)));
     if (!existing) throw new Error("CMV no encontrado");
     await db.delete(cmvCalculations).where(and(eq(cmvCalculations.id, id), eq(cmvCalculations.clientId, clientId)));
+  }
+
+  // ==========================================
+  // CMV PRODUCTOS — costo por producto vendido + cálculo del CMV teórico
+  // ==========================================
+
+  /** Los productos vendidos importados NO traen $: solo cantidad. El costo lo pone product_costs. */
+  async listProductCosts(clientId: number): Promise<ProductCost[]> {
+    return db.select().from(productCosts).where(eq(productCosts.clientId, clientId));
+  }
+
+  /**
+   * Alta/edición del costo de un producto vendido. Al mapear una receta se espeja el mapeo en
+   * product_recipe_mappings, que es lo que lee el widget de márgenes del Dashboard: así el trabajo
+   * de mapear se hace una sola vez y sirve en las dos pantallas.
+   */
+  async upsertProductCost(
+    clientId: number,
+    input: {
+      source: string;
+      productName: string;
+      costMode: "receta" | "manual";
+      recipeId?: number | null;
+      manualCost?: number | null;
+      updatedBy?: string | null;
+    },
+  ): Promise<ProductCost> {
+    const productName = input.productName.trim();
+    if (!productName) throw new Error("Falta el nombre del producto");
+    if (input.costMode === "receta" && input.recipeId == null) {
+      throw new Error("Elegí la receta que le da el costo al producto");
+    }
+    if (input.costMode === "manual" && (input.manualCost == null || !Number.isFinite(Number(input.manualCost)))) {
+      throw new Error("Cargá el costo manual del producto");
+    }
+
+    const values = {
+      costMode: input.costMode,
+      recipeId: input.recipeId ?? null,
+      manualCost: input.manualCost != null ? String(Number(input.manualCost)) : null,
+      updatedBy: input.updatedBy ?? null,
+      updatedAt: new Date(),
+    };
+
+    const [existing] = await db.select().from(productCosts).where(and(
+      eq(productCosts.clientId, clientId),
+      eq(productCosts.source, input.source),
+      eq(productCosts.productName, productName),
+    ));
+
+    let row: ProductCost;
+    if (existing) {
+      const [updated] = await db.update(productCosts).set(values as any)
+        .where(eq(productCosts.id, existing.id)).returning();
+      row = updated;
+    } else {
+      const [created] = await db.insert(productCosts)
+        .values({ clientId, source: input.source, productName, ...values } as any).returning();
+      row = created;
+    }
+
+    if (input.recipeId != null) {
+      // Espejo hacia el mapeo del Dashboard. Nunca debe hacer fallar el guardado del costo.
+      try {
+        await this.upsertProductRecipeMapping(clientId, input.source, productName, input.recipeId);
+      } catch { /* el costo ya quedó guardado; el espejo es una comodidad */ }
+    }
+    return row;
+  }
+
+  async deleteProductCost(clientId: number, id: number): Promise<void> {
+    await db.delete(productCosts).where(and(eq(productCosts.clientId, clientId), eq(productCosts.id, id)));
+  }
+
+  /**
+   * Productos vendidos del período, agregados por nombre.
+   *
+   * Ojo con Datalive: sus productos se importan por PERÍODO cerrado (desde/hasta), no por día.
+   * Solo entran los períodos íntegramente contenidos en el rango pedido — igual criterio que el
+   * Dashboard. Fudo y Shares sí son diarios.
+   */
+  async getSoldProductsByPeriod(
+    clientId: number,
+    opts: { source: "fudo" | "datalive" | "shares"; dateFrom?: string; dateTo?: string; localIds?: number[] },
+  ): Promise<Array<{ producto: string; categoria: string | null; cantidad: number }>> {
+    const map = new Map<string, { producto: string; categoria: string | null; cantidad: number }>();
+    const add = (producto: string, categoria: string | null, cantidad: number) => {
+      const cur = map.get(producto);
+      if (cur) {
+        cur.cantidad += cantidad;
+        if (!cur.categoria && categoria) cur.categoria = categoria;
+      } else {
+        map.set(producto, { producto, categoria, cantidad });
+      }
+    };
+
+    if (opts.source === "fudo") {
+      const conds = [eq(fudoProductos.clientId, clientId)];
+      if (opts.dateFrom) conds.push(gte(fudoProductos.fecha, opts.dateFrom));
+      if (opts.dateTo) conds.push(lte(fudoProductos.fecha, opts.dateTo));
+      if (opts.localIds && opts.localIds.length > 0) conds.push(inArray(fudoProductos.localId, opts.localIds));
+      const rows = await db.select({ producto: fudoProductos.producto, categoria: fudoProductos.categoria, cantidad: fudoProductos.cantidad })
+        .from(fudoProductos).where(and(...conds));
+      for (const r of rows) add(r.producto, r.categoria ?? null, r.cantidad ?? 0);
+    } else if (opts.source === "shares") {
+      const conds = [eq(sharesProductos.clientId, clientId)];
+      if (opts.dateFrom) conds.push(gte(sharesProductos.fecha, opts.dateFrom));
+      if (opts.dateTo) conds.push(lte(sharesProductos.fecha, opts.dateTo));
+      if (opts.localIds && opts.localIds.length > 0) conds.push(inArray(sharesProductos.localId, opts.localIds));
+      const rows = await db.select({ producto: sharesProductos.producto, categoria: sharesProductos.categoria, cantidad: sharesProductos.cantidad })
+        .from(sharesProductos).where(and(...conds));
+      for (const r of rows) add(r.producto, r.categoria ?? null, r.cantidad ?? 0);
+    } else {
+      const conds = [eq(dataliveProductos.clientId, clientId)];
+      if (opts.dateFrom) conds.push(gte(dataliveProductos.fechaDesde, opts.dateFrom));
+      if (opts.dateTo) conds.push(lte(dataliveProductos.fechaHasta, opts.dateTo));
+      if (opts.localIds && opts.localIds.length > 0) conds.push(inArray(dataliveProductos.localId, opts.localIds));
+      const rows = await db.select({ producto: dataliveProductos.producto, cantidad: dataliveProductos.cantidad })
+        .from(dataliveProductos).where(and(...conds));
+      for (const r of rows) add(r.producto, null, r.cantidad ?? 0);
+    }
+
+    return Array.from(map.values()).sort((a, b) => b.cantidad - a.cantidad);
+  }
+
+  /**
+   * CMV Productos (teórico): Σ (cantidad vendida × costo unitario), cruzado contra la venta.
+   *
+   * El costo es SIEMPRE neto (recipes.total_cost y el manual se cargan sin IVA). La venta se toma
+   * bruta o neta según `ivaIncluded`, igual que el CMV por stock. La venta teórica usa el precio de
+   * mostrador de la receta con el mismo criterio de IVA, para que las dos sean comparables.
+   */
+  async computeCmvProductos(
+    clientId: number,
+    opts: { localId?: number; source: "fudo" | "datalive" | "shares"; dateFrom?: string; dateTo?: string; ivaIncluded?: boolean },
+  ) {
+    const localIds = opts.localId != null ? [opts.localId] : undefined;
+    const ivaIncluded = opts.ivaIncluded ?? false;
+
+    const sold = await this.getSoldProductsByPeriod(clientId, {
+      source: opts.source,
+      dateFrom: opts.dateFrom,
+      dateTo: opts.dateTo,
+      localIds,
+    });
+
+    const costRows = await db.select().from(productCosts)
+      .where(and(eq(productCosts.clientId, clientId), eq(productCosts.source, opts.source)));
+    const costByName = new Map(costRows.map((c) => [c.productName, c]));
+
+    // Fallback: el mapeo producto→receta del Dashboard ya existe en muchas empresas. Si un producto
+    // no tiene fila propia en product_costs, se usa esa receta igual (sin obligar a re-mapear todo).
+    const mappingRows = await db.select().from(productRecipeMappings)
+      .where(and(eq(productRecipeMappings.clientId, clientId), eq(productRecipeMappings.source, opts.source)));
+    const mappedRecipeByName = new Map(mappingRows.map((m) => [m.productName, m.recipeId]));
+
+    const recipeRows = await db.select().from(recipes).where(eq(recipes.clientId, clientId));
+    const recipeById = new Map(recipeRows.map((r) => [r.id, r]));
+
+    const lines: Array<{
+      producto: string;
+      categoria: string | null;
+      cantidad: number;
+      costoUnitario: number | null;
+      costoTotal: number;
+      precioUnitario: number | null;
+      ventaTeorica: number;
+      costMode: "receta" | "manual" | null;
+      recipeId: number | null;
+      recipeName: string | null;
+    }> = [];
+
+    let unidades = 0;
+    let unidadesConCosto = 0;
+    let cmvTeorico = 0;
+    let ventaTeorica = 0;
+
+    for (const s of sold) {
+      const cantidad = s.cantidad ?? 0;
+      unidades += cantidad;
+
+      const pc = costByName.get(s.producto);
+      let costMode: "receta" | "manual" | null = null;
+      const recipeId: number | null = pc?.recipeId ?? mappedRecipeByName.get(s.producto) ?? null;
+      let costoUnitario: number | null = null;
+
+      if (pc && pc.costMode === "manual" && pc.manualCost != null) {
+        costoUnitario = parseFloat(String(pc.manualCost)) || 0;
+        costMode = "manual";
+      } else if (recipeId != null && recipeById.has(recipeId)) {
+        costoUnitario = parseFloat(String(recipeById.get(recipeId)!.totalCost ?? 0)) || 0;
+        costMode = "receta";
+      }
+
+      const recipe = recipeId != null ? recipeById.get(recipeId) ?? null : null;
+      // Precio de mostrador (siempre con IVA) llevado a la misma base que la venta importada.
+      const grossPrice = recipe ? recipeGrossPrice(recipe) : 0;
+      const precioUnitario = recipe && grossPrice > 0 ? (ivaIncluded ? grossPrice : grossPrice / 1.21) : null;
+
+      const costoTotal = costoUnitario != null ? costoUnitario * cantidad : 0;
+      const ventaLinea = precioUnitario != null ? precioUnitario * cantidad : 0;
+
+      if (costoUnitario != null) {
+        unidadesConCosto += cantidad;
+        cmvTeorico += costoTotal;
+      }
+      ventaTeorica += ventaLinea;
+
+      lines.push({
+        producto: s.producto,
+        categoria: s.categoria,
+        cantidad,
+        costoUnitario,
+        costoTotal,
+        precioUnitario,
+        ventaTeorica: ventaLinea,
+        costMode,
+        recipeId: recipeId ?? null,
+        recipeName: recipe?.name ?? null,
+      });
+    }
+
+    const salesGross =
+      opts.source === "fudo" ? await this.getFudoSalesTotalByPeriod(clientId, { dateFrom: opts.dateFrom, dateTo: opts.dateTo, localIds })
+      : opts.source === "shares" ? await this.getSharesSalesTotalByPeriod(clientId, { dateFrom: opts.dateFrom, dateTo: opts.dateTo, localIds })
+      : await this.getDataliveSalesTotalByPeriod(clientId, { dateFrom: opts.dateFrom, dateTo: opts.dateTo, localIds });
+    const ventaReal = ivaIncluded ? salesGross : salesGross / 1.21;
+
+    return {
+      source: opts.source,
+      periodFrom: opts.dateFrom ?? null,
+      periodTo: opts.dateTo ?? null,
+      ivaIncluded,
+      lines,
+      unidades,
+      unidadesConCosto,
+      coberturaPct: unidades > 0 ? (unidadesConCosto / unidades) * 100 : null,
+      cmvTeorico,
+      salesGross,
+      ventaReal,
+      ventaTeorica,
+      cmvPct: ventaReal > 0 ? (cmvTeorico / ventaReal) * 100 : null,
+      cmvPctTeorico: ventaTeorica > 0 ? (cmvTeorico / ventaTeorica) * 100 : null,
+    };
+  }
+
+  /** Guarda el cabezal + el detalle CONGELADO. Se recalcula server-side: no se confía en el cliente. */
+  async saveCmvProductoCalculation(
+    clientId: number,
+    opts: { localId?: number; source: "fudo" | "datalive" | "shares"; dateFrom?: string; dateTo?: string; ivaIncluded?: boolean; createdBy?: string | null },
+  ): Promise<CmvProductoCalculation> {
+    const r = await this.computeCmvProductos(clientId, opts);
+    const [created] = await db.insert(cmvProductoCalculations).values({
+      clientId,
+      localId: opts.localId ?? null,
+      source: opts.source,
+      periodFrom: opts.dateFrom ?? null,
+      periodTo: opts.dateTo ?? null,
+      unidades: r.unidades,
+      unidadesConCosto: r.unidadesConCosto,
+      coberturaPct: r.coberturaPct != null ? String(r.coberturaPct) : null,
+      cmvTeorico: String(r.cmvTeorico),
+      ventaReal: String(r.ventaReal),
+      ventaTeorica: String(r.ventaTeorica),
+      cmvPct: r.cmvPct != null ? String(r.cmvPct) : null,
+      cmvPctTeorico: r.cmvPctTeorico != null ? String(r.cmvPctTeorico) : null,
+      ivaIncluded: r.ivaIncluded,
+      createdBy: opts.createdBy ?? null,
+    } as any).returning();
+
+    await this.replaceCmvProductoLines(created.id, r.lines);
+    return created;
+  }
+
+  private async replaceCmvProductoLines(
+    calculationId: number,
+    lines: Array<{
+      producto: string;
+      categoria: string | null;
+      cantidad: number;
+      costoUnitario: number | null;
+      costoTotal: number;
+      precioUnitario: number | null;
+      ventaTeorica: number;
+      costMode: "receta" | "manual" | null;
+      recipeId: number | null;
+      recipeName: string | null;
+    }>,
+  ): Promise<void> {
+    await db.delete(cmvProductoLines).where(eq(cmvProductoLines.calculationId, calculationId));
+    if (lines.length === 0) return;
+    const values = lines.map((l) => ({
+      calculationId,
+      producto: l.producto,
+      categoria: l.categoria,
+      cantidad: l.cantidad,
+      costoUnitario: l.costoUnitario != null ? String(l.costoUnitario) : null,
+      costoTotal: String(l.costoTotal),
+      precioUnitario: l.precioUnitario != null ? String(l.precioUnitario) : null,
+      ventaTeorica: String(l.ventaTeorica),
+      costMode: l.costMode,
+      recipeId: l.recipeId,
+      recipeName: l.recipeName,
+    }));
+    // Se inserta de a tandas: un período largo puede traer cientos de productos.
+    const CHUNK = 200;
+    for (let i = 0; i < values.length; i += CHUNK) {
+      await db.insert(cmvProductoLines).values(values.slice(i, i + CHUNK) as any);
+    }
+  }
+
+  async listCmvProductoCalculations(clientId: number): Promise<CmvProductoCalculation[]> {
+    return db.select().from(cmvProductoCalculations)
+      .where(eq(cmvProductoCalculations.clientId, clientId))
+      .orderBy(desc(cmvProductoCalculations.id));
+  }
+
+  async getCmvProductoLines(clientId: number, calculationId: number): Promise<CmvProductoLine[]> {
+    const [head] = await db.select({ id: cmvProductoCalculations.id }).from(cmvProductoCalculations)
+      .where(and(eq(cmvProductoCalculations.id, calculationId), eq(cmvProductoCalculations.clientId, clientId)));
+    if (!head) throw new Error("CMV Productos no encontrado");
+    return db.select().from(cmvProductoLines)
+      .where(eq(cmvProductoLines.calculationId, calculationId))
+      .orderBy(desc(cmvProductoLines.costoTotal));
+  }
+
+  async updateCmvProductoCalculation(
+    clientId: number,
+    id: number,
+    opts: { localId?: number; source: "fudo" | "datalive" | "shares"; dateFrom?: string; dateTo?: string; ivaIncluded?: boolean },
+  ): Promise<CmvProductoCalculation> {
+    const [existing] = await db.select({ id: cmvProductoCalculations.id }).from(cmvProductoCalculations)
+      .where(and(eq(cmvProductoCalculations.id, id), eq(cmvProductoCalculations.clientId, clientId)));
+    if (!existing) throw new Error("CMV Productos no encontrado");
+
+    const r = await this.computeCmvProductos(clientId, opts);
+    const [updated] = await db.update(cmvProductoCalculations).set({
+      localId: opts.localId ?? null,
+      source: opts.source,
+      periodFrom: opts.dateFrom ?? null,
+      periodTo: opts.dateTo ?? null,
+      unidades: r.unidades,
+      unidadesConCosto: r.unidadesConCosto,
+      coberturaPct: r.coberturaPct != null ? String(r.coberturaPct) : null,
+      cmvTeorico: String(r.cmvTeorico),
+      ventaReal: String(r.ventaReal),
+      ventaTeorica: String(r.ventaTeorica),
+      cmvPct: r.cmvPct != null ? String(r.cmvPct) : null,
+      cmvPctTeorico: r.cmvPctTeorico != null ? String(r.cmvPctTeorico) : null,
+      ivaIncluded: r.ivaIncluded,
+    } as any).where(and(eq(cmvProductoCalculations.id, id), eq(cmvProductoCalculations.clientId, clientId))).returning();
+
+    // Al reeditar se vuelve a congelar el detalle con los costos de HOY.
+    await this.replaceCmvProductoLines(id, r.lines);
+    return updated;
+  }
+
+  async deleteCmvProductoCalculation(clientId: number, id: number): Promise<void> {
+    const [existing] = await db.select({ id: cmvProductoCalculations.id }).from(cmvProductoCalculations)
+      .where(and(eq(cmvProductoCalculations.id, id), eq(cmvProductoCalculations.clientId, clientId)));
+    if (!existing) throw new Error("CMV Productos no encontrado");
+    await db.delete(cmvProductoLines).where(eq(cmvProductoLines.calculationId, id));
+    await db.delete(cmvProductoCalculations)
+      .where(and(eq(cmvProductoCalculations.id, id), eq(cmvProductoCalculations.clientId, clientId)));
   }
 
   async listDataliveVentas(clientId: number, localId?: number): Promise<DataliveVenta[]> {

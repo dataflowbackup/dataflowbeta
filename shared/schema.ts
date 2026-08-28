@@ -1726,6 +1726,108 @@ export const productRecipeMappings = pgTable(
 export const insertProductRecipeMappingSchema = createInsertSchema(productRecipeMappings).omit({ id: true, createdAt: true });
 export type InsertProductRecipeMapping = z.infer<typeof insertProductRecipeMappingSchema>;
 export type ProductRecipeMapping = typeof productRecipeMappings.$inferSelect;
+// ==========================================
+// CMV PRODUCTOS — costo asignado a cada producto vendido (FUDO/Datalive/Shares)
+//
+// Los reportes de productos vendidos traen SOLO cantidades: ningún archivo importado
+// tiene el $ por producto. El costo lo pone esta tabla, de dos maneras:
+//   - costMode "receta": el costo sale de recipes.total_cost de la receta mapeada y se
+//     actualiza solo cuando cambia el costeo de insumos.
+//   - costMode "manual": el costo es el valor cargado a mano (bebidas, reventa, o cuando
+//     se quiere pisar el costo de la receta).
+// El link a la receta se guarda ACÁ y además se espeja en product_recipe_mappings, que es
+// lo que lee el widget de márgenes del Dashboard (punto 18): un solo mapeo para los dos.
+// ==========================================
+export const productCosts = pgTable(
+  "product_costs",
+  {
+    id: serial("id").primaryKey(),
+    clientId: integer("client_id").notNull().references(() => clients.id, { onDelete: "cascade" }),
+    /** "fudo" | "datalive" | "shares" — el nombre del producto solo es único dentro de su sistema. */
+    source: varchar("source", { length: 20 }).notNull(),
+    productName: varchar("product_name", { length: 255 }).notNull(),
+    /** "receta" | "manual". */
+    costMode: varchar("cost_mode", { length: 20 }).notNull().default("receta"),
+    recipeId: integer("recipe_id").references(() => recipes.id, { onDelete: "set null" }),
+    /** Costo unitario cargado a mano, SIN IVA (mismo criterio que recipes.total_cost). */
+    manualCost: decimal("manual_cost", { precision: 12, scale: 4 }),
+    updatedBy: varchar("updated_by").references(() => users.id),
+    createdAt: timestamp("created_at").defaultNow(),
+    updatedAt: timestamp("updated_at").defaultNow(),
+  },
+  (table) => [uniqueIndex("product_costs_client_source_name_uq").on(table.clientId, table.source, table.productName)],
+);
+
+export const insertProductCostSchema = createInsertSchema(productCosts).omit({ id: true, createdAt: true, updatedAt: true });
+export type InsertProductCost = z.infer<typeof insertProductCostSchema>;
+export type ProductCost = typeof productCosts.$inferSelect;
+
+// ==========================================
+// CMV PRODUCTOS — cabezal del cálculo guardado (CMV teórico por producto vendido)
+//
+// Hermano de cmv_calculations, pero por el otro camino: en vez de stock inicial + compras −
+// stock final, acá el CMV sale de Σ (cantidad vendida × costo unitario). El desvío entre los
+// dos es la merma/desperdicio/faltante que el costeo teórico no explica.
+// ==========================================
+export const cmvProductoCalculations = pgTable("cmv_producto_calculations", {
+  id: serial("id").primaryKey(),
+  clientId: integer("client_id").notNull().references(() => clients.id, { onDelete: "cascade" }),
+  localId: integer("local_id").references(() => locals.id),
+  /** "fudo" | "datalive" | "shares". */
+  source: varchar("source", { length: 20 }).notNull().default("fudo"),
+  periodFrom: date("period_from"),
+  periodTo: date("period_to"),
+  /** Unidades vendidas en el período y cuántas de ellas tenían costo asignado. */
+  unidades: integer("unidades").default(0),
+  unidadesConCosto: integer("unidades_con_costo").default(0),
+  /** unidadesConCosto / unidades × 100 — el CMV teórico vale lo que vale esta cobertura. */
+  coberturaPct: decimal("cobertura_pct", { precision: 8, scale: 2 }),
+  /** Σ cantidad × costo unitario (sin IVA). */
+  cmvTeorico: decimal("cmv_teorico", { precision: 14, scale: 2 }).default("0"),
+  /** Venta importada del período (fudo/datalive/shares), en la base de IVA elegida. */
+  ventaReal: decimal("venta_real", { precision: 14, scale: 2 }).default("0"),
+  /** Σ cantidad × precio de la receta, en la misma base de IVA. Solo de los productos con receta. */
+  ventaTeorica: decimal("venta_teorica", { precision: 14, scale: 2 }).default("0"),
+  /** cmvTeorico / ventaReal × 100 — el número oficial del registro. */
+  cmvPct: decimal("cmv_pct", { precision: 8, scale: 2 }),
+  /** cmvTeorico / ventaTeorica × 100 — el CMV que daría si se hubiera vendido todo a precio de lista. */
+  cmvPctTeorico: decimal("cmv_pct_teorico", { precision: 8, scale: 2 }),
+  ivaIncluded: boolean("iva_included").default(false),
+  createdBy: varchar("created_by").references(() => users.id),
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
+export const insertCmvProductoCalculationSchema = createInsertSchema(cmvProductoCalculations).omit({ id: true, createdAt: true });
+export type InsertCmvProductoCalculation = z.infer<typeof insertCmvProductoCalculationSchema>;
+export type CmvProductoCalculation = typeof cmvProductoCalculations.$inferSelect;
+
+// ==========================================
+// CMV PRODUCTOS — detalle CONGELADO del cálculo guardado.
+// Se persiste una fila por producto para que el registro histórico no cambie aunque después
+// cambien los costos de las recetas o el mapeo. Es el único modo de auditar un CMV viejo.
+// ==========================================
+export const cmvProductoLines = pgTable("cmv_producto_lines", {
+  id: serial("id").primaryKey(),
+  calculationId: integer("calculation_id").notNull().references(() => cmvProductoCalculations.id, { onDelete: "cascade" }),
+  producto: varchar("producto", { length: 255 }).notNull(),
+  categoria: varchar("categoria", { length: 255 }),
+  cantidad: integer("cantidad").notNull().default(0),
+  /** Costo unitario usado en ESE cálculo (snapshot). null = el producto no tenía costo asignado. */
+  costoUnitario: decimal("costo_unitario", { precision: 12, scale: 4 }),
+  costoTotal: decimal("costo_total", { precision: 14, scale: 2 }).default("0"),
+  /** Precio de referencia de la receta al momento del cálculo (snapshot). */
+  precioUnitario: decimal("precio_unitario", { precision: 12, scale: 4 }),
+  ventaTeorica: decimal("venta_teorica", { precision: 14, scale: 2 }).default("0"),
+  /** "receta" | "manual" | null (sin costo). */
+  costMode: varchar("cost_mode", { length: 20 }),
+  recipeId: integer("recipe_id"),
+  recipeName: varchar("recipe_name", { length: 255 }),
+});
+
+export const insertCmvProductoLineSchema = createInsertSchema(cmvProductoLines).omit({ id: true });
+export type InsertCmvProductoLine = z.infer<typeof insertCmvProductoLineSchema>;
+export type CmvProductoLine = typeof cmvProductoLines.$inferSelect;
+
 
 // ==========================================
 // OPERATIONAL AUDITS (Auditorías Operativas)

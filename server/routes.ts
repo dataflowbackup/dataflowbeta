@@ -300,6 +300,12 @@ function requirePermission(code: string, action: PermissionAction = "view") {
   };
 }
 
+/** Las tres fuentes con detalle de productos vendidos. Cualquier otra cosa cae a "fudo". */
+function parseProductSource(raw: unknown): "fudo" | "datalive" | "shares" {
+  const v = String(raw ?? "").toLowerCase();
+  return v === "datalive" ? "datalive" : v === "shares" ? "shares" : "fudo";
+}
+
 function generateProvisionalPassword(): string {
   const chars = "abcdefghjkmnpqrstuvwxyzABCDEFGHJKMNPQRSTUVWXYZ23456789";
   const bytes = randomBytes(14);
@@ -3998,6 +4004,134 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
   });
 
+  // ==========================================
+  // CMV PRODUCTOS — costo por producto vendido y CMV teórico (Financiero)
+  // ==========================================
+
+  /** Productos vendidos del período con el costo que tiene asignado cada uno (o ninguno). */
+  app.get("/api/finance/cmv-productos", isAuthenticated, requirePermission("cmv_productos.view", "view"), async (req, res) => {
+    try {
+      const { clientId } = (req as any).rbac;
+      const localId = req.query.localId && req.query.localId !== "all" ? parseInt(req.query.localId as string, 10) : undefined;
+      const dateFrom = typeof req.query.dateFrom === "string" && req.query.dateFrom ? req.query.dateFrom : undefined;
+      const dateTo = typeof req.query.dateTo === "string" && req.query.dateTo ? req.query.dateTo : undefined;
+      const source = parseProductSource(req.query.source);
+      const ivaIncluded = req.query.ivaIncluded === "true";
+      res.json(await storage.computeCmvProductos(clientId, { localId, source, dateFrom, dateTo, ivaIncluded }));
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
+  app.get("/api/finance/product-costs", isAuthenticated, requirePermission("cmv_productos.view", "view"), async (req, res) => {
+    try {
+      const { clientId } = (req as any).rbac;
+      res.json(await storage.listProductCosts(clientId));
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
+  app.post("/api/finance/product-costs", isAuthenticated, requirePermission("cmv_productos.view", "create"), async (req, res) => {
+    try {
+      const { clientId, actorId } = (req as any).rbac;
+      const source = parseProductSource(req.body?.source);
+      const productName = String(req.body?.productName ?? "").trim();
+      if (!productName) return res.status(400).json({ message: "Falta el nombre del producto" });
+      const costMode = req.body?.costMode === "manual" ? "manual" : "receta";
+      const recipeId = req.body?.recipeId != null && req.body.recipeId !== "" ? parseInt(String(req.body.recipeId), 10) : null;
+      const rawCost = req.body?.manualCost;
+      const manualCost = rawCost != null && rawCost !== "" ? Number(rawCost) : null;
+      const saved = await storage.upsertProductCost(clientId, {
+        source,
+        productName,
+        costMode,
+        recipeId: Number.isFinite(recipeId as number) ? recipeId : null,
+        manualCost,
+        updatedBy: actorId,
+      });
+      res.json(saved);
+    } catch (e: any) {
+      res.status(400).json({ message: e.message });
+    }
+  });
+
+  app.delete("/api/finance/product-costs/:id", isAuthenticated, requirePermission("cmv_productos.view", "create"), async (req, res) => {
+    try {
+      const { clientId } = (req as any).rbac;
+      const id = parseInt(req.params.id, 10);
+      if (!Number.isFinite(id)) return res.status(400).json({ message: "ID inválido" });
+      await storage.deleteProductCost(clientId, id);
+      res.json({ ok: true });
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
+  app.get("/api/finance/cmv-producto-calculations", isAuthenticated, requirePermission("cmv_productos.view", "view"), async (req, res) => {
+    try {
+      const { clientId } = (req as any).rbac;
+      res.json(await storage.listCmvProductoCalculations(clientId));
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
+  /** Detalle congelado de un cálculo guardado: producto por producto, con el costo de ese momento. */
+  app.get("/api/finance/cmv-producto-calculations/:id/lines", isAuthenticated, requirePermission("cmv_productos.view", "view"), async (req, res) => {
+    try {
+      const { clientId } = (req as any).rbac;
+      const id = parseInt(req.params.id, 10);
+      if (!Number.isFinite(id)) return res.status(400).json({ message: "ID inválido" });
+      res.json(await storage.getCmvProductoLines(clientId, id));
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
+  app.post("/api/finance/cmv-producto-calculations", isAuthenticated, requirePermission("cmv_productos.view", "create"), async (req, res) => {
+    try {
+      const { clientId, actorId } = (req as any).rbac;
+      const localId = req.body?.localId != null && req.body.localId !== "all" && req.body.localId !== "" ? parseInt(String(req.body.localId), 10) : undefined;
+      const dateFrom = typeof req.body?.dateFrom === "string" && req.body.dateFrom ? req.body.dateFrom : undefined;
+      const dateTo = typeof req.body?.dateTo === "string" && req.body.dateTo ? req.body.dateTo : undefined;
+      const source = parseProductSource(req.body?.source);
+      const ivaIncluded = req.body?.ivaIncluded === true;
+      const saved = await storage.saveCmvProductoCalculation(clientId, { localId, source, dateFrom, dateTo, ivaIncluded, createdBy: actorId });
+      res.json(saved);
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
+  app.put("/api/finance/cmv-producto-calculations/:id", isAuthenticated, requirePermission("cmv_productos.view", "create"), async (req, res) => {
+    try {
+      const { clientId } = (req as any).rbac;
+      const id = parseInt(req.params.id, 10);
+      if (!Number.isFinite(id)) return res.status(400).json({ message: "ID inválido" });
+      const localId = req.body?.localId != null && req.body.localId !== "all" && req.body.localId !== "" ? parseInt(String(req.body.localId), 10) : undefined;
+      const dateFrom = typeof req.body?.dateFrom === "string" && req.body.dateFrom ? req.body.dateFrom : undefined;
+      const dateTo = typeof req.body?.dateTo === "string" && req.body.dateTo ? req.body.dateTo : undefined;
+      const source = parseProductSource(req.body?.source);
+      const ivaIncluded = req.body?.ivaIncluded === true;
+      res.json(await storage.updateCmvProductoCalculation(clientId, id, { localId, source, dateFrom, dateTo, ivaIncluded }));
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
+  app.delete("/api/finance/cmv-producto-calculations/:id", isAuthenticated, requirePermission("cmv_productos.view", "create"), async (req, res) => {
+    try {
+      const { clientId } = (req as any).rbac;
+      const id = parseInt(req.params.id, 10);
+      if (!Number.isFinite(id)) return res.status(400).json({ message: "ID inválido" });
+      await storage.deleteCmvProductoCalculation(clientId, id);
+      res.json({ ok: true });
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
   // Punto de Equilibrio — Fase 8 (gateado por RBAC granular).
   app.get("/api/finance/breakeven", isAuthenticated, requirePermission("breakeven.view", "view"), async (req, res) => {
     try {
@@ -5332,6 +5466,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         { code: "stock_valuation.create", name: "Cargar/Importar Valorización de Stock", module: "stock_valuation" },
         { code: "stock_valuation.delete", name: "Reversar Valorización de Stock", module: "stock_valuation" },
         { code: "cmv.view", name: "Ver CMV (Costo de Mercadería Vendida)", module: "cmv" },
+        { code: "cmv_productos.view", name: "Ver CMV Productos (CMV teorico por producto vendido)", module: "cmv_productos" },
         { code: "breakeven.view", name: "Ver Punto de Equilibrio", module: "breakeven" },
         { code: "breakeven.create", name: "Crear Punto de Equilibrio", module: "breakeven" },
       ];
