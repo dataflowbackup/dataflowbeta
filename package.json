@@ -17,6 +17,7 @@
     "verify:supplier-xlsx": "tsx script/verify-supplier-xlsx-payload.ts"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.122.0",
     "@hookform/resolvers": "^3.10.0",
     "@jridgewell/trace-mapping": "^0.3.25",
     "@libsql/client": "^0.15.15",

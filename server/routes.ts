@@ -15,6 +15,11 @@ import { seedFinancialDataForClient } from "./seedFinancialData";
 import path from "path";
 import { randomUUID, randomBytes } from "crypto";
 import { gzipSync } from "zlib";
+import {
+  isSupportedInvoiceMediaType,
+  processInvoiceExtractionJobBody,
+} from "./invoiceExtraction";
+import { normalizeItemDescription } from "@shared/invoiceExtraction";
 import { runBankStatementImport } from "./bankStatementImport";
 import { processFinancialImportJobBody } from "./processFinancialImportJob";
 import type {
@@ -39,6 +44,15 @@ import { isMailConfigured, sendMail, getAppPublicUrl } from "./sendMail";
 const upload = multer({ 
   storage: multer.memoryStorage(),
   limits: { fileSize: 50 * 1024 * 1024 }
+});
+
+/**
+ * Factura Digital: tope propio y mas bajo que el general. La API de Anthropic rechaza payloads
+ * grandes y el base64 infla el archivo ~33%, asi que 15 MB de origen es un margen seguro.
+ */
+const uploadInvoiceFile = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 15 * 1024 * 1024 },
 });
 
 /** Campos de multipart + fallback query (Netlify/serverless a veces no rellena req.body igual que en Node local). */
@@ -1407,6 +1421,119 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         .reduce((sum, i) => sum + (isNCInv(i) ? -1 : 1) * parseFloat(String(i.total) || "0"), 0);
       
       res.json({ total, pending, overdue, thisMonth: thisMonthTotal });
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
+
+  // ==========================================
+  // FACTURA DIGITAL — leer un comprobante con IA (ago-2026)
+  // La lectura corre en background: puede pasarse del limite de ~26s de la funcion API.
+  // ==========================================
+
+  /** Sube la imagen/PDF y encola la lectura. Devuelve el token para seguir el job. */
+  app.post(
+    "/api/invoices/digital/extract",
+    isAuthenticated,
+    uploadInvoiceFile.single("file"),
+    async (req, res) => {
+      try {
+        const clientId = await getClientId(req);
+        const actorId = await getAuthenticatedUserId(req);
+        if (!req.file?.buffer) return res.status(400).json({ message: "Falta el archivo del comprobante." });
+
+        const mediaType = String(req.file.mimetype || "").toLowerCase();
+        if (!isSupportedInvoiceMediaType(mediaType)) {
+          return res.status(400).json({
+            message: "Formato no soportado. Subí una foto (JPG, PNG, WEBP) o un PDF del comprobante.",
+          });
+        }
+        if (!process.env.ANTHROPIC_API_KEY) {
+          return res.status(503).json({
+            message: "La lectura de facturas con IA no está configurada en el servidor (falta ANTHROPIC_API_KEY).",
+          });
+        }
+
+        const jobToken = randomUUID();
+        const triggerKey = randomBytes(32).toString("hex");
+        await storage.createInvoiceExtractionJob({
+          jobToken,
+          triggerKey,
+          clientId,
+          createdBy: actorId ?? undefined,
+          status: "pending",
+          fileGzipBase64: gzipSync(req.file.buffer).toString("base64"),
+          fileMediaType: mediaType,
+          originalFileName: req.file.originalname?.slice(0, 255) ?? undefined,
+        } as any);
+
+        res.json({ jobToken, triggerKey });
+      } catch (e: any) {
+        res.status(500).json({ message: e.message });
+      }
+    },
+  );
+
+  app.get("/api/invoices/digital/jobs/:jobToken", isAuthenticated, async (req, res) => {
+    try {
+      const clientId = await getClientId(req);
+      const job = await storage.getInvoiceExtractionJobForClient(clientId, String(req.params.jobToken || "").trim());
+      if (!job) return res.status(404).json({ message: "No encontramos esa lectura." });
+      res.json({
+        status: job.status,
+        result: job.resultJson ? JSON.parse(job.resultJson) : null,
+        errorMessage: job.errorMessage,
+      });
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
+  /** Solo para desarrollo local, donde no hay background functions de Netlify. */
+  app.post("/api/invoices/digital/execute-job", isAuthenticated, async (req, res) => {
+    try {
+      const clientId = await getClientId(req);
+      const jobToken = String(req.body?.jobToken || "").trim();
+      const triggerKey = String(req.body?.triggerKey || "").trim();
+      if (!jobToken || !triggerKey) return res.status(400).json({ message: "Faltan jobToken o triggerKey" });
+      const job = await storage.getInvoiceExtractionJobForClient(clientId, jobToken);
+      if (!job || job.triggerKey !== triggerKey) return res.status(404).json({ message: "Job no encontrado" });
+      await processInvoiceExtractionJobBody(jobToken, triggerKey);
+      res.json({ ok: true });
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
+  /**
+   * Memoria descripcion → insumo, por proveedor. Se llama al CONFIRMAR la factura: solo se guarda
+   * como memoria lo que una persona dio por bueno, nunca la sugerencia automatica sin revisar.
+   */
+  app.post("/api/invoices/digital/remember-supplies", isAuthenticated, async (req, res) => {
+    try {
+      const clientId = await getClientId(req);
+      const actorId = await getAuthenticatedUserId(req);
+      const supplierId = parseInt(String(req.body?.supplierId), 10);
+      if (!Number.isFinite(supplierId)) return res.status(400).json({ message: "Falta el proveedor" });
+      const items = Array.isArray(req.body?.items) ? req.body.items : [];
+
+      let saved = 0;
+      for (const it of items) {
+        const description = String(it?.description ?? "").trim();
+        const supplyId = parseInt(String(it?.supplyId), 10);
+        if (!description || !Number.isFinite(supplyId)) continue;
+        await storage.upsertSupplierSupplyMapping({
+          clientId,
+          supplierId,
+          normalizedDescription: normalizeItemDescription(description),
+          rawDescription: description,
+          supplyId,
+          createdBy: actorId,
+        });
+        saved++;
+      }
+      res.json({ saved });
     } catch (e: any) {
       res.status(500).json({ message: e.message });
     }

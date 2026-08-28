@@ -74,6 +74,8 @@ import {
   sharesProductos,
   productRecipeMappings,
   productCosts,
+  invoiceExtractionJobs,
+  supplierSupplyMappings,
   cmvProductoCalculations,
   cmvProductoLines,
   monthlyGoals,
@@ -142,6 +144,9 @@ import {
   type CashRegister,
   type ProductRecipeMapping,
   type ProductCost,
+  type InvoiceExtractionJob,
+  type InsertInvoiceExtractionJob,
+  type SupplierSupplyMapping,
   type CmvProductoCalculation,
   type CmvProductoLine,
   type InsertFinancialImportBatch,
@@ -2485,6 +2490,131 @@ export class DatabaseStorage implements IStorage {
       .update(financialImportJobs)
       .set({ ...patch, updatedAt: new Date() })
       .where(eq(financialImportJobs.id, id));
+  }
+
+
+  // ==========================================
+  // FACTURA DIGITAL — job de lectura + memoria descripcion → insumo
+  // ==========================================
+
+  /** Listado minimo de insumos para matchear descripciones: sin joins ni ultima compra. */
+  async listSuppliesForMatching(clientId: number): Promise<Array<{ id: number; name: string }>> {
+    return db
+      .select({ id: supplies.id, name: supplies.name })
+      .from(supplies)
+      .where(and(eq(supplies.clientId, clientId), eq(supplies.active, true)))
+      .orderBy(supplies.name);
+  }
+
+  async createInvoiceExtractionJob(row: InsertInvoiceExtractionJob): Promise<InvoiceExtractionJob> {
+    const [created] = await db.insert(invoiceExtractionJobs).values(row as any).returning();
+    return created;
+  }
+
+  /** Toma el job solo si sigue en `pending`: hace idempotente un doble disparo de la background function. */
+  async claimInvoiceExtractionJobForProcessing(
+    jobToken: string,
+    triggerKey: string,
+  ): Promise<InvoiceExtractionJob | undefined> {
+    const rows = await db
+      .update(invoiceExtractionJobs)
+      .set({ status: "processing", updatedAt: new Date() })
+      .where(
+        and(
+          eq(invoiceExtractionJobs.jobToken, jobToken),
+          eq(invoiceExtractionJobs.triggerKey, triggerKey),
+          eq(invoiceExtractionJobs.status, "pending"),
+        ),
+      )
+      .returning();
+    return rows[0];
+  }
+
+  async getInvoiceExtractionJobForClient(
+    clientId: number,
+    jobToken: string,
+  ): Promise<InvoiceExtractionJob | undefined> {
+    const [row] = await db
+      .select()
+      .from(invoiceExtractionJobs)
+      .where(and(eq(invoiceExtractionJobs.clientId, clientId), eq(invoiceExtractionJobs.jobToken, jobToken)))
+      .limit(1);
+    return row;
+  }
+
+  async updateInvoiceExtractionJob(
+    id: number,
+    patch: Partial<
+      Pick<
+        InvoiceExtractionJob,
+        "status" | "resultJson" | "errorMessage" | "inputTokens" | "outputTokens" | "fileGzipBase64"
+      >
+    >,
+  ): Promise<void> {
+    await db
+      .update(invoiceExtractionJobs)
+      .set({ ...patch, updatedAt: new Date() } as any)
+      .where(eq(invoiceExtractionJobs.id, id));
+  }
+
+  async listSupplierSupplyMappings(clientId: number, supplierId: number): Promise<SupplierSupplyMapping[]> {
+    return db
+      .select()
+      .from(supplierSupplyMappings)
+      .where(
+        and(
+          eq(supplierSupplyMappings.clientId, clientId),
+          eq(supplierSupplyMappings.supplierId, supplierId),
+        ),
+      );
+  }
+
+  /**
+   * Guarda que "esta descripcion de este proveedor es este insumo". Se llama al CONFIRMAR la
+   * factura, nunca al leerla: solo vale como memoria lo que una persona dio por bueno.
+   */
+  async upsertSupplierSupplyMapping(input: {
+    clientId: number;
+    supplierId: number;
+    normalizedDescription: string;
+    rawDescription: string;
+    supplyId: number;
+    createdBy?: string | null;
+  }): Promise<void> {
+    if (!input.normalizedDescription) return;
+    const [existing] = await db
+      .select()
+      .from(supplierSupplyMappings)
+      .where(
+        and(
+          eq(supplierSupplyMappings.clientId, input.clientId),
+          eq(supplierSupplyMappings.supplierId, input.supplierId),
+          eq(supplierSupplyMappings.normalizedDescription, input.normalizedDescription),
+        ),
+      );
+
+    if (existing) {
+      await db
+        .update(supplierSupplyMappings)
+        .set({
+          supplyId: input.supplyId,
+          rawDescription: input.rawDescription.slice(0, 255),
+          timesUsed: (existing.timesUsed ?? 0) + 1,
+          updatedAt: new Date(),
+        } as any)
+        .where(eq(supplierSupplyMappings.id, existing.id));
+      return;
+    }
+
+    await db.insert(supplierSupplyMappings).values({
+      clientId: input.clientId,
+      supplierId: input.supplierId,
+      normalizedDescription: input.normalizedDescription,
+      rawDescription: input.rawDescription.slice(0, 255),
+      supplyId: input.supplyId,
+      timesUsed: 1,
+      createdBy: input.createdBy ?? null,
+    } as any);
   }
 
   async getLastFinancialImportBatchForAccount(

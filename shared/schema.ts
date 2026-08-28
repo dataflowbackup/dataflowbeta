@@ -839,6 +839,85 @@ export const insertFinancialImportJobSchema = createInsertSchema(financialImport
 export type InsertFinancialImportJob = z.infer<typeof insertFinancialImportJobSchema>;
 export type FinancialImportJob = typeof financialImportJobs.$inferSelect;
 
+// ==================================
+// FACTURA DIGITAL (ago-2026)
+// Cola de lectura de un comprobante con IA. Mismo patron que financial_import_jobs: la lectura
+// puede pasarse del timeout de ~26s de la funcion API, asi que corre en una background function.
+// El archivo se guarda gzipeado SOLO mientras dura el job y se borra al terminar: DataFlow no
+// tiene almacenamiento durable de archivos y no se quiso montar uno para esto.
+// ==================================
+export const invoiceExtractionJobs = pgTable(
+  "invoice_extraction_jobs",
+  {
+    id: serial("id").primaryKey(),
+    jobToken: varchar("job_token", { length: 36 }).notNull().unique(),
+    triggerKey: varchar("trigger_key", { length: 64 }).notNull(),
+    clientId: integer("client_id").notNull().references(() => clients.id, { onDelete: "cascade" }),
+    createdBy: varchar("created_by", { length: 255 }),
+    status: varchar("status", { length: 20 }).notNull().default("pending"),
+    /** Imagen o PDF comprimido (gzip) en base64. Se vacia apenas el job termina. */
+    fileGzipBase64: text("file_gzip_base64").notNull(),
+    /** MIME real del archivo: decide si va como bloque `image` o `document` a la API. */
+    fileMediaType: varchar("file_media_type", { length: 60 }).notNull(),
+    originalFileName: varchar("original_file_name", { length: 255 }),
+    /** Borrador ya normalizado y listo para la pantalla de revision. */
+    resultJson: text("result_json"),
+    errorMessage: text("error_message"),
+    /** Tokens consumidos, para poder medir el costo por empresa. */
+    inputTokens: integer("input_tokens"),
+    outputTokens: integer("output_tokens"),
+    createdAt: timestamp("created_at").defaultNow(),
+    updatedAt: timestamp("updated_at").defaultNow(),
+  },
+  (table) => [index("invoice_extraction_jobs_client_id_status_idx").on(table.clientId, table.status)],
+);
+
+export const insertInvoiceExtractionJobSchema = createInsertSchema(invoiceExtractionJobs).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+export type InsertInvoiceExtractionJob = z.infer<typeof insertInvoiceExtractionJobSchema>;
+export type InvoiceExtractionJob = typeof invoiceExtractionJobs.$inferSelect;
+
+// ==================================
+// MEMORIA descripcion de factura -> insumo, POR PROVEEDOR.
+// Lo unico que la lectura automatica no puede resolver sola es a que insumo del catalogo
+// corresponde cada descripcion. Cuando el usuario lo confirma una vez, queda guardado y la
+// proxima factura de ESE proveedor ya viene resuelta. Es lo que hace que el modulo se vuelva
+// casi automatico con el uso (mismo criterio que product_recipe_mappings con las recetas).
+// ==================================
+export const supplierSupplyMappings = pgTable(
+  "supplier_supply_mappings",
+  {
+    id: serial("id").primaryKey(),
+    clientId: integer("client_id").notNull().references(() => clients.id, { onDelete: "cascade" }),
+    supplierId: integer("supplier_id").notNull().references(() => suppliers.id, { onDelete: "cascade" }),
+    /** Descripcion normalizada (sin tildes, minusculas, sin puntuacion): es la clave de busqueda. */
+    normalizedDescription: varchar("normalized_description", { length: 255 }).notNull(),
+    /** Descripcion tal cual vino en la factura, para poder mostrarla en pantalla. */
+    rawDescription: varchar("raw_description", { length: 255 }),
+    supplyId: integer("supply_id").notNull().references(() => supplies.id, { onDelete: "cascade" }),
+    /** Cuantas veces se uso: sirve para limpiar mapeos muertos mas adelante. */
+    timesUsed: integer("times_used").default(1),
+    createdBy: varchar("created_by").references(() => users.id),
+    createdAt: timestamp("created_at").defaultNow(),
+    updatedAt: timestamp("updated_at").defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("supplier_supply_mappings_uq").on(table.clientId, table.supplierId, table.normalizedDescription),
+  ],
+);
+
+export const insertSupplierSupplyMappingSchema = createInsertSchema(supplierSupplyMappings).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+export type InsertSupplierSupplyMapping = z.infer<typeof insertSupplierSupplyMappingSchema>;
+export type SupplierSupplyMapping = typeof supplierSupplyMappings.$inferSelect;
+
+
 // ==========================================
 // FINANCIAL SAVED VIEWS (Atajos de filtros por usuario)
 // ==========================================

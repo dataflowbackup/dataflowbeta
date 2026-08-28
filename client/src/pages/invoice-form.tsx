@@ -5,6 +5,8 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import { useLocation, useParams } from "wouter";
 import { PageHeader } from "@/components/page-header";
+import { FacturaDigitalDialog, type ExtractionResult } from "@/components/factura-digital-dialog";
+import { normalizeItemDescription, type ValidationIssue } from "@shared/invoiceExtraction";
 import { CodeConfirmDialog } from "@/components/code-confirm-dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -33,7 +35,7 @@ import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { formatCurrency, formatDateInput } from "@/lib/formatters";
-import { Plus, Trash2, Calculator, AlertTriangle, TrendingUp, TrendingDown, Check, ChevronsUpDown } from "lucide-react";
+import { Plus, Trash2, Calculator, AlertTriangle, TrendingUp, TrendingDown, Check, ChevronsUpDown, Sparkles } from "lucide-react";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import {
   Table,
@@ -184,6 +186,12 @@ export default function InvoiceFormPage() {
   const [isCorrecting, setIsCorrecting] = useState(false);
   const [showCorrectCodeDialog, setShowCorrectCodeDialog] = useState(false);
   const [pendingCorrection, setPendingCorrection] = useState<FormData | null>(null);
+
+  // Factura Digital: lo leido por la IA y que falta revisar.
+  const [digitalOpen, setDigitalOpen] = useState(false);
+  const [extractionIssues, setExtractionIssues] = useState<ValidationIssue[]>([]);
+  /** Descripciones leidas por indice de item: al guardar se aprende su insumo para ese proveedor. */
+  const [extractedDescriptions, setExtractedDescriptions] = useState<string[]>([]);
 
   const { data: existingInvoice, isLoading: isLoadingInvoice } = useQuery<InvoiceDetail>({
     queryKey: ["/api/invoices", params.id],
@@ -651,6 +659,8 @@ export default function InvoiceFormPage() {
       queryClient.invalidateQueries({ queryKey: ["/api/recipes"], exact: false });
       queryClient.invalidateQueries({ queryKey: ["/api/recipes/stats"] });
       toast({ title: "Factura creada correctamente" });
+      // Lo que la persona confirmo pasa a ser memoria para la proxima factura de ese proveedor.
+      void rememberSupplyMappings(form.getValues());
       navigate("/facturas");
     },
     onError: (error: Error) => {
@@ -693,6 +703,95 @@ export default function InvoiceFormPage() {
     },
   });
 
+
+  /**
+   * Vuelca lo leido por la IA en el formulario de siempre. La revision ES este formulario: el
+   * usuario ve y corrige cada campo donde ya sabe hacerlo, no en una pantalla aparte.
+   *
+   * El local NO se toca: no sale del comprobante y lo elige la persona.
+   */
+  const applyExtraction = (result: ExtractionResult) => {
+    const { draft, issues } = result;
+
+    const items = draft.items.map((it) => {
+      const supply = it.supplyId != null ? supplies.find((s) => s.id === it.supplyId) : undefined;
+      return {
+        supplyId: it.supplyId ?? undefined,
+        description: it.description,
+        quantity: it.quantity,
+        unitPrice: it.unitPrice,
+        subtotal: it.subtotal,
+        rubroId: (supply as any)?.rubroId ?? undefined,
+        taxId: undefined,
+      };
+    });
+
+    // Solo entran los impuestos que se pudieron identificar en el catalogo; los demas quedan
+    // listados en el aviso para cargarlos a mano y no inventar un taxId que no existe.
+    const mappedTaxes = draft.taxes
+      .filter((t) => t.taxId != null)
+      .map((t) => ({
+        taxId: t.taxId as number,
+        baseAmount: t.baseAmount ?? 0,
+        taxAmount: t.amount,
+      }));
+
+    const currentLocalId = form.getValues("localId");
+    form.reset({
+      ...form.getValues(),
+      localId: currentLocalId,
+      supplierId: draft.supplierId ?? 0,
+      invoiceSalePoint: draft.salePoint,
+      invoiceNumber: draft.invoiceNumber,
+      invoiceType: draft.invoiceType,
+      invoiceDate: draft.invoiceDate ?? formatDateInput(new Date()),
+      ivaCondition: draft.ivaCondition,
+      discount: draft.discount,
+      notes: draft.notes ?? "",
+      items: items.length > 0 ? items : form.getValues("items"),
+      taxes: mappedTaxes,
+    });
+
+    setExtractedDescriptions(draft.items.map((it) => it.description));
+
+    const unmappedTaxes = draft.taxes.filter((t) => t.taxId == null);
+    const extraIssues: ValidationIssue[] = unmappedTaxes.map((t) => ({
+      field: "taxes",
+      severity: "warning" as const,
+      message: `El impuesto "${t.name}" (${formatCurrency(t.amount)}) no coincide con ninguno del catalogo: cargalo a mano si corresponde.`,
+    }));
+    setExtractionIssues([...issues, ...extraIssues]);
+
+    const errores = issues.filter((i) => i.severity === "error").length;
+    toast({
+      title: "Factura leida",
+      description:
+        errores > 0
+          ? `Quedaron ${errores} dato(s) por completar. Estan marcados abajo.`
+          : "Revisa los datos y guarda si esta todo bien.",
+    });
+  };
+
+  /**
+   * Aprende descripcion → insumo para ese proveedor. Se llama DESPUES de guardar: solo se
+   * memoriza lo que la persona confirmo, nunca la sugerencia automatica sin revisar.
+   */
+  const rememberSupplyMappings = async (data: FormData) => {
+    if (extractedDescriptions.length === 0 || !data.supplierId) return;
+    const items = data.items
+      .map((it, i) => ({ description: extractedDescriptions[i] ?? "", supplyId: it.supplyId }))
+      .filter((x) => x.description && x.supplyId);
+    if (items.length === 0) return;
+    try {
+      await apiRequest("POST", "/api/invoices/digital/remember-supplies", {
+        supplierId: data.supplierId,
+        items,
+      });
+    } catch {
+      // Que falle la memoria no puede romper el alta de la factura: ya quedo guardada.
+    }
+  };
+
   const onSubmit = (data: FormData) => {
     if (isCorrecting) {
       // Pide la clave (número de comprobante) antes de aplicar la corrección.
@@ -710,6 +809,63 @@ export default function InvoiceFormPage() {
         description={isCorrecting ? "Modificá los datos; al guardar se pide la clave" : isViewing ? "Informacion del comprobante registrado" : "Complete los datos del comprobante"}
         backHref="/facturas"
       />
+
+      {/* Factura Digital: solo en el alta. Corregir una factura ya cargada se hace a mano. */}
+      {!isViewing && !isEditing && (
+        <Card className="border-primary/30 bg-primary/5">
+          <CardContent className="flex flex-wrap items-center justify-between gap-3 py-4">
+            <div className="flex items-start gap-3">
+              <Sparkles className="mt-0.5 h-5 w-5 text-primary" />
+              <div>
+                <p className="text-sm font-medium">Cargala desde una foto o un PDF</p>
+                <p className="text-xs text-muted-foreground">
+                  La IA lee el comprobante y completa proveedor, items, cantidades e impuestos. Despues
+                  revisas todo acá antes de guardar.
+                </p>
+              </div>
+            </div>
+            <Button type="button" onClick={() => setDigitalOpen(true)} data-testid="button-factura-digital">
+              <Sparkles className="mr-2 h-4 w-4" /> Factura Digital
+            </Button>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Que revisar de lo que leyó la IA. Los errores no bloquean el botón: los bloquea la
+          validación del formulario, que es la misma de siempre. Acá se explica qué mirar. */}
+      {extractionIssues.length > 0 && (
+        <Card className="border-amber-500/50 bg-amber-500/5">
+          <CardContent className="py-4">
+            <div className="flex items-start gap-2">
+              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-600 dark:text-amber-500" />
+              <div className="flex-1 space-y-1">
+                <p className="text-sm font-medium text-amber-700 dark:text-amber-400">
+                  Revisa esto antes de guardar
+                </p>
+                <ul className="list-inside list-disc space-y-0.5 text-xs text-amber-700/90 dark:text-amber-400/90">
+                  {extractionIssues.map((issue, i) => (
+                    <li key={i}>
+                      {issue.severity === "error" && <strong>Falta: </strong>}
+                      {issue.message}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                className="h-7 text-xs"
+                onClick={() => setExtractionIssues([])}
+              >
+                Ocultar
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      <FacturaDigitalDialog open={digitalOpen} onOpenChange={setDigitalOpen} onExtracted={applyExtraction} />
 
       {isViewing && isLoadingInvoice && (
         <Card>
