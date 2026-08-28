@@ -18,7 +18,7 @@ import {
 import {
   TrendingUp, TrendingDown, Minus, Target, Ticket, DollarSign, Building2,
   CreditCard, BarChart3, ShoppingCart, ChefHat, Trophy, PiggyBank, Percent,
-  AlertCircle, CheckCircle2, Trash2, FileDown,
+  AlertCircle, CheckCircle2, Trash2, FileDown, ReceiptText,
 } from "lucide-react";
 import { useSalesSources } from "@/hooks/useSalesSources";
 import { usePersistentFilter } from "@/hooks/usePersistentFilter";
@@ -192,6 +192,12 @@ function AnalysisPdfButton({ name, onBeforeCapture, onAfterCapture }: {
   );
 }
 
+/** % de una parte sobre el total del periodo. "—" si no hay total: no se inventa un 0%. */
+function fiscalPct(part: number, total: number): string {
+  if (!Number.isFinite(total) || total <= 0) return "—";
+  return `${((part / total) * 100).toFixed(1)}%`;
+}
+
 export default function DashboardPage() {
   const now = new Date();
   const dashboardRef = useRef<HTMLDivElement>(null);
@@ -287,6 +293,13 @@ export default function DashboardPage() {
     enabled: locals.length > 0,
   });
 
+  // Ventas Fiscalizadas: solo FUDO trae el dato (col N del reporte); Datalive y Shares no lo tienen.
+  const { data: fiscalData } = useQuery<any>({
+    queryKey: ["/api/dashboard/ventas-fiscalizadas", year, month, localIdsParam],
+    queryFn: () => apiRequest("GET", `/api/dashboard/ventas-fiscalizadas?year=${year}&month=${month}&localIds=${localIdsParam}`).then((r) => r.json()),
+    enabled: locals.length > 0 && source === "fudo",
+  });
+
   const { data: topCategorias = [] } = useQuery<any[]>({
     queryKey: ["/api/dashboard/top-categorias", topDateFrom, topDateTo, topLocalParam, topSource],
     queryFn: () => apiRequest("GET", `/api/dashboard/top-categorias?dateFrom=${topDateFrom}&dateTo=${topDateTo}&localIds=${topLocalParam}&source=${topSource}`).then((r) => r.json()),
@@ -343,6 +356,12 @@ export default function DashboardPage() {
       prevLabel: `${fmt(prevStart)} al ${fmt(prevEnd)}`,
     };
   }, [weekStart]);
+
+  const localLabel = useMemo(() => {
+    if (globalLocalIds.length === 0) return "Todos los locales";
+    const names = locals.filter((l) => globalLocalIds.includes(l.id)).map((l) => l.name);
+    return names.length > 0 ? names.join(" · ") : "Todos los locales";
+  }, [globalLocalIds, locals]);
 
   const weekLocalLabel = useMemo(() => {
     if (weekLocalIds.length === 0) return "Todos los locales";
@@ -595,6 +614,93 @@ export default function DashboardPage() {
           </CardContent>
         </Card>
       </div>
+
+
+      {/* ── ROW 1b: Ventas Fiscalizadas (solo FUDO — Datalive/Shares no traen el dato) ── */}
+      {source === "fudo" && (
+        <Card>
+          <CardHeader className="pb-3">
+            <CardTitle className="text-sm font-semibold flex items-center gap-2">
+              <ReceiptText className="h-4 w-4 text-primary" />
+              Ventas Fiscalizadas
+              <span className="text-xs font-normal text-muted-foreground">
+                {MONTH_NAMES_FULL[month - 1]} {year} · {localLabel}
+              </span>
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            {fiscalData == null ? (
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                {[1, 2, 3].map((i) => <Skeleton key={i} className="h-20 w-full" />)}
+              </div>
+            ) : fiscalData.ventaTotal === 0 ? (
+              <p className="text-sm text-muted-foreground py-2">
+                No hay ventas de FUDO importadas para este mes y estos locales.
+              </p>
+            ) : (
+              <div className="space-y-4">
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                  <div className="rounded-lg border p-3">
+                    <p className="text-xs text-muted-foreground">FISCALIZADO</p>
+                    <p className="text-2xl font-bold font-mono text-emerald-600 dark:text-emerald-400">
+                      {formatCurrency(fiscalData.fiscalizada)}
+                    </p>
+                    <p className="text-xs text-muted-foreground pt-0.5">
+                      {fiscalPct(fiscalData.fiscalizada, fiscalData.ventaTotal)} del total ·{" "}
+                      {fiscalData.ticketsFiscalizados.toLocaleString("es-AR")} tickets
+                    </p>
+                  </div>
+                  <div className="rounded-lg border p-3">
+                    <p className="text-xs text-muted-foreground">NO FISCALIZADO</p>
+                    <p className="text-2xl font-bold font-mono text-rose-600 dark:text-rose-400">
+                      {formatCurrency(fiscalData.noFiscalizada)}
+                    </p>
+                    <p className="text-xs text-muted-foreground pt-0.5">
+                      {fiscalPct(fiscalData.noFiscalizada, fiscalData.ventaTotal)} del total ·{" "}
+                      {fiscalData.ticketsNoFiscalizados.toLocaleString("es-AR")} tickets
+                    </p>
+                  </div>
+                  <div className="rounded-lg border p-3">
+                    <p className="text-xs text-muted-foreground">VENTA TOTAL DEL MES</p>
+                    <p className="text-2xl font-bold font-mono">{formatCurrency(fiscalData.ventaTotal)}</p>
+                    <p className="text-xs text-muted-foreground pt-0.5">
+                      {fiscalData.diasConDato + fiscalData.diasSinDato} día(s) importado(s)
+                    </p>
+                  </div>
+                </div>
+
+                {/*
+                  Los días importados antes de que se leyera la columna N no tienen el corte. Se
+                  muestran aparte: contarlos como "no fiscalizado" daría un porcentaje falso.
+                */}
+                {fiscalData.sinDato > 0 && (
+                  <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 space-y-1">
+                    <div className="flex items-start gap-2">
+                      <AlertCircle className="h-4 w-4 text-amber-600 dark:text-amber-500 mt-0.5 shrink-0" />
+                      <p className="text-sm text-amber-700 dark:text-amber-400">
+                        <span className="font-semibold">{formatCurrency(fiscalData.sinDato)}</span>{" "}
+                        ({fiscalPct(fiscalData.sinDato, fiscalData.ventaTotal)} del total) sin dato de
+                        fiscalización
+                        {fiscalData.diasSinDato > 0 && `, en ${fiscalData.diasSinDato} día(s) importados antes de que se leyera la columna`}
+                        . Volvé a importar el archivo de FUDO marcando "reemplazar" para completarlos.
+                      </p>
+                    </div>
+                    {fiscalData.fiscalizada + fiscalData.noFiscalizada > 0 && (
+                      <p className="text-xs text-amber-700/80 dark:text-amber-400/80 pl-6">
+                        Sobre lo que sí tiene dato:{" "}
+                        <span className="font-semibold">
+                          {fiscalPct(fiscalData.fiscalizada, fiscalData.fiscalizada + fiscalData.noFiscalizada)}
+                        </span>{" "}
+                        fiscalizado.
+                      </p>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      )}
 
       {/* ── ROW 2: Saldos + Deudas ── */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">

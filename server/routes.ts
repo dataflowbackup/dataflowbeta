@@ -4379,6 +4379,14 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
               fecha: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Fecha inválida"),
               ventaTotal: z.coerce.number(),
               ticketCount: z.coerce.number().int().optional().default(0),
+              // Corte de la columna N. `null` se acepta y se guarda como null: los archivos viejos
+              // no traen la columna y eso es "no se sabe", no es "no fiscalizado".
+              ventaFiscalizada: z.coerce.number().nullable().optional(),
+              ventaNoFiscalizada: z.coerce.number().nullable().optional(),
+              ventaSinDatoFiscal: z.coerce.number().nullable().optional(),
+              ticketsFiscalizados: z.coerce.number().int().nullable().optional(),
+              ticketsNoFiscalizados: z.coerce.number().int().nullable().optional(),
+              ticketsSinDatoFiscal: z.coerce.number().int().nullable().optional(),
             }),
           )
           .min(1, "No hay días para importar"),
@@ -6544,6 +6552,17 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const source = String(req.query.source ?? "fudo") as "fudo" | "datalive" | "shares";
       const data = await storage.getDashboardTopProductos(clientId, dateFrom, dateTo, localIds, source);
       res.json(data);
+    } catch (e: any) { res.status(500).json({ message: e.message }); }
+  });
+
+  /** Ventas Fiscalizadas del mes. Solo FUDO: Datalive y Shares no traen el dato. */
+  app.get("/api/dashboard/ventas-fiscalizadas", isAuthenticated, async (req, res) => {
+    try {
+      const clientId = await getClientId(req);
+      const year = parseInt(String(req.query.year ?? new Date().getFullYear()), 10);
+      const month = parseInt(String(req.query.month ?? new Date().getMonth() + 1), 10);
+      const localIds = String(req.query.localIds ?? "").split(",").map(Number).filter((n) => n > 0);
+      res.json(await storage.getDashboardVentasFiscalizadas(clientId, year, month, localIds));
     } catch (e: any) { res.status(500).json({ message: e.message }); }
   });
 

@@ -5,19 +5,31 @@
  *   - Fila 0: "Desde" + fecha de inicio del reporte (metadatos)
  *   - Fila 1: "Hasta" + fecha de fin
  *   - Fila 2: vacía
- *   - Fila 3: cabeceras → A:Id B:Fecha C:Creación D:Cerrada E:Caja F:Estado ... M:Total
+ *   - Fila 3: cabeceras → A:Id B:Fecha C:Creación D:Cerrada E:Caja F:Estado ... M:Total N:Fiscalizada
  *   - Fila 4+: datos
  *
  * Reglas:
  *   - Solo se procesan filas donde col F (Estado) === "Cerrada" (excluye "Eliminada").
  *   - Las ventas con Total=0 se incluyen (tickets regalados, cuentan como venta).
  *   - Se agrupa por fecha (YYYY-MM-DD) sumando col M (Total).
+ *   - Col N dice "SI"/"NO" si la venta se fiscalizó. El corte se hace sobre el MISMO universo que
+ *     el total (solo "Cerrada"), así fiscalizada + no fiscalizada + sin dato = venta total del día.
+ *     Los archivos viejos no tienen esa columna: ahí el corte queda en null (= "sin dato"), nunca
+ *     en cero, para no hacer pasar por "no fiscalizado" algo que simplemente no se sabe.
  */
 
 export interface ParsedFudoDay {
   fecha: string;
   ventaTotal: number;
   ticketCount: number;
+  /** Corte fiscal del día. null en los tres = el archivo no trae la columna N (dato desconocido). */
+  ventaFiscalizada: number | null;
+  ventaNoFiscalizada: number | null;
+  /** Filas "Cerrada" cuya col N vino vacía o con un valor que no es SI/NO. */
+  ventaSinDatoFiscal: number | null;
+  ticketsFiscalizados: number | null;
+  ticketsNoFiscalizados: number | null;
+  ticketsSinDatoFiscal: number | null;
 }
 
 export interface FudoParseResult {
@@ -25,13 +37,32 @@ export interface FudoParseResult {
   warnings: string[];
   reportFrom: string | null;
   reportTo: string | null;
+  /** false = el archivo no trae la columna de fiscalización; los días quedan sin corte fiscal. */
+  hasFiscalColumn: boolean;
 }
 
 const COL_FECHA = 1;   // B
 const COL_ESTADO = 5;  // F
 const COL_TOTAL = 12;  // M
+const COL_FISCAL = 13; // N — "SI"/"NO"
 const HEADER_ROW = 3;  // índice de la fila de cabeceras (0-based)
 const DATA_START = 4;  // primera fila de datos
+
+/**
+ * Lee la col N. Se es tolerante con la forma del "sí" (mayúsculas, tilde, booleano de Excel)
+ * porque el archivo lo exporta FUDO y no queremos que un cambio cosmético rompa el corte.
+ * Devuelve null cuando la celda no dice nada reconocible: eso es "no se sabe", no es "no".
+ */
+function parseFiscalFlag(raw: unknown): boolean | null {
+  if (raw == null) return null;
+  if (typeof raw === "boolean") return raw;
+  if (typeof raw === "number") return raw === 1 ? true : raw === 0 ? false : null;
+  const v = String(raw).trim().toUpperCase().replace(/Í/g, "I");
+  if (v === "") return null;
+  if (v === "SI" || v === "S" || v === "TRUE" || v === "1" || v === "VERDADERO") return true;
+  if (v === "NO" || v === "N" || v === "FALSE" || v === "0" || v === "FALSO") return false;
+  return null;
+}
 
 function excelDateToIso(raw: unknown): string | null {
   if (typeof raw === "string") {
@@ -197,7 +228,7 @@ export function parseFudoReport(rows: any[][]): FudoParseResult {
   const warnings: string[] = [];
 
   if (!rows || rows.length < DATA_START) {
-    return { days: [], warnings: ["El archivo no tiene filas de datos."], reportFrom: null, reportTo: null };
+    return { days: [], warnings: ["El archivo no tiene filas de datos."], reportFrom: null, reportTo: null, hasFiscalColumn: false };
   }
 
   // Metadatos del reporte
@@ -216,7 +247,28 @@ export function parseFudoReport(rows: any[][]): FudoParseResult {
     );
   }
 
-  const byDay = new Map<string, { ventaTotal: number; ticketCount: number }>();
+  // La columna N solo existe en los reportes nuevos. Si no está, el archivo se importa igual
+  // (venta y tickets no cambian) pero el corte fiscal del día queda en null.
+  const hasFiscalColumn = rows
+    .slice(DATA_START)
+    .some((r) => r && parseFiscalFlag(r[COL_FISCAL]) !== null);
+  if (!hasFiscalColumn) {
+    warnings.push(
+      'No se encontró la columna N ("SI"/"NO" de fiscalización): estos días quedan sin corte fiscal en el Dashboard.',
+    );
+  }
+
+  interface DayAcc {
+    ventaTotal: number;
+    ticketCount: number;
+    ventaFiscalizada: number;
+    ventaNoFiscalizada: number;
+    ventaSinDatoFiscal: number;
+    ticketsFiscalizados: number;
+    ticketsNoFiscalizados: number;
+    ticketsSinDatoFiscal: number;
+  }
+  const byDay = new Map<string, DayAcc>();
   let skippedEstado = 0;
 
   for (let i = DATA_START; i < rows.length; i++) {
@@ -238,23 +290,64 @@ export function parseFudoReport(rows: any[][]): FudoParseResult {
 
     const total = parseFloat(String(row[COL_TOTAL] ?? 0)) || 0;
 
-    if (!byDay.has(fecha)) byDay.set(fecha, { ventaTotal: 0, ticketCount: 0 });
+    if (!byDay.has(fecha)) {
+      byDay.set(fecha, {
+        ventaTotal: 0,
+        ticketCount: 0,
+        ventaFiscalizada: 0,
+        ventaNoFiscalizada: 0,
+        ventaSinDatoFiscal: 0,
+        ticketsFiscalizados: 0,
+        ticketsNoFiscalizados: 0,
+        ticketsSinDatoFiscal: 0,
+      });
+    }
     const entry = byDay.get(fecha)!;
     entry.ventaTotal += total;
     entry.ticketCount++;
+
+    // Mismo universo que el total (solo "Cerrada"): los tres baldes cierran contra ventaTotal.
+    const fiscal = parseFiscalFlag(row[COL_FISCAL]);
+    if (fiscal === true) {
+      entry.ventaFiscalizada += total;
+      entry.ticketsFiscalizados++;
+    } else if (fiscal === false) {
+      entry.ventaNoFiscalizada += total;
+      entry.ticketsNoFiscalizados++;
+    } else {
+      entry.ventaSinDatoFiscal += total;
+      entry.ticketsSinDatoFiscal++;
+    }
   }
 
   if (skippedEstado > 0) {
     warnings.push(`${skippedEstado} fila(s) omitidas por tener Estado distinto a "Cerrada".`);
   }
 
+  const round2 = (n: number) => Math.round(n * 100) / 100;
   const days: ParsedFudoDay[] = Array.from(byDay.entries())
-    .map(([fecha, v]) => ({ fecha, ventaTotal: Math.round(v.ventaTotal * 100) / 100, ticketCount: v.ticketCount }))
+    .map(([fecha, v]) => ({
+      fecha,
+      ventaTotal: round2(v.ventaTotal),
+      ticketCount: v.ticketCount,
+      ventaFiscalizada: hasFiscalColumn ? round2(v.ventaFiscalizada) : null,
+      ventaNoFiscalizada: hasFiscalColumn ? round2(v.ventaNoFiscalizada) : null,
+      ventaSinDatoFiscal: hasFiscalColumn ? round2(v.ventaSinDatoFiscal) : null,
+      ticketsFiscalizados: hasFiscalColumn ? v.ticketsFiscalizados : null,
+      ticketsNoFiscalizados: hasFiscalColumn ? v.ticketsNoFiscalizados : null,
+      ticketsSinDatoFiscal: hasFiscalColumn ? v.ticketsSinDatoFiscal : null,
+    }))
     .sort((a, b) => a.fecha.localeCompare(b.fecha));
+
+  // Filas "Cerrada" con la col N vacía o ilegible: el corte no cubre todo el período y hay que decirlo.
+  const sinDatoTickets = days.reduce((acc, d) => acc + (d.ticketsSinDatoFiscal ?? 0), 0);
+  if (hasFiscalColumn && sinDatoTickets > 0) {
+    warnings.push(`${sinDatoTickets} venta(s) tienen la columna N vacía o con un valor distinto de SI/NO.`);
+  }
 
   if (days.length === 0) {
     warnings.push("No se encontraron filas con Estado=Cerrada en el archivo.");
   }
 
-  return { days, warnings, reportFrom, reportTo };
+  return { days, warnings, reportFrom, reportTo, hasFiscalColumn };
 }

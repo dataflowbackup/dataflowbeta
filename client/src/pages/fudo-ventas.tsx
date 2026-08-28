@@ -144,6 +144,19 @@ export default function FudoVentasPage() {
     }
   };
 
+  /** Corte fiscal del archivo cargado. null = el archivo no trae la columna N. */
+  const fiscalPreview = useMemo(() => {
+    if (parsedDays.length === 0 || parsedDays[0].ventaFiscalizada == null) return null;
+    return parsedDays.reduce(
+      (acc, d) => ({
+        fiscalizada: acc.fiscalizada + (d.ventaFiscalizada ?? 0),
+        noFiscalizada: acc.noFiscalizada + (d.ventaNoFiscalizada ?? 0),
+        sinDato: acc.sinDato + (d.ventaSinDatoFiscal ?? 0),
+      }),
+      { fiscalizada: 0, noFiscalizada: 0, sinDato: 0 },
+    );
+  }, [parsedDays]);
+
   const counts = useMemo(() => {
     let nuevos = 0;
     let yaImport = 0;
@@ -163,7 +176,19 @@ export default function FudoVentasPage() {
       const res = await apiRequest("POST", "/api/fudo-ventas/import", {
         localId: parseInt(localId, 10),
         sourceFile: fileName,
-        days: parsedDays.map((d) => ({ fecha: d.fecha, ventaTotal: d.ventaTotal, ticketCount: d.ticketCount })),
+        days: parsedDays.map((d) => ({
+          fecha: d.fecha,
+          ventaTotal: d.ventaTotal,
+          ticketCount: d.ticketCount,
+          // Corte fiscalizado/no de la columna N. Va tal cual, null incluido: un archivo sin esa
+          // columna deja el dia "sin dato" en vez de hacerlo pasar por no fiscalizado.
+          ventaFiscalizada: d.ventaFiscalizada,
+          ventaNoFiscalizada: d.ventaNoFiscalizada,
+          ventaSinDatoFiscal: d.ventaSinDatoFiscal,
+          ticketsFiscalizados: d.ticketsFiscalizados,
+          ticketsNoFiscalizados: d.ticketsNoFiscalizados,
+          ticketsSinDatoFiscal: d.ticketsSinDatoFiscal,
+        })),
         replaceFechas: Array.from(replaceSet),
         adiciones: parsedAdiciones.map((a) => ({
           fecha: a.fecha,
@@ -329,6 +354,23 @@ export default function FudoVentasPage() {
 
               {parsedDays.length > 0 && (
                 <>
+                  {/* Corte fiscal del archivo (col N): confirma antes de importar que el dato vino. */}
+                  {fiscalPreview != null && (
+                    <div className="rounded-md border px-3 py-2 text-sm flex flex-wrap gap-x-5 gap-y-1">
+                      <span className="text-muted-foreground">Fiscalizado:</span>
+                      <span className="font-mono font-medium">{formatCurrency(fiscalPreview.fiscalizada)}</span>
+                      <span className="text-muted-foreground">No fiscalizado:</span>
+                      <span className="font-mono font-medium">{formatCurrency(fiscalPreview.noFiscalizada)}</span>
+                      {fiscalPreview.sinDato > 0 && (
+                        <>
+                          <span className="text-muted-foreground">Sin dato:</span>
+                          <span className="font-mono font-medium text-amber-700 dark:text-amber-500">
+                            {formatCurrency(fiscalPreview.sinDato)}
+                          </span>
+                        </>
+                      )}
+                    </div>
+                  )}
                   <div className="rounded-md border overflow-x-auto">
                     <table className="w-full text-sm">
                       <thead>

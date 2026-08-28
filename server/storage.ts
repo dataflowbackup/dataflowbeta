@@ -233,6 +233,19 @@ import {
 } from "@shared/breakeven";
 
 /**
+ * Corte fiscalizado / no fiscalizado de un dia de FUDO (columna N del reporte).
+ * null = el archivo no traia la columna: es "no se sabe", nunca "no fiscalizado".
+ */
+export interface FudoFiscalSplit {
+  ventaFiscalizada?: number | null;
+  ventaNoFiscalizada?: number | null;
+  ventaSinDatoFiscal?: number | null;
+  ticketsFiscalizados?: number | null;
+  ticketsNoFiscalizados?: number | null;
+  ticketsSinDatoFiscal?: number | null;
+}
+
+/**
  * specialType canónicos de "Otros Movimientos" (ROADMAP_BETA Fase 1): categorías que
  * quedan asentadas pero NO afectan el resultado neto del balance (income - expense).
  * La exclusión se basa en estos valores, no en el booleano isSpecial (ver getBalanceSpreadsheet).
@@ -620,7 +633,7 @@ export interface IStorage {
   importFudoVentas(
     clientId: number,
     localId: number,
-    days: Array<{ fecha: string; ventaTotal: number }>,
+    days: Array<{ fecha: string; ventaTotal: number } & FudoFiscalSplit>,
     opts: { sourceFile?: string | null; createdBy?: string | null; replaceFechas?: string[] },
   ): Promise<{ insertados: number; omitidos: number; reemplazados: number }>;
   deleteFudoVenta(clientId: number, id: number): Promise<boolean>;
@@ -5362,7 +5375,7 @@ export class DatabaseStorage implements IStorage {
   async importFudoVentas(
     clientId: number,
     localId: number,
-    days: Array<{ fecha: string; ventaTotal: number; ticketCount?: number }>,
+    days: Array<{ fecha: string; ventaTotal: number; ticketCount?: number } & FudoFiscalSplit>,
     opts: { sourceFile?: string | null; createdBy?: string | null; replaceFechas?: string[] },
   ): Promise<{ insertados: number; omitidos: number; reemplazados: number }> {
     const replace = new Set(opts.replaceFechas ?? []);
@@ -5377,12 +5390,23 @@ export class DatabaseStorage implements IStorage {
     let reemplazados = 0;
 
     for (const d of days) {
+      // Corte fiscal (col N). null se guarda como null a propósito: es "no se sabe", no es cero.
+      const money = (v: number | null | undefined) => (v == null ? null : String(v));
+      const fiscal = {
+        ventaFiscalizada: money(d.ventaFiscalizada),
+        ventaNoFiscalizada: money(d.ventaNoFiscalizada),
+        ventaSinDatoFiscal: money(d.ventaSinDatoFiscal),
+        ticketsFiscalizados: d.ticketsFiscalizados ?? null,
+        ticketsNoFiscalizados: d.ticketsNoFiscalizados ?? null,
+        ticketsSinDatoFiscal: d.ticketsSinDatoFiscal ?? null,
+      };
       const values = {
         clientId,
         localId,
         fecha: d.fecha,
         ventaTotal: String(d.ventaTotal),
         ticketCount: d.ticketCount ?? 0,
+        ...fiscal,
         sourceFile: opts.sourceFile ?? null,
         createdBy: opts.createdBy ?? null,
       };
@@ -5390,7 +5414,7 @@ export class DatabaseStorage implements IStorage {
         if (replace.has(d.fecha)) {
           await db
             .update(fudoVentas)
-            .set({ ventaTotal: values.ventaTotal, ticketCount: values.ticketCount, sourceFile: values.sourceFile, updatedAt: new Date() })
+            .set({ ventaTotal: values.ventaTotal, ticketCount: values.ticketCount, ...fiscal, sourceFile: values.sourceFile, updatedAt: new Date() })
             .where(and(eq(fudoVentas.clientId, clientId), eq(fudoVentas.localId, localId), eq(fudoVentas.fecha, d.fecha)));
           reemplazados++;
         } else {
@@ -6943,6 +6967,104 @@ export class DatabaseStorage implements IStorage {
       for (const r of rows) map.set(r.producto, (map.get(r.producto) ?? 0) + (r.cantidad ?? 0));
       return Array.from(map.entries()).map(([producto, cantidad]) => ({ producto, cantidad })).sort((a, b) => b.cantidad - a.cantidad);
     }
+  }
+
+
+  /**
+   * Ventas Fiscalizadas del mes (solo FUDO — Datalive y Shares no traen el dato).
+   *
+   * Los tres importes cierran contra la venta total del período. `sinDato` junta dos cosas
+   * distintas a propósito de mostrarlas separadas: los días importados antes de que se leyera la
+   * columna N (`diasSinDato`) y las ventas sueltas cuya col N vino vacía dentro de un día que sí
+   * tiene el corte. En los dos casos es "no se sabe", nunca "no fiscalizado".
+   */
+  async getDashboardVentasFiscalizadas(
+    clientId: number,
+    year: number,
+    month: number,
+    localIds: number[],
+  ): Promise<{
+    ventaTotal: number;
+    fiscalizada: number;
+    noFiscalizada: number;
+    sinDato: number;
+    ticketsFiscalizados: number;
+    ticketsNoFiscalizados: number;
+    ticketsSinDato: number;
+    diasConDato: number;
+    diasSinDato: number;
+    ventaDiasSinDato: number;
+  }> {
+    const mm = String(month).padStart(2, "0");
+    const lastDay = new Date(Date.UTC(year, month, 0)).getUTCDate();
+    const from = `${year}-${mm}-01`;
+    const to = `${year}-${mm}-${String(lastDay).padStart(2, "0")}`;
+
+    const conds = [
+      eq(fudoVentas.clientId, clientId),
+      gte(fudoVentas.fecha, from),
+      lte(fudoVentas.fecha, to),
+    ];
+    if (localIds.length > 0) conds.push(inArray(fudoVentas.localId, localIds));
+
+    const rows = await db
+      .select({
+        ventaTotal: fudoVentas.ventaTotal,
+        ventaFiscalizada: fudoVentas.ventaFiscalizada,
+        ventaNoFiscalizada: fudoVentas.ventaNoFiscalizada,
+        ventaSinDatoFiscal: fudoVentas.ventaSinDatoFiscal,
+        ticketsFiscalizados: fudoVentas.ticketsFiscalizados,
+        ticketsNoFiscalizados: fudoVentas.ticketsNoFiscalizados,
+        ticketsSinDatoFiscal: fudoVentas.ticketsSinDatoFiscal,
+      })
+      .from(fudoVentas)
+      .where(and(...conds));
+
+    let ventaTotal = 0;
+    let fiscalizada = 0;
+    let noFiscalizada = 0;
+    let sinDato = 0;
+    let ticketsFiscalizados = 0;
+    let ticketsNoFiscalizados = 0;
+    let ticketsSinDato = 0;
+    let diasConDato = 0;
+    let diasSinDato = 0;
+    let ventaDiasSinDato = 0;
+
+    for (const r of rows) {
+      const total = parseFloat(String(r.ventaTotal ?? 0)) || 0;
+      ventaTotal += total;
+
+      // El día tiene corte solo si se importó con la columna N leída.
+      if (r.ventaFiscalizada == null) {
+        diasSinDato++;
+        ventaDiasSinDato += total;
+        sinDato += total;
+        continue;
+      }
+
+      diasConDato++;
+      fiscalizada += parseFloat(String(r.ventaFiscalizada)) || 0;
+      noFiscalizada += parseFloat(String(r.ventaNoFiscalizada ?? 0)) || 0;
+      sinDato += parseFloat(String(r.ventaSinDatoFiscal ?? 0)) || 0;
+      ticketsFiscalizados += r.ticketsFiscalizados ?? 0;
+      ticketsNoFiscalizados += r.ticketsNoFiscalizados ?? 0;
+      ticketsSinDato += r.ticketsSinDatoFiscal ?? 0;
+    }
+
+    const round2 = (n: number) => Math.round(n * 100) / 100;
+    return {
+      ventaTotal: round2(ventaTotal),
+      fiscalizada: round2(fiscalizada),
+      noFiscalizada: round2(noFiscalizada),
+      sinDato: round2(sinDato),
+      ticketsFiscalizados,
+      ticketsNoFiscalizados,
+      ticketsSinDato,
+      diasConDato,
+      diasSinDato,
+      ventaDiasSinDato: round2(ventaDiasSinDato),
+    };
   }
 
   async getDashboardTopCategorias(clientId: number, dateFrom: string, dateTo: string, localIds: number[], source: "fudo" | "datalive" | "shares") {

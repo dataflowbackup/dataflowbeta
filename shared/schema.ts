@@ -1565,6 +1565,20 @@ export const fudoVentas = pgTable(
     fecha: date("fecha").notNull(),
     ventaTotal: decimal("venta_total", { precision: 14, scale: 2 }).default("0"),
     ticketCount: integer("ticket_count").default(0),
+    /**
+     * Ventas Fiscalizadas (ago-2026) — corte de la columna N del reporte de FUDO.
+     * Los tres importes suman ventaTotal. NULL en los seis = día importado antes de que se leyera
+     * esa columna: es "no se sabe", NO es "no fiscalizado". Para completarlos hay que volver a
+     * importar el archivo de FUDO marcando reemplazar; no hay backfill posible porque el Excel
+     * original no se guarda.
+     */
+    ventaFiscalizada: decimal("venta_fiscalizada", { precision: 14, scale: 2 }),
+    ventaNoFiscalizada: decimal("venta_no_fiscalizada", { precision: 14, scale: 2 }),
+    /** Filas "Cerrada" con la col N vacía o con un valor que no es SI/NO. */
+    ventaSinDatoFiscal: decimal("venta_sin_dato_fiscal", { precision: 14, scale: 2 }),
+    ticketsFiscalizados: integer("tickets_fiscalizados"),
+    ticketsNoFiscalizados: integer("tickets_no_fiscalizados"),
+    ticketsSinDatoFiscal: integer("tickets_sin_dato_fiscal"),
     sourceFile: varchar("source_file", { length: 255 }),
     createdBy: varchar("created_by").references(() => users.id),
     createdAt: timestamp("created_at").defaultNow(),
