@@ -29,6 +29,12 @@ import {
 } from "lucide-react";
 import type { Local, CmvCalculation, FinancialGroup } from "@shared/schema";
 import { buildCmvForBalance } from "@shared/balanceCmv";
+import {
+  buildCmvProductosForBalance,
+  compareCmvVsProductos,
+  CMV_PRODUCTOS_MIN_COVERAGE,
+  type CmvProductoCalculationLike,
+} from "@shared/balanceCmvProductos";
 import { MONTH_NAMES_ES } from "@shared/economicMonth";
 
 const SHORT_MONTHS = ["Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"];
@@ -125,6 +131,16 @@ export default function EconomicBalancePage() {
       return res.json();
     },
   });
+  // CMV Productos (teorico, por producto vendido). Se lee aparte del CMV por stock: son dos
+  // caminos distintos al mismo costo y el valor esta justamente en compararlos.
+  const { data: cmvProductosList = [] } = useQuery<CmvProductoCalculationLike[]>({
+    queryKey: ["/api/finance/cmv-producto-calculations"],
+    queryFn: async () => {
+      const res = await fetch("/api/finance/cmv-producto-calculations", { credentials: "include" });
+      if (!res.ok) return [];
+      return res.json();
+    },
+  });
 
   const localIdsParam = selectedLocalIds.length > 0 ? selectedLocalIds.join(",") : "";
   const sourcesParam = salesSources.join(",");
@@ -203,6 +219,19 @@ export default function EconomicBalancePage() {
     return buildCmvForBalance(cmvList, analyzedLocalIds, year, month, ventasMesByLocal);
   }, [cmvList, analyzedLocalIds, ventasByLocal, year, month]);
 
+  /** CMV Productos del mes, con el MISMO criterio que el CMV por stock (% sobre facturacion). */
+  const cmvProductosBalance = useMemo(() => {
+    const ventasMesByLocal: Record<number, number> = {};
+    for (const id of analyzedLocalIds) ventasMesByLocal[id] = ventasByLocal[id]?.[month] ?? 0;
+    return buildCmvProductosForBalance(cmvProductosList, analyzedLocalIds, year, month, ventasMesByLocal);
+  }, [cmvProductosList, analyzedLocalIds, ventasByLocal, year, month]);
+
+  /** Diferencia entre los dos CMV. Solo sobre los locales que tienen los DOS calculos. */
+  const cmvComparison = useMemo(
+    () => compareCmvVsProductos(cmvBalance.rows, cmvProductosBalance.rows),
+    [cmvBalance.rows, cmvProductosBalance.rows],
+  );
+
   /**
    * Locales que están en la vista pero NO facturaron en la fuente elegida. Importa avisarlo: sus
    * gastos SÍ computan, así que aparecen restando sin ninguna venta que los respalde y la utilidad
@@ -260,6 +289,22 @@ export default function EconomicBalancePage() {
 
     rows.push({ label: "CMV", importe: formatCurrency(cmvMes), bold: true });
 
+    // Informativos: no restan en la utilidad, igual que en pantalla.
+    if (cmvProductosBalance.rows.length > 0) {
+      rows.push({
+        label: "CMV Productos (teorico, no resta)",
+        importe: formatCurrency(cmvProductosBalance.totalCmv),
+        indent: true,
+      });
+    }
+    if (cmvComparison.locals.length > 0) {
+      rows.push({
+        label: `Diferencia CMV - CMV Productos${cmvComparison.difPp != null ? ` (${cmvComparison.difPp >= 0 ? "+" : ""}${cmvComparison.difPp.toFixed(2)} pp)` : ""}`,
+        importe: formatCurrency(cmvComparison.difMonto),
+        indent: true,
+      });
+    }
+
     rows.push({
       label: "UTILIDAD ECONÓMICA",
       importe: formatCurrency(utilidadMes),
@@ -282,6 +327,28 @@ export default function EconomicBalancePage() {
         label: `Sin CMV: ${cmvBalance.missing.map((m) => localName(m.localId)).join(", ")} — ${formatCurrency(cmvBalance.ventasSinCmv)} de ventas sin costo`,
         indent: true,
       });
+    }
+
+    if (cmvComparison.locals.length > 0) {
+      rows.push({ label: "CMV REAL vs CMV PRODUCTOS", section: true, bold: true });
+      for (const c of cmvComparison.locals) {
+        rows.push({
+          label: `${localName(c.localId)} · real ${c.pctReal?.toFixed(2)}% vs teorico ${c.pctTeorico?.toFixed(2)}%${c.coberturaPct != null ? ` · cobertura ${c.coberturaPct.toFixed(0)}%` : ""}`,
+          importe: c.difMonto == null ? "" : formatCurrency(c.difMonto),
+          pct: c.difPp == null ? "" : `${c.difPp >= 0 ? "+" : ""}${c.difPp.toFixed(2)} pp`,
+          indent: true,
+        });
+      }
+      if (cmvComparison.hasLowCoverage) {
+        rows.push({
+          label: `ATENCION: hay locales con menos del ${CMV_PRODUCTOS_MIN_COVERAGE}% de unidades con costo asignado; su CMV Productos esta subvaluado y la diferencia sale inflada.`,
+        });
+      }
+      if (cmvComparison.soloReal.length > 0 || cmvComparison.soloTeorico.length > 0) {
+        rows.push({
+          label: `Fuera de la comparacion: ${[...cmvComparison.soloReal, ...cmvComparison.soloTeorico].map(localName).join(", ")}.`,
+        });
+      }
     }
 
     if (merchandiseComputing.length > 0 && cmvMes > 0) {
@@ -714,6 +781,48 @@ export default function EconomicBalancePage() {
               </div>
             )}
 
+
+            {/*
+              CMV Productos y la diferencia: INFORMATIVOS. No restan en la utilidad — el costo de
+              mercadería ya lo pone el CMV por stock, y restar los dos contaría el costo dos veces.
+              Acá el valor está en la comparación, no en el importe.
+            */}
+            {(cmvProductosBalance.rows.length > 0 || cmvProductosList.length > 0) && (
+              <div className="mt-2 space-y-1">
+                <div className="flex items-center justify-between">
+                  <span className="text-sm text-muted-foreground">
+                    CMV Productos (teórico)
+                    <Badge variant="outline" className="ml-2 text-[10px]">no resta</Badge>
+                  </span>
+                  <span className="font-mono text-sm text-muted-foreground">
+                    {cmvProductosBalance.rows.length > 0 ? formatCurrency(cmvProductosBalance.totalCmv) : "—"}
+                  </span>
+                </div>
+
+                {cmvComparison.locals.length > 0 && (
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm text-muted-foreground">
+                      Diferencia CMV − CMV Productos
+                      {cmvComparison.difPp != null && (
+                        <Badge variant="outline" className="ml-2 text-[10px]">
+                          {cmvComparison.difPp >= 0 ? "+" : ""}
+                          {cmvComparison.difPp.toFixed(2)} pp
+                        </Badge>
+                      )}
+                    </span>
+                    <span
+                      className={cn(
+                        "font-mono text-sm font-medium",
+                        cmvComparison.difMonto > 0 ? "text-red-600" : cmvComparison.difMonto < 0 ? "text-green-600" : "",
+                      )}
+                    >
+                      {formatCurrency(cmvComparison.difMonto)}
+                    </span>
+                  </div>
+                )}
+              </div>
+            )}
+
             {/* UTILIDAD */}
             <div className="mt-4 flex items-center justify-between border-t-2 pt-3">
               <span className="text-base font-bold tracking-wide">UTILIDAD ECONÓMICA</span>
@@ -767,6 +876,123 @@ export default function EconomicBalancePage() {
                 </div>
               )}
             </div>
+
+            {/* ---- CMV real vs CMV Productos, local por local ---- */}
+            {(cmvProductosBalance.rows.length > 0 || cmvProductosBalance.hasMissing) && (
+              <div className="mt-4 rounded-lg border bg-muted/30 p-3">
+                <div className="flex items-center justify-between">
+                  <span className="text-sm font-semibold tracking-wide">CMV REAL vs CMV PRODUCTOS</span>
+                  <span className="font-mono text-sm font-semibold">
+                    {formatCurrency(cmvProductosBalance.totalCmv)}
+                  </span>
+                </div>
+
+                {cmvComparison.locals.length > 0 ? (
+                  <div className="mt-2 overflow-x-auto">
+                    <table className="w-full text-sm">
+                      <thead>
+                        <tr className="border-b text-xs text-muted-foreground">
+                          <th className="py-1 text-left font-medium">Local</th>
+                          <th className="px-2 py-1 text-right font-medium">CMV real</th>
+                          <th className="px-2 py-1 text-right font-medium">CMV Productos</th>
+                          <th className="px-2 py-1 text-right font-medium">Dif. pp</th>
+                          <th className="px-2 py-1 text-right font-medium">Dif. $</th>
+                          <th className="px-2 py-1 text-right font-medium">Cobertura</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {cmvComparison.locals.map((c) => (
+                          <tr key={c.localId} className="border-b last:border-0">
+                            <td className="py-1 text-muted-foreground">{localName(c.localId)}</td>
+                            <td className="px-2 py-1 text-right font-mono">
+                              {c.pctReal?.toFixed(2)}%
+                              <span className="block text-[11px] text-muted-foreground">
+                                {formatCurrency(c.montoReal)}
+                              </span>
+                            </td>
+                            <td className="px-2 py-1 text-right font-mono">
+                              {c.pctTeorico?.toFixed(2)}%
+                              <span className="block text-[11px] text-muted-foreground">
+                                {formatCurrency(c.montoTeorico)}
+                              </span>
+                            </td>
+                            <td
+                              className={cn(
+                                "px-2 py-1 text-right font-mono font-medium",
+                                (c.difPp ?? 0) > 0 ? "text-red-600" : (c.difPp ?? 0) < 0 ? "text-green-600" : "",
+                              )}
+                            >
+                              {c.difPp == null ? "—" : `${c.difPp >= 0 ? "+" : ""}${c.difPp.toFixed(2)}`}
+                            </td>
+                            <td
+                              className={cn(
+                                "px-2 py-1 text-right font-mono",
+                                (c.difMonto ?? 0) > 0 ? "text-red-600" : (c.difMonto ?? 0) < 0 ? "text-green-600" : "",
+                              )}
+                            >
+                              {c.difMonto == null ? "—" : formatCurrency(c.difMonto)}
+                            </td>
+                            <td className="px-2 py-1 text-right font-mono text-xs">
+                              {c.coberturaPct == null ? (
+                                "—"
+                              ) : (
+                                <span
+                                  className={
+                                    c.coberturaPct < CMV_PRODUCTOS_MIN_COVERAGE
+                                      ? "text-amber-700 dark:text-amber-500"
+                                      : "text-muted-foreground"
+                                  }
+                                >
+                                  {c.coberturaPct.toFixed(0)}%
+                                </span>
+                              )}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                ) : (
+                  <p className="mt-2 text-xs text-muted-foreground">
+                    No hay ningún local con los DOS cálculos de {MONTH_NAMES_ES[month - 1]} {year}, así que no hay
+                    diferencia que medir. Cruzar el CMV de un local contra el CMV Productos de otro daría un número
+                    sin sentido.
+                  </p>
+                )}
+
+                <p className="mt-2 text-xs text-muted-foreground">
+                  La diferencia positiva es consumo que el costeo no explica: merma, desperdicio o faltante. El CMV
+                  Productos no resta en la utilidad de arriba — el costo de mercadería ya lo pone el CMV por stock.
+                </p>
+
+                {/*
+                  Cobertura baja = el CMV Productos está subvaluado por construcción y la diferencia
+                  aparece inflada. Sin este aviso, un 51% de cobertura se lee como una merma enorme.
+                */}
+                {cmvComparison.hasLowCoverage && (
+                  <div className="mt-2 flex items-start gap-2 rounded-md border border-amber-500/40 bg-amber-500/5 p-2 text-xs text-amber-700 dark:text-amber-400">
+                    <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                    <span>
+                      Hay locales con menos del {CMV_PRODUCTOS_MIN_COVERAGE}% de las unidades con costo asignado. Su
+                      CMV Productos está subvaluado y la diferencia sale más grande de lo que es. Completá los costos
+                      en "CMV Productos" antes de leer este desvío.
+                    </span>
+                  </div>
+                )}
+
+                {(cmvComparison.soloReal.length > 0 || cmvComparison.soloTeorico.length > 0) && (
+                  <p className="mt-2 text-xs text-muted-foreground">
+                    Fuera de la comparación:
+                    {cmvComparison.soloReal.length > 0 && (
+                      <> {cmvComparison.soloReal.map(localName).join(", ")} (sin CMV Productos).</>
+                    )}
+                    {cmvComparison.soloTeorico.length > 0 && (
+                      <> {cmvComparison.soloTeorico.map(localName).join(", ")} (sin CMV por stock).</>
+                    )}
+                  </p>
+                )}
+              </div>
+            )}
           </CardContent>
         </Card>
       ) : (
