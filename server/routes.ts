@@ -21,6 +21,12 @@ import {
 } from "./invoiceExtraction";
 import { normalizeItemDescription } from "@shared/invoiceExtraction";
 import { runBankStatementImport } from "./bankStatementImport";
+import {
+  getSupplyPurchases,
+  getSupplyConsumption,
+  getSoldProductMappings,
+  saveProductRecipeMappings,
+} from "./supplyMetricsQueries";
 import { processFinancialImportJobBody } from "./processFinancialImportJob";
 import type {
   InsertBankAccount,
@@ -1212,6 +1218,87 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       });
     } catch (e: any) {
       res.status(500).json({ message: e.message });
+    }
+  });
+
+  // ==========================================
+  // INSUMOS — Compras y Consumo (solapas del módulo)
+  // ==========================================
+
+  /** Filtros comunes a las dos solapas. "all"/vacío significa sin filtrar. */
+  function parseSupplyMetricFilters(q: any) {
+    const num = (raw: unknown) => {
+      if (raw == null || raw === "" || raw === "all") return undefined;
+      const n = parseInt(String(raw), 10);
+      return Number.isFinite(n) ? n : undefined;
+    };
+    return {
+      supplyId: num(q.supplyId),
+      localId: num(q.localId),
+      supplierId: num(q.supplierId),
+      dateFrom: typeof q.dateFrom === "string" && q.dateFrom ? q.dateFrom : undefined,
+      dateTo: typeof q.dateTo === "string" && q.dateTo ? q.dateTo : undefined,
+    };
+  }
+
+  app.get("/api/supplies/purchases", isAuthenticated, async (req, res) => {
+    try {
+      const clientId = await getClientId(req);
+      res.json(await getSupplyPurchases(clientId, parseSupplyMetricFilters(req.query)));
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
+  app.get("/api/supplies/consumption", isAuthenticated, async (req, res) => {
+    try {
+      const clientId = await getClientId(req);
+      const result = await getSupplyConsumption(
+        clientId,
+        (cid, opts) => storage.getSoldProductsByPeriod(cid, opts),
+        { ...parseSupplyMetricFilters(req.query), source: parseProductSource(req.query.source) },
+      );
+      res.json(result);
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
+  /** Cola de mapeo: productos vendidos con su receta actual o la sugerida por parecido. */
+  app.get("/api/supplies/product-mappings", isAuthenticated, async (req, res) => {
+    try {
+      const clientId = await getClientId(req);
+      const f = parseSupplyMetricFilters(req.query);
+      const result = await getSoldProductMappings(
+        clientId,
+        (cid, opts) => storage.getSoldProductsByPeriod(cid, opts),
+        { source: parseProductSource(req.query.source), dateFrom: f.dateFrom, dateTo: f.dateTo, localId: f.localId },
+      );
+      res.json(result);
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
+  app.post("/api/supplies/product-mappings", isAuthenticated, async (req, res) => {
+    try {
+      const clientId = await getClientId(req);
+      const source = parseProductSource(req.body?.source);
+      const rawEntries = Array.isArray(req.body?.entries) ? req.body.entries : [];
+      const entries = rawEntries.map((e: any) => {
+        const rawRecipeId = e?.recipeId;
+        const recipeId =
+          rawRecipeId == null || rawRecipeId === "" || rawRecipeId === "none"
+            ? null
+            : parseInt(String(rawRecipeId), 10);
+        return {
+          productName: String(e?.productName ?? ""),
+          recipeId: Number.isFinite(recipeId as number) ? (recipeId as number) : null,
+        };
+      });
+      res.json(await saveProductRecipeMappings(clientId, source, entries));
+    } catch (e: any) {
+      res.status(400).json({ message: e.message });
     }
   });
 

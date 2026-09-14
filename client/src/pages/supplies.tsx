@@ -32,7 +32,11 @@ import { formatCurrency, formatDate } from "@/lib/formatters";
 import { Edit, Trash2, Package, Upload, Download, Users, Building2, Eye, ExternalLink } from "lucide-react";
 import { Link } from "wouter";
 import { SupplyUsageDialog } from "@/components/catalog-usage-dialog";
-import type { Supply, Rubro, SubRubro, UnitOfMeasure, Supplier, SupplySupplier } from "@shared/schema";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { usePersistentFilter } from "@/hooks/usePersistentFilter";
+import { SupplyPurchasesTab } from "@/components/supply-purchases-tab";
+import { SupplyConsumptionTab } from "@/components/supply-consumption-tab";
+import type { Supply, Rubro, SubRubro, UnitOfMeasure, Supplier, SupplySupplier, Local } from "@shared/schema";
 
 interface SubRubroWithRubro extends SubRubro {
   rubro?: Rubro | null;
@@ -89,6 +93,13 @@ export default function SuppliesPage() {
   const { data: suppliers = [] } = useQuery<Supplier[]>({
     queryKey: ["/api/suppliers"],
   });
+
+  const { data: locals = [] } = useQuery<Local[]>({
+    queryKey: ["/api/locals"],
+  });
+
+  // Solapa activa: se conserva al ir y volver dentro del módulo, como el resto de los filtros.
+  const [activeTab, setActiveTab] = usePersistentFilter<string>("insumos.tab", "catalogo");
 
   const supplySubRubroComboOptions = useMemo(() => {
     const opts: { value: string; label: string }[] = [];
@@ -562,18 +573,20 @@ export default function SuppliesPage() {
     <div className="space-y-6">
       <PageHeader
         title="Insumos"
-        description="Gestiona los insumos y materias primas"
+        description="Catálogo de insumos, y qué se compró y qué se consumió de cada uno"
         actions={
-          <div className="flex gap-2">
-            <Button variant="outline" onClick={handleExport} data-testid="button-export">
-              <Download className="h-4 w-4 mr-2" />
-              Exportar
-            </Button>
-            <Button variant="outline" onClick={() => setIsImportDialogOpen(true)} data-testid="button-import">
-              <Upload className="h-4 w-4 mr-2" />
-              Importar
-            </Button>
-          </div>
+          activeTab === "catalogo" ? (
+            <div className="flex gap-2">
+              <Button variant="outline" onClick={handleExport} data-testid="button-export">
+                <Download className="h-4 w-4 mr-2" />
+                Exportar
+              </Button>
+              <Button variant="outline" onClick={() => setIsImportDialogOpen(true)} data-testid="button-import">
+                <Upload className="h-4 w-4 mr-2" />
+                Importar
+              </Button>
+            </div>
+          ) : undefined
         }
       />
 
@@ -585,6 +598,28 @@ export default function SuppliesPage() {
         supplyId={usageSupplyId}
       />
 
+      <Tabs value={activeTab} onValueChange={setActiveTab}>
+        <TabsList>
+          <TabsTrigger value="catalogo" data-testid="tab-catalogo">
+            Insumos
+          </TabsTrigger>
+          <TabsTrigger value="compras" data-testid="tab-compras">
+            Compras
+          </TabsTrigger>
+          <TabsTrigger value="consumo" data-testid="tab-consumo">
+            Consumo
+          </TabsTrigger>
+        </TabsList>
+
+        <TabsContent value="compras" className="mt-4">
+          <SupplyPurchasesTab supplies={supplies} locals={locals} suppliers={suppliers} />
+        </TabsContent>
+
+        <TabsContent value="consumo" className="mt-4">
+          <SupplyConsumptionTab supplies={supplies} locals={locals} suppliers={suppliers} />
+        </TabsContent>
+
+        <TabsContent value="catalogo" className="mt-4">
       <DataTable
         columns={columns}
         data={supplies}
@@ -620,6 +655,8 @@ export default function SuppliesPage() {
         addLabel="Nuevo Insumo"
         emptyMessage="No hay insumos registrados. Los costos se actualizan automaticamente al cargar facturas."
       />
+        </TabsContent>
+      </Tabs>
 
       <Dialog open={isDialogOpen} onOpenChange={setIsDialogOpen}>
         <DialogContent className="max-w-lg">
