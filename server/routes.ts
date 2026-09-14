@@ -27,6 +27,7 @@ import {
   getSoldProductMappings,
   saveProductRecipeMappings,
 } from "./supplyMetricsQueries";
+import { listDeviationPeriods, computeDeviation, computeDeviationOverview } from "./deviationQueries";
 import { processFinancialImportJobBody } from "./processFinancialImportJob";
 import type {
   InsertBankAccount,
@@ -1218,6 +1219,64 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       });
     } catch (e: any) {
       res.status(500).json({ message: e.message });
+    }
+  });
+
+  // ==========================================
+  // DESVÍO DE MERCADERÍA
+  // ==========================================
+
+  /** Períodos medibles: pares de inventarios consecutivos del mismo local. */
+  app.get("/api/deviation/periods", isAuthenticated, async (req, res) => {
+    try {
+      const clientId = await getClientId(req);
+      const raw = req.query.localId;
+      const localId = raw != null && raw !== "" && raw !== "all" ? parseInt(String(raw), 10) : undefined;
+      res.json(await listDeviationPeriods(clientId, Number.isFinite(localId as number) ? localId : undefined));
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
+  /** Panorama global: el último período cerrado de cada local, para compararlos. */
+  app.get("/api/deviation/overview", isAuthenticated, async (req, res) => {
+    try {
+      const clientId = await getClientId(req);
+      const toleranceRaw = Number(req.query.tolerancePct);
+      const rows = await computeDeviationOverview(
+        clientId,
+        (cid, opts) => storage.getSoldProductsByPeriod(cid, opts),
+        {
+          source: parseProductSource(req.query.source),
+          tolerancePct: Number.isFinite(toleranceRaw) ? toleranceRaw : 0,
+        },
+      );
+      res.json(rows);
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
+  app.get("/api/deviation", isAuthenticated, async (req, res) => {
+    try {
+      const clientId = await getClientId(req);
+      const localId = parseInt(String(req.query.localId ?? ""), 10);
+      const openingValuationId = parseInt(String(req.query.openingValuationId ?? ""), 10);
+      const closingValuationId = parseInt(String(req.query.closingValuationId ?? ""), 10);
+      if (!Number.isFinite(localId) || !Number.isFinite(openingValuationId) || !Number.isFinite(closingValuationId)) {
+        return res.status(400).json({ message: "Faltan el local y los dos inventarios del período" });
+      }
+      const toleranceRaw = Number(req.query.tolerancePct);
+      const result = await computeDeviation(clientId, (cid, opts) => storage.getSoldProductsByPeriod(cid, opts), {
+        localId,
+        openingValuationId,
+        closingValuationId,
+        source: parseProductSource(req.query.source),
+        tolerancePct: Number.isFinite(toleranceRaw) ? toleranceRaw : 0,
+      });
+      res.json(result);
+    } catch (e: any) {
+      res.status(400).json({ message: e.message });
     }
   });
 
@@ -4035,10 +4094,19 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
           quantity: z.coerce.number(),
           unitOfMeasureId: z.coerce.number().int().positive().nullable().optional(),
           replacementUnitCost: z.coerce.number().nullable().optional(),
-        })).min(1, "Cargá al menos un insumo con cantidad"),
+        })).default([]),
+        // Sub-recetas contadas. Un inventario puede tener sólo insumos, sólo sub-recetas o ambos.
+        subRecipeItems: z.array(z.object({
+          subRecipeId: z.coerce.number().int().positive(),
+          quantity: z.coerce.number(),
+          replacementUnitCost: z.coerce.number().nullable().optional(),
+        })).default([]),
       });
       const parsed = bodySchema.safeParse(req.body);
       if (!parsed.success) return res.status(400).json({ message: "Datos inválidos", errors: parsed.error.flatten() });
+      if (parsed.data.items.length === 0 && parsed.data.subRecipeItems.length === 0) {
+        return res.status(400).json({ message: "Cargá al menos un insumo o una sub-receta con cantidad" });
+      }
       const created = await storage.createStockValuation({
         clientId,
         localId: parsed.data.localId ?? null,
@@ -4046,6 +4114,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         notes: parsed.data.notes ?? null,
         createdBy: actorId,
         items: parsed.data.items,
+        subRecipeItems: parsed.data.subRecipeItems,
       });
       res.json(created);
     } catch (e: any) {
@@ -4078,15 +4147,23 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
           supplyId: z.coerce.number().int().positive(),
           quantity: z.coerce.number(),
           unitOfMeasureId: z.coerce.number().int().positive().nullable().optional(),
-        })).min(1, "Cargá al menos un insumo con cantidad"),
+        })).default([]),
+        subRecipeItems: z.array(z.object({
+          subRecipeId: z.coerce.number().int().positive(),
+          quantity: z.coerce.number(),
+        })).default([]),
       });
       const parsed = bodySchema.safeParse(req.body);
       if (!parsed.success) return res.status(400).json({ message: "Datos inválidos", errors: parsed.error.flatten() });
+      if (parsed.data.items.length === 0 && parsed.data.subRecipeItems.length === 0) {
+        return res.status(400).json({ message: "Cargá al menos un insumo o una sub-receta con cantidad" });
+      }
       const result = await storage.updateStockValuation(clientId, id, {
         localId: parsed.data.localId ?? null,
         valuationDate: parsed.data.valuationDate,
         notes: parsed.data.notes ?? null,
         items: parsed.data.items,
+        subRecipeItems: parsed.data.subRecipeItems,
       });
       res.json(result);
     } catch (e: any) {

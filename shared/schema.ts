@@ -1284,6 +1284,31 @@ export type InsertStockValuationItem = z.infer<typeof insertStockValuationItemSc
 export type StockValuationItem = typeof stockValuationItems.$inferSelect;
 
 // ==========================================
+// STOCK VALUATION SUB-RECIPE ITEMS (sub-recetas contadas en el inventario)
+//
+// Tabla HERMANA de stock_valuation_items, no una columna nueva ahí: esa tabla exige supply_id
+// NOT NULL y en SQLite aflojar esa restricción obliga a recrearla con todas sus filas. Esto es
+// puramente aditivo (ver memoria de producción).
+//
+// Lo contado acá se EXPLOTA a insumos para la ecuación de desvío, así que no hay doble conteo
+// con los insumos que componen la sub-receta.
+// ==========================================
+export const stockValuationSubRecipeItems = pgTable("stock_valuation_sub_recipe_items", {
+  id: serial("id").primaryKey(),
+  valuationId: integer("valuation_id").notNull().references(() => stockValuations.id, { onDelete: "cascade" }),
+  subRecipeId: integer("sub_recipe_id").notNull().references(() => recipes.id),
+  /** Cantidad contada, en la unidad de rendimiento de la sub-receta (`recipes.yieldUnit`). */
+  quantity: decimal("quantity", { precision: 14, scale: 4 }).notNull(),
+  /** Costo de UNA unidad de rendimiento al momento de contar (snapshot, igual que los insumos). */
+  replacementUnitCost: decimal("replacement_unit_cost", { precision: 14, scale: 4 }).default("0"),
+  lineTotal: decimal("line_total", { precision: 14, scale: 2 }).default("0"),
+});
+
+export const insertStockValuationSubRecipeItemSchema = createInsertSchema(stockValuationSubRecipeItems).omit({ id: true });
+export type InsertStockValuationSubRecipeItem = z.infer<typeof insertStockValuationSubRecipeItemSchema>;
+export type StockValuationSubRecipeItem = typeof stockValuationSubRecipeItems.$inferSelect;
+
+// ==========================================
 // BREAKEVEN (Punto de Equilibrio - ROADMAP_BETA Fase 8)
 // PE = costos fijos / (precio venta sin IVA − costo variable sin IVA)
 // ==========================================

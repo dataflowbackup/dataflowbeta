@@ -40,6 +40,7 @@ export const MODULE_ROUTES: Record<string, string[]> = {
     "/cmc",
     "/pap",
     "/valorizar-stock",
+    "/desvio-mercaderia",
     "/cmv",
     "/cmv-productos",
     "/punto-equilibrio",

@@ -7,6 +7,7 @@ import {
   type SalesSourcePreferences,
 } from "@shared/salesSources";
 import { computeRecipeMetrics, recipeGrossPrice, recipeRemovesIva } from "@shared/recipePricing";
+import { subRecipeUnitCost } from "@shared/supplyMetrics";
 import { db } from "./db";
 import { eq, and, desc, asc, gte, lte, sql, isNull, isNotNull, inArray, or, lt } from "drizzle-orm";
 import {
@@ -56,6 +57,7 @@ import {
   stockAdjustments,
   stockValuations,
   stockValuationItems,
+  stockValuationSubRecipeItems,
   breakevenAnalyses,
   breakevenFixedCosts,
   breakevenVariableCosts,
@@ -4580,7 +4582,64 @@ export class DatabaseStorage implements IStorage {
       supplyName: it.supplyId != null ? (supplyName.get(it.supplyId) ?? null) : null,
       unitName: it.unitOfMeasureId != null ? (unitName.get(it.unitOfMeasureId) ?? null) : null,
     }));
-    return { valuation, items };
+
+    // Sub-recetas contadas (tabla hermana). Viajan aparte para no confundirse con los insumos.
+    const rawSubItems = await db
+      .select()
+      .from(stockValuationSubRecipeItems)
+      .where(eq(stockValuationSubRecipeItems.valuationId, id));
+    const recipeRows = await db
+      .select({ id: recipes.id, name: recipes.name, yieldUnit: recipes.yieldUnit })
+      .from(recipes)
+      .where(eq(recipes.clientId, clientId));
+    const recipeInfo = new Map(recipeRows.map((r) => [r.id, r]));
+    const subRecipeItems = rawSubItems.map((it) => ({
+      ...it,
+      subRecipeName: recipeInfo.get(it.subRecipeId)?.name ?? null,
+      yieldUnit: recipeInfo.get(it.subRecipeId)?.yieldUnit ?? null,
+    }));
+
+    return { valuation, items, subRecipeItems };
+  }
+
+  /** Costo por unidad de rendimiento de cada sub-receta del cliente, con la regla del costeo. */
+  private async getSubRecipeUnitCosts(clientId: number): Promise<Map<number, number>> {
+    const rows = await db
+      .select({ id: recipes.id, totalCost: recipes.totalCost, usefulYield: recipes.usefulYield })
+      .from(recipes)
+      .where(eq(recipes.clientId, clientId));
+    const out = new Map<number, number>();
+    for (const r of rows) {
+      const total = parseFloat(String(r.totalCost ?? 0)) || 0;
+      const y = r.usefulYield != null ? parseFloat(String(r.usefulYield)) : null;
+      out.set(r.id, subRecipeUnitCost(total, y));
+    }
+    return out;
+  }
+
+  /** Prepara las líneas de sub-receta de un inventario. `frozenCost` conserva el costo al editar. */
+  private async prepareSubRecipeItems(
+    clientId: number,
+    items: Array<{ subRecipeId: number; quantity: number; replacementUnitCost?: number | null }> | undefined,
+    frozenCost?: Map<number, number>,
+  ): Promise<Array<{ subRecipeId: number; quantity: number; replacementUnitCost: number; lineTotal: number }>> {
+    if (!items || items.length === 0) return [];
+    const unitCosts = await this.getSubRecipeUnitCosts(clientId);
+    return items
+      .filter((it) => it.subRecipeId != null && Number(it.quantity) > 0)
+      .map((it) => {
+        const cost =
+          it.replacementUnitCost != null
+            ? Number(it.replacementUnitCost)
+            : frozenCost?.get(it.subRecipeId) ?? unitCosts.get(it.subRecipeId) ?? 0;
+        const qty = Number(it.quantity) || 0;
+        return {
+          subRecipeId: it.subRecipeId,
+          quantity: qty,
+          replacementUnitCost: cost,
+          lineTotal: Math.round(qty * cost * 100) / 100,
+        };
+      });
   }
 
   async createStockValuation(input: {
@@ -4590,6 +4649,7 @@ export class DatabaseStorage implements IStorage {
     notes?: string | null;
     createdBy?: string | null;
     items: Array<{ supplyId: number; quantity: number; unitOfMeasureId?: number | null; replacementUnitCost?: number | null }>;
+    subRecipeItems?: Array<{ subRecipeId: number; quantity: number; replacementUnitCost?: number | null }>;
   }): Promise<StockValuation> {
     // Costo de reposición = última compra (supplies.lastCost) si no se provee explícito.
     const supplyRows = await db
@@ -4609,7 +4669,12 @@ export class DatabaseStorage implements IStorage {
         return { supplyId: it.supplyId, unitOfMeasureId: uom, quantity: qty, replacementUnitCost: cost, lineTotal };
       });
 
-    const totalValued = Math.round(prepared.reduce((a, it) => a + it.lineTotal, 0) * 100) / 100;
+    const preparedSub = await this.prepareSubRecipeItems(input.clientId, input.subRecipeItems);
+
+    const totalValued =
+      Math.round(
+        (prepared.reduce((a, it) => a + it.lineTotal, 0) + preparedSub.reduce((a, it) => a + it.lineTotal, 0)) * 100,
+      ) / 100;
 
     const [created] = await db.insert(stockValuations).values({
       clientId: input.clientId,
@@ -4633,6 +4698,17 @@ export class DatabaseStorage implements IStorage {
         })) as any,
       );
     }
+    if (preparedSub.length > 0) {
+      await db.insert(stockValuationSubRecipeItems).values(
+        preparedSub.map((it) => ({
+          valuationId: created.id,
+          subRecipeId: it.subRecipeId,
+          quantity: String(it.quantity),
+          replacementUnitCost: String(it.replacementUnitCost),
+          lineTotal: String(it.lineTotal),
+        })) as any,
+      );
+    }
     return created;
   }
 
@@ -4644,6 +4720,7 @@ export class DatabaseStorage implements IStorage {
       valuationDate: string;
       notes?: string | null;
       items: Array<{ supplyId: number; quantity: number; unitOfMeasureId?: number | null }>;
+      subRecipeItems?: Array<{ subRecipeId: number; quantity: number }>;
     },
   ): Promise<{ valuation: StockValuation; recalculatedCmvIds: number[]; failedCmvIds: number[] }> {
     const [existing] = await db.select().from(stockValuations)
@@ -4675,7 +4752,20 @@ export class DatabaseStorage implements IStorage {
         return { supplyId: it.supplyId, unitOfMeasureId: uom, quantity: qty, replacementUnitCost: cost, lineTotal };
       });
 
-    const totalValued = Math.round(prepared.reduce((a, it) => a + it.lineTotal, 0) * 100) / 100;
+    // Mismo criterio que los insumos: la sub-receta ya contada conserva su costo congelado.
+    const prevSubItems = await db
+      .select()
+      .from(stockValuationSubRecipeItems)
+      .where(eq(stockValuationSubRecipeItems.valuationId, id));
+    const prevSubCost = new Map(
+      prevSubItems.map((it) => [it.subRecipeId, parseFloat(String(it.replacementUnitCost ?? 0)) || 0]),
+    );
+    const preparedSub = await this.prepareSubRecipeItems(clientId, input.subRecipeItems, prevSubCost);
+
+    const totalValued =
+      Math.round(
+        (prepared.reduce((a, it) => a + it.lineTotal, 0) + preparedSub.reduce((a, it) => a + it.lineTotal, 0)) * 100,
+      ) / 100;
 
     const [updated] = await db.update(stockValuations).set({
       localId: input.localId ?? null,
@@ -4691,6 +4781,19 @@ export class DatabaseStorage implements IStorage {
           valuationId: id,
           supplyId: it.supplyId,
           unitOfMeasureId: it.unitOfMeasureId,
+          quantity: String(it.quantity),
+          replacementUnitCost: String(it.replacementUnitCost),
+          lineTotal: String(it.lineTotal),
+        })) as any,
+      );
+    }
+
+    await db.delete(stockValuationSubRecipeItems).where(eq(stockValuationSubRecipeItems.valuationId, id));
+    if (preparedSub.length > 0) {
+      await db.insert(stockValuationSubRecipeItems).values(
+        preparedSub.map((it) => ({
+          valuationId: id,
+          subRecipeId: it.subRecipeId,
           quantity: String(it.quantity),
           replacementUnitCost: String(it.replacementUnitCost),
           lineTotal: String(it.lineTotal),

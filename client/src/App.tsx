@@ -45,6 +45,7 @@ import EconomicBalancePage from "@/pages/economic-balance";
 import CmcPage from "@/pages/cmc";
 import PapPage from "@/pages/pap";
 import StockValuationPage from "@/pages/stock-valuation";
+import DeviationPage from "@/pages/deviation";
 import CmvPage from "@/pages/cmv";
 import CmvProductosPage from "@/pages/cmv-productos";
 import BreakevenPage from "@/pages/breakeven";
@@ -116,6 +117,7 @@ function AppRouter() {
       <Route path="/cmc" component={CmcPage} />
       <Route path="/pap" component={PapPage} />
       <Route path="/valorizar-stock" component={StockValuationPage} />
+      <Route path="/desvio-mercaderia" component={DeviationPage} />
       <Route path="/cmv" component={CmvPage} />
       <Route path="/cmv-productos" component={CmvProductosPage} />
       <Route path="/punto-equilibrio" component={BreakevenPage} />

@@ -13,7 +13,8 @@ import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { formatCurrency } from "@/lib/formatters";
 import { Download, Upload, Save, Package, RotateCcw, Pencil, X, AlertTriangle } from "lucide-react";
-import type { Supply, Local, UnitOfMeasure } from "@shared/schema";
+import { subRecipeUnitCost } from "@shared/supplyMetrics";
+import type { Supply, Local, UnitOfMeasure, Recipe } from "@shared/schema";
 
 interface StockValuationRow {
   id: number;
@@ -46,11 +47,17 @@ export default function StockValuationPage() {
   // Costos congelados de la valorización que se está editando: corregir cantidades no debe
   // re-precificar con los costos de hoy. Espeja la regla del server.
   const [costOverride, setCostOverride] = useState<Record<number, number>>({});
+  // Sub-recetas contadas. Van por separado de los insumos: se guardan en su propia tabla y en el
+  // desvio se explotan a insumos, asi que contar el demiglace no duplica su caldo y su manteca.
+  const [subQty, setSubQty] = useState<Record<number, string>>({});
+  const [subCostOverride, setSubCostOverride] = useState<Record<number, number>>({});
+  const [subSearch, setSubSearch] = useState("");
 
   const { data: supplies = [] } = useQuery<Supply[]>({ queryKey: ["/api/supplies"] });
   const { data: locals = [] } = useQuery<Local[]>({ queryKey: ["/api/locals"] });
   const { data: units = [] } = useQuery<UnitOfMeasure[]>({ queryKey: ["/api/units"] });
   const { data: valuations = [] } = useQuery<StockValuationRow[]>({ queryKey: ["/api/finance/stock-valuations"] });
+  const { data: recipes = [] } = useQuery<Recipe[]>({ queryKey: ["/api/recipes"] });
 
   // CMV guardados que usan la valorización en edición: se recalculan al guardar.
   const { data: cmvUsage = [] } = useQuery<CmvUsageRow[]>({
@@ -72,20 +79,55 @@ export default function StockValuationPage() {
 
   const cost = (s: Supply) => costOverride[s.id] ?? (parseFloat(String(s.lastCost ?? 0)) || 0);
 
+  const subRecipes = useMemo(
+    () => recipes.filter((r) => r.recipeType === "sub" && r.active !== false),
+    [recipes],
+  );
+
+  /** Costo de UNA unidad de rendimiento; misma regla que el costeo (sin rendimiento, entera). */
+  const subCost = (r: Recipe) =>
+    subCostOverride[r.id] ??
+    subRecipeUnitCost(
+      parseFloat(String(r.totalCost ?? 0)) || 0,
+      r.usefulYield != null ? parseFloat(String(r.usefulYield)) : null,
+    );
+
+  const filteredSubs = useMemo(() => {
+    const q = subSearch.trim().toLowerCase();
+    if (!q) return subRecipes;
+    return subRecipes.filter((r) => r.name.toLowerCase().includes(q));
+  }, [subRecipes, subSearch]);
+
+  const subTotal = useMemo(
+    () =>
+      subRecipes.reduce((acc, r) => {
+        const n = parseFloat(subQty[r.id] ?? "");
+        return acc + (Number.isFinite(n) && n > 0 ? n * subCost(r) : 0);
+      }, 0),
+    [subRecipes, subQty, subCostOverride],
+  );
+
+  const subFilledCount = useMemo(
+    () => Object.values(subQty).filter((v) => parseFloat(v) > 0).length,
+    [subQty],
+  );
+
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
     if (!q) return supplies;
     return supplies.filter((s) => s.name.toLowerCase().includes(q));
   }, [supplies, search]);
 
-  const total = useMemo(
+  const suppliesTotal = useMemo(
     () =>
       supplies.reduce((acc, s) => {
         const n = parseFloat(qty[s.id] ?? "");
         return acc + (Number.isFinite(n) && n > 0 ? n * cost(s) : 0);
       }, 0),
-    [supplies, qty],
+    [supplies, qty, costOverride],
   );
+
+  const total = suppliesTotal + subTotal;
 
   const filledCount = useMemo(
     () => Object.values(qty).filter((v) => parseFloat(v) > 0).length,
@@ -139,6 +181,9 @@ export default function StockValuationPage() {
     setEditingId(null);
     setCostOverride({});
     setQty({});
+    setSubQty({});
+    setSubCostOverride({});
+    setSubSearch("");
     setValuationDate(today());
     setLocalId("all");
     setSearch("");
@@ -154,8 +199,17 @@ export default function StockValuationPage() {
         nextQty[it.supplyId] = String(parseFloat(String(it.quantity)) || 0);
         nextCost[it.supplyId] = parseFloat(String(it.replacementUnitCost ?? 0)) || 0;
       }
+      const nextSubQty: Record<number, string> = {};
+      const nextSubCost: Record<number, number> = {};
+      for (const it of data.subRecipeItems ?? []) {
+        nextSubQty[it.subRecipeId] = String(parseFloat(String(it.quantity)) || 0);
+        nextSubCost[it.subRecipeId] = parseFloat(String(it.replacementUnitCost ?? 0)) || 0;
+      }
       setQty(nextQty);
       setCostOverride(nextCost);
+      setSubQty(nextSubQty);
+      setSubCostOverride(nextSubCost);
+      setSubSearch("");
       setValuationDate(String(data.valuation.valuationDate));
       setLocalId(data.valuation.localId != null ? String(data.valuation.localId) : "all");
       setSearch("");
@@ -171,11 +225,17 @@ export default function StockValuationPage() {
       const items = supplies
         .map((s) => ({ supplyId: s.id, quantity: parseFloat(qty[s.id] ?? "") }))
         .filter((it) => Number.isFinite(it.quantity) && it.quantity > 0);
-      if (items.length === 0) throw new Error("Cargá al menos un insumo con cantidad");
+      const subRecipeItems = subRecipes
+        .map((r) => ({ subRecipeId: r.id, quantity: parseFloat(subQty[r.id] ?? "") }))
+        .filter((it) => Number.isFinite(it.quantity) && it.quantity > 0);
+      if (items.length === 0 && subRecipeItems.length === 0) {
+        throw new Error("Cargá al menos un insumo o una sub-receta con cantidad");
+      }
       const body = {
         valuationDate,
         localId: localId === "all" ? null : parseInt(localId, 10),
         items,
+        subRecipeItems,
       };
       const res = editingId != null
         ? await apiRequest("PUT", `/api/finance/stock-valuations/${editingId}`, body)
@@ -325,8 +385,73 @@ export default function StockValuationPage() {
             </table>
           </div>
 
+          {subRecipes.length > 0 && (
+            <div className="space-y-2 pt-2">
+              <div className="flex items-center justify-between gap-2 flex-wrap">
+                <div>
+                  <h3 className="text-sm font-medium">Sub-recetas</h3>
+                  <p className="text-xs text-muted-foreground">
+                    Lo elaborado que tenés en cámara. En el desvío se convierte a sus insumos, así que
+                    contarlo acá no duplica los ingredientes que lo componen.
+                  </p>
+                </div>
+                <Input
+                  placeholder="Buscar sub-receta…"
+                  value={subSearch}
+                  onChange={(e) => setSubSearch(e.target.value)}
+                  className="max-w-xs"
+                  data-testid="input-search-sub"
+                />
+              </div>
+
+              <div className="rounded-md border max-h-[320px] overflow-y-auto">
+                <table className="w-full text-sm">
+                  <thead className="sticky top-0 bg-muted/80 backdrop-blur">
+                    <tr>
+                      <th className="text-left px-3 py-2 font-medium">Sub-receta</th>
+                      <th className="text-left px-3 py-2 font-medium">Unidad</th>
+                      <th className="text-right px-3 py-2 font-medium">Costo rep.</th>
+                      <th className="text-right px-3 py-2 font-medium w-28">Cantidad</th>
+                      <th className="text-right px-3 py-2 font-medium">Subtotal</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {filteredSubs.map((r) => {
+                      const n = parseFloat(subQty[r.id] ?? "");
+                      const sub = Number.isFinite(n) && n > 0 ? n * subCost(r) : 0;
+                      return (
+                        <tr key={r.id} className="border-b">
+                          <td className="px-3 py-1.5">{r.name}</td>
+                          <td className="px-3 py-1.5 text-muted-foreground">{r.yieldUnit || "—"}</td>
+                          <td className="px-3 py-1.5 text-right font-mono text-muted-foreground">
+                            {formatCurrency(subCost(r))}
+                          </td>
+                          <td className="px-3 py-1.5">
+                            <Input
+                              type="number"
+                              min={0}
+                              step="any"
+                              value={subQty[r.id] ?? ""}
+                              onChange={(e) => setSubQty((p) => ({ ...p, [r.id]: e.target.value }))}
+                              className="h-7 text-right"
+                              data-testid={`sub-qty-${r.id}`}
+                            />
+                          </td>
+                          <td className="px-3 py-1.5 text-right font-mono">{sub > 0 ? formatCurrency(sub) : "—"}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+
           <div className="flex items-center justify-between">
-            <div className="text-sm text-muted-foreground">{filledCount} insumos cargados</div>
+            <div className="text-sm text-muted-foreground">
+              {filledCount} insumos cargados
+              {subFilledCount > 0 && ` · ${subFilledCount} sub-recetas`}
+            </div>
             <div className="flex items-center gap-4">
               <div className="text-lg font-bold font-mono" data-testid="text-total">Total: {formatCurrency(total)}</div>
               <Button onClick={() => saveMutation.mutate()} disabled={saveMutation.isPending || filledCount === 0} data-testid="button-save">

@@ -34,6 +34,15 @@ export function subRecipeScale(quantityTotal: number, usefulYield: number | null
 }
 
 /**
+ * Costo de UNA unidad de rendimiento de una sub-receta. Misma regla que el costeo: sin
+ * rendimiento cargado, la sub-receta entera cuenta como una unidad.
+ */
+export function subRecipeUnitCost(totalCost: number, usefulYield: number | null | undefined): number {
+  const y = Number(usefulYield ?? 0);
+  return y > 0 ? totalCost / y : totalCost;
+}
+
+/**
  * Explota cada receta hasta sus insumos, resolviendo sub-recetas en cascada.
  *
  * Devuelve, por receta, cuánto de cada insumo consume UNA unidad vendida. Las recetas que se
