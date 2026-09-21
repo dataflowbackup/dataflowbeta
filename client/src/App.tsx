@@ -48,6 +48,7 @@ import StockValuationPage from "@/pages/stock-valuation";
 import DeviationPage from "@/pages/deviation";
 import CmvPage from "@/pages/cmv";
 import CmvProductosPage from "@/pages/cmv-productos";
+import ProductosVendidosPage from "@/pages/productos-vendidos";
 import BreakevenPage from "@/pages/breakeven";
 import DataliveVentasPage from "@/pages/datalive-ventas";
 import DecomisosPage from "@/pages/decomisos";
@@ -120,6 +121,7 @@ function AppRouter() {
       <Route path="/desvio-mercaderia" component={DeviationPage} />
       <Route path="/cmv" component={CmvPage} />
       <Route path="/cmv-productos" component={CmvProductosPage} />
+      <Route path="/productos-vendidos" component={ProductosVendidosPage} />
       <Route path="/punto-equilibrio" component={BreakevenPage} />
       <Route path="/ventas-datalive" component={DataliveVentasPage} />
       <Route path="/decomisos" component={DecomisosPage} />

@@ -5406,6 +5406,341 @@ export class DatabaseStorage implements IStorage {
     };
   }
 
+  // ==========================================
+  // PRODUCTOS VENDIDOS (Financiero) — ranking por unidades, con CMV y margen por producto
+  // ==========================================
+
+  /**
+   * Filas de productos vendidos CON el local y la fecha. `getSoldProductsByPeriod` ya agrega por
+   * producto y pierde los dos datos; acá hacen falta enteros para abrir el ranking por local y
+   * para contar los días con venta (sin eso, comparar una semana de 6 días contra una de 7 miente).
+   */
+  private async getSoldProductRows(
+    clientId: number,
+    opts: { source: "fudo" | "datalive" | "shares"; dateFrom?: string; dateTo?: string; localIds?: number[] },
+  ): Promise<Array<{ producto: string; categoria: string | null; localId: number; fecha: string; cantidad: number }>> {
+    if (opts.source === "fudo") {
+      const conds = [eq(fudoProductos.clientId, clientId)];
+      if (opts.dateFrom) conds.push(gte(fudoProductos.fecha, opts.dateFrom));
+      if (opts.dateTo) conds.push(lte(fudoProductos.fecha, opts.dateTo));
+      if (opts.localIds && opts.localIds.length > 0) conds.push(inArray(fudoProductos.localId, opts.localIds));
+      const rows = await db.select({
+        producto: fudoProductos.producto,
+        categoria: fudoProductos.categoria,
+        localId: fudoProductos.localId,
+        fecha: fudoProductos.fecha,
+        cantidad: fudoProductos.cantidad,
+      }).from(fudoProductos).where(and(...conds));
+      return rows.map((r) => ({ ...r, categoria: r.categoria ?? null, fecha: String(r.fecha), cantidad: r.cantidad ?? 0 }));
+    }
+    if (opts.source === "shares") {
+      const conds = [eq(sharesProductos.clientId, clientId)];
+      if (opts.dateFrom) conds.push(gte(sharesProductos.fecha, opts.dateFrom));
+      if (opts.dateTo) conds.push(lte(sharesProductos.fecha, opts.dateTo));
+      if (opts.localIds && opts.localIds.length > 0) conds.push(inArray(sharesProductos.localId, opts.localIds));
+      const rows = await db.select({
+        producto: sharesProductos.producto,
+        categoria: sharesProductos.categoria,
+        localId: sharesProductos.localId,
+        fecha: sharesProductos.fecha,
+        cantidad: sharesProductos.cantidad,
+      }).from(sharesProductos).where(and(...conds));
+      return rows.map((r) => ({ ...r, categoria: r.categoria ?? null, fecha: String(r.fecha), cantidad: r.cantidad ?? 0 }));
+    }
+    // Datalive importa por período (desde/hasta): solo entran los que caen enteros en el rango.
+    const conds = [eq(dataliveProductos.clientId, clientId)];
+    if (opts.dateFrom) conds.push(gte(dataliveProductos.fechaDesde, opts.dateFrom));
+    if (opts.dateTo) conds.push(lte(dataliveProductos.fechaHasta, opts.dateTo));
+    if (opts.localIds && opts.localIds.length > 0) conds.push(inArray(dataliveProductos.localId, opts.localIds));
+    const rows = await db.select({
+      producto: dataliveProductos.producto,
+      localId: dataliveProductos.localId,
+      fecha: dataliveProductos.fechaDesde,
+      cantidad: dataliveProductos.cantidad,
+    }).from(dataliveProductos).where(and(...conds));
+    // Datalive no guarda categoría: el corte por categoría solo existe en FUDO y Shares.
+    return rows.map((r) => ({ ...r, categoria: null, fecha: String(r.fecha), cantidad: r.cantidad ?? 0 }));
+  }
+
+  /**
+   * Clave de agrupación de un producto. Los reportes traen la misma cosa escrita de varias formas
+   * ("EMPANADA" y "Empanada" conviven en Datalive); sin normalizar, el ranking se parte en filas
+   * duplicadas. Une mayúsculas/minúsculas, acentos y espacios de más — nada más que eso.
+   */
+  private productKey(name: string): string {
+    return String(name ?? "")
+      .trim()
+      .replace(/\s+/g, " ")
+      .toLowerCase()
+      .normalize("NFD")
+      .replace(/[̀-ͯ]/g, "");
+  }
+
+  /** Corrimiento de días sobre una fecha "YYYY-MM-DD", en UTC, sin depender de la zona local. */
+  private shiftDay(date: string, days: number): string {
+    const d = new Date(`${String(date).slice(0, 10)}T00:00:00Z`);
+    d.setUTCDate(d.getUTCDate() + days);
+    return d.toISOString().slice(0, 10);
+  }
+
+  /**
+   * Con qué período se compara. Dos criterios, porque "el mes anterior" no es "los 31 días de antes":
+   *  - Si el rango arranca el día 1, se compara contra el MISMO tramo del mes calendario anterior
+   *    (julio → junio; y "1 al 21 de septiembre" → "1 al 21 de agosto"), recortado al último día si
+   *    ese mes es más corto. Es lo que espera cualquiera que elige "mes anterior".
+   *  - En cualquier otro rango (una semana, un fin de semana largo, un rango suelto), la ventana de
+   *    igual cantidad de días inmediatamente anterior.
+   * Los dos casos devuelven además sus propios días, porque comparar 31 contra 28 sin decirlo miente.
+   */
+  private previousPeriod(dateFrom: string, dateTo: string, days: number): { from: string; to: string; days: number } {
+    const [y, m, d] = dateFrom.slice(0, 10).split("-").map((n) => parseInt(n, 10));
+    if (d === 1) {
+      const prevYear = m === 1 ? y - 1 : y;
+      const prevMonth = m === 1 ? 12 : m - 1;
+      // Día 0 del mes siguiente = último día del mes: sirve para recortar febrero.
+      const lastDayPrev = new Date(Date.UTC(prevYear, prevMonth, 0)).getUTCDate();
+      const from = `${prevYear}-${String(prevMonth).padStart(2, "0")}-01`;
+      const toDay = Math.min(days, lastDayPrev);
+      const to = `${prevYear}-${String(prevMonth).padStart(2, "0")}-${String(toDay).padStart(2, "0")}`;
+      return { from, to, days: toDay };
+    }
+    const to = this.shiftDay(dateFrom, -1);
+    return { from: this.shiftDay(to, -(days - 1)), to, days };
+  }
+
+  /**
+   * Ranking de productos vendidos del período, con CMV% y margen% por producto y la variación
+   * contra el período inmediatamente anterior de IGUAL cantidad de días.
+   *
+   * Igual que en CMV Productos: los archivos importados traen SOLO cantidades. El costo sale de
+   * `product_costs` (receta o manual) y el precio de la receta mapeada, así que el CMV% y el margen%
+   * son TEÓRICOS. Un producto sin costo o sin precio de receta viaja con esas columnas en null: la
+   * pantalla y el PDF muestran "—" en vez de inventar un número.
+   *
+   * El margen es el complemento simple del CMV (100 − CMV%), que es la definición elegida.
+   */
+  async computeProductosVendidos(
+    clientId: number,
+    opts: {
+      source: "fudo" | "datalive" | "shares";
+      dateFrom: string;
+      dateTo: string;
+      localIds?: number[];
+      topN?: number;
+      ivaIncluded?: boolean;
+      /** Productos que el usuario sacó del ranking (cubiertos, servicio de mesa, delivery…). */
+      exclude?: string[];
+    },
+  ) {
+    const ivaIncluded = opts.ivaIncluded ?? false;
+    const topN = Math.min(Math.max(opts.topN ?? 15, 1), 100);
+    const localIds = opts.localIds && opts.localIds.length > 0 ? opts.localIds : undefined;
+    // Se excluyen de los dos períodos y de los totales: si salieran solo de la tabla, los
+    // porcentajes de participación seguirían midiendo contra un total que ya no se muestra.
+    const excluded = new Set((opts.exclude ?? []).map((n) => this.productKey(n)).filter(Boolean));
+
+    const fromMs = Date.parse(`${opts.dateFrom}T00:00:00Z`);
+    const toMs = Date.parse(`${opts.dateTo}T00:00:00Z`);
+    if (!Number.isFinite(fromMs) || !Number.isFinite(toMs) || toMs < fromMs) {
+      throw new Error("El período es inválido: revisá las fechas desde/hasta.");
+    }
+    const days = Math.round((toMs - fromMs) / 86400000) + 1;
+    const prev = this.previousPeriod(opts.dateFrom, opts.dateTo, days);
+
+    const [rawRows, rawPrevRows] = await Promise.all([
+      this.getSoldProductRows(clientId, { source: opts.source, dateFrom: opts.dateFrom, dateTo: opts.dateTo, localIds }),
+      this.getSoldProductRows(clientId, { source: opts.source, dateFrom: prev.from, dateTo: prev.to, localIds }),
+    ]);
+    const rows = excluded.size > 0 ? rawRows.filter((r) => !excluded.has(this.productKey(r.producto))) : rawRows;
+    const prevRows = excluded.size > 0 ? rawPrevRows.filter((r) => !excluded.has(this.productKey(r.producto))) : rawPrevRows;
+
+    // Costeo: mismo camino que CMV Productos (product_costs manda, el mapeo viejo es fallback),
+    // pero indexado por nombre normalizado para que el costo cargado una vez sirva a las variantes.
+    const costRows = await db.select().from(productCosts)
+      .where(and(eq(productCosts.clientId, clientId), eq(productCosts.source, opts.source)));
+    const costByKey = new Map(costRows.map((c) => [this.productKey(c.productName), c]));
+    const mappingRows = await db.select().from(productRecipeMappings)
+      .where(and(eq(productRecipeMappings.clientId, clientId), eq(productRecipeMappings.source, opts.source)));
+    const mappedRecipeByKey = new Map(mappingRows.map((m) => [this.productKey(m.productName), m.recipeId]));
+    const recipeRows = await db.select().from(recipes).where(eq(recipes.clientId, clientId));
+    const recipeById = new Map(recipeRows.map((r) => [r.id, r]));
+
+    const localRows = await db.select({ id: locals.id, name: locals.name }).from(locals)
+      .where(eq(locals.clientId, clientId));
+    const localNameById = new Map(localRows.map((l) => [l.id, l.name]));
+
+    interface Agg {
+      key: string;
+      variantes: Map<string, number>;
+      categoria: string | null;
+      cantidad: number;
+      porLocal: Map<number, number>;
+    }
+    const agg = new Map<string, Agg>();
+    const diasConVenta = new Set<string>();
+    for (const r of rows) {
+      const key = this.productKey(r.producto);
+      if (!key) continue;
+      diasConVenta.add(r.fecha);
+      let a = agg.get(key);
+      if (!a) {
+        a = { key, variantes: new Map(), categoria: null, cantidad: 0, porLocal: new Map() };
+        agg.set(key, a);
+      }
+      a.variantes.set(r.producto, (a.variantes.get(r.producto) ?? 0) + r.cantidad);
+      a.cantidad += r.cantidad;
+      a.porLocal.set(r.localId, (a.porLocal.get(r.localId) ?? 0) + r.cantidad);
+      if (!a.categoria && r.categoria) a.categoria = r.categoria;
+    }
+
+    const prevByKey = new Map<string, number>();
+    for (const r of prevRows) {
+      const key = this.productKey(r.producto);
+      if (!key) continue;
+      prevByKey.set(key, (prevByKey.get(key) ?? 0) + r.cantidad);
+    }
+
+    const unidades = rows.reduce((s, r) => s + r.cantidad, 0);
+    const unidadesPrev = prevRows.reduce((s, r) => s + r.cantidad, 0);
+
+    const all = Array.from(agg.values()).map((a) => {
+      // La grafía que más se vendió es la que se muestra: es la que el equipo reconoce.
+      const display = Array.from(a.variantes.entries()).sort((x, y) => y[1] - x[1])[0][0];
+      const pc = costByKey.get(a.key);
+      const recipeId: number | null = pc?.recipeId ?? mappedRecipeByKey.get(a.key) ?? null;
+      let costoUnitario: number | null = null;
+      let costMode: "receta" | "manual" | null = null;
+      if (pc && pc.costMode === "manual" && pc.manualCost != null) {
+        costoUnitario = parseFloat(String(pc.manualCost)) || 0;
+        costMode = "manual";
+      } else if (recipeId != null && recipeById.has(recipeId)) {
+        costoUnitario = parseFloat(String(recipeById.get(recipeId)!.totalCost ?? 0)) || 0;
+        costMode = "receta";
+      }
+      const recipe = recipeId != null ? recipeById.get(recipeId) ?? null : null;
+      // El precio de la receta es SIEMPRE de mostrador (con IVA); se lleva a la base elegida.
+      const grossPrice = recipe ? recipeGrossPrice(recipe) : 0;
+      const precioUnitario = recipe && grossPrice > 0 ? (ivaIncluded ? grossPrice : grossPrice / 1.21) : null;
+
+      const cmvPct = costoUnitario != null && precioUnitario != null && precioUnitario > 0
+        ? (costoUnitario / precioUnitario) * 100
+        : null;
+      const margenUnitario = costoUnitario != null && precioUnitario != null ? precioUnitario - costoUnitario : null;
+
+      const cantidadPrev = prevByKey.get(a.key) ?? null;
+      const variacionPct = cantidadPrev != null && cantidadPrev > 0
+        ? ((a.cantidad - cantidadPrev) / cantidadPrev) * 100
+        : null;
+
+      return {
+        producto: display,
+        categoria: a.categoria,
+        cantidad: a.cantidad,
+        unidadesPorDia: days > 0 ? a.cantidad / days : 0,
+        porLocal: Array.from(a.porLocal.entries())
+          .map(([localId, cantidad]) => ({ localId, localName: localNameById.get(localId) ?? `Local ${localId}`, cantidad }))
+          .sort((x, y) => y.cantidad - x.cantidad),
+        costoUnitario,
+        costMode,
+        recipeId,
+        recipeName: recipe?.name ?? null,
+        precioUnitario,
+        cmvPct,
+        // Margen de contribución = el complemento del CMV, la definición simple que se eligió.
+        margenPct: cmvPct != null ? 100 - cmvPct : null,
+        margenUnitario,
+        margenTotal: margenUnitario != null ? margenUnitario * a.cantidad : null,
+        ventaTeorica: precioUnitario != null ? precioUnitario * a.cantidad : null,
+        cantidadPrev,
+        variacionPct,
+        // Sin base previa no es "+∞%": es un producto que antes no se vendía.
+        esNuevo: cantidadPrev == null || cantidadPrev === 0,
+        participacionPct: unidades > 0 ? (a.cantidad / unidades) * 100 : 0,
+        acumuladoPct: 0,
+      };
+    });
+
+    all.sort((x, y) => y.cantidad - x.cantidad);
+    let acc = 0;
+    for (const it of all) {
+      acc += it.participacionPct;
+      it.acumuladoPct = Math.min(acc, 100);
+    }
+    const items = all.slice(0, topN).map((it, i) => ({ rank: i + 1, ...it }));
+
+    // Movers: solo sobre productos con volumen previo real, para que un 2→6 no encabece el ranking.
+    const moversMinBase = Math.max(10, Math.round(unidadesPrev * 0.001));
+    const conBase = all.filter((it) => it.cantidadPrev != null && it.cantidadPrev >= moversMinBase && it.variacionPct != null);
+    const mover = (it: typeof all[number]) => ({
+      producto: it.producto,
+      cantidad: it.cantidad,
+      cantidadPrev: it.cantidadPrev,
+      variacionPct: it.variacionPct,
+    });
+    const subidas = [...conBase].sort((x, y) => (y.variacionPct ?? 0) - (x.variacionPct ?? 0)).slice(0, 5).map(mover);
+    const bajas = [...conBase].sort((x, y) => (x.variacionPct ?? 0) - (y.variacionPct ?? 0)).slice(0, 5).map(mover);
+
+    // Productos que estaban y dejaron de venderse: no están en `all` porque no tienen filas hoy.
+    const desaparecidos = Array.from(prevByKey.entries())
+      .filter(([key, qty]) => qty >= moversMinBase && !agg.has(key))
+      .sort((x, y) => y[1] - x[1])
+      .slice(0, 5)
+      .map(([key, qty]) => ({
+        producto: prevRows.find((r) => this.productKey(r.producto) === key)?.producto ?? key,
+        cantidadPrev: qty,
+      }));
+
+    // Totales y calidad del dato. El CMV ponderado solo suma los productos que tienen costo Y
+    // precio: mezclarlo con los que no tienen daría un porcentaje sin sentido.
+    const costeados = all.filter((it) => it.costoUnitario != null && it.precioUnitario != null);
+    const unidadesConCosto = all.filter((it) => it.costoUnitario != null).reduce((s, it) => s + it.cantidad, 0);
+    const costoTotal = costeados.reduce((s, it) => s + (it.costoUnitario ?? 0) * it.cantidad, 0);
+    const ventaTeoricaTotal = costeados.reduce((s, it) => s + (it.precioUnitario ?? 0) * it.cantidad, 0);
+    const cmvPonderadoPct = ventaTeoricaTotal > 0 ? (costoTotal / ventaTeoricaTotal) * 100 : null;
+
+    const selectedLocals = (localIds ? localRows.filter((l) => localIds.includes(l.id)) : localRows)
+      .map((l) => ({ id: l.id, name: l.name }));
+
+    // Cuántos productos hacen el 80% de las unidades (Pareto).
+    let paretoAcc = 0;
+    let productosHasta80 = 0;
+    for (const it of all) {
+      if (paretoAcc >= 80) break;
+      paretoAcc += it.participacionPct;
+      productosHasta80++;
+    }
+
+    return {
+      source: opts.source,
+      ivaIncluded,
+      topN,
+      period: { from: opts.dateFrom, to: opts.dateTo, days, diasConVenta: diasConVenta.size },
+      prevPeriod: prev,
+      excluidos: opts.exclude ?? [],
+      locals: selectedLocals,
+      allLocalsCount: localRows.length,
+      isAllLocals: !localIds,
+      totals: {
+        unidades,
+        unidadesPrev,
+        variacionPct: unidadesPrev > 0 ? ((unidades - unidadesPrev) / unidadesPrev) * 100 : null,
+        productosDistintos: all.length,
+        unidadesConCosto,
+        coberturaPct: unidades > 0 ? (unidadesConCosto / unidades) * 100 : null,
+        cmvPonderadoPct,
+        margenPonderadoPct: cmvPonderadoPct != null ? 100 - cmvPonderadoPct : null,
+        // Cuánto del total explica el top que se está mostrando (lo primero que pregunta un socio).
+        topParticipacionPct: items.reduce((s, it) => s + it.participacionPct, 0),
+        productosHasta80,
+      },
+      items,
+      subidas,
+      bajas,
+      desaparecidos,
+      moversMinBase,
+    };
+  }
+
   /** Guarda el cabezal + el detalle CONGELADO. Se recalcula server-side: no se confía en el cliente. */
   async saveCmvProductoCalculation(
     clientId: number,

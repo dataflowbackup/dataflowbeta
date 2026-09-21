@@ -85,6 +85,7 @@ const MODULE_LABELS: Record<string, string> = {
   pap: "PAP (Pago a Proveedores)",
   cmv: "CMV (Costo Mercaderia Vendida)",
   cmv_productos: "CMV Productos (CMV teorico por producto)",
+  productos_vendidos: "Productos Vendidos (ranking por producto)",
   stock_valuation: "Valorizacion de Stock",
   breakeven: "Punto de Equilibrio",
 };

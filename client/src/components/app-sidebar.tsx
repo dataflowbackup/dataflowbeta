@@ -39,6 +39,7 @@ import {
   LineChart,
   SlidersHorizontal,
   FileCheck2,
+  Trophy,
 } from "lucide-react";
 import { useAuth } from "@/hooks/useAuth";
 import { usePermissions } from "@/hooks/usePermissions";
@@ -138,6 +139,7 @@ const menuSections: MenuSection[] = [
       { title: "Desvio de Mercaderia", url: "/desvio-mercaderia", icon: GitCompare, permission: "stock_valuation.view" },
       { title: "CMV", url: "/cmv", icon: Calculator, permission: "cmv.view" },
       { title: "CMV Productos", url: "/cmv-productos", icon: ClipboardList, permission: "cmv_productos.view" },
+      { title: "Productos Vendidos", url: "/productos-vendidos", icon: Trophy, permission: "productos_vendidos.view" },
       { title: "Punto de Equilibrio", url: "/punto-equilibrio", icon: Target, permission: "breakeven.view" },
       { title: "Ventas Datalive", url: "/ventas-datalive", icon: Upload, salesSource: "datalive" },
       { title: "Decomisos", url: "/decomisos", icon: Trash2 },

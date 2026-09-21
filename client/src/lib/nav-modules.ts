@@ -43,6 +43,7 @@ export const MODULE_ROUTES: Record<string, string[]> = {
     "/desvio-mercaderia",
     "/cmv",
     "/cmv-productos",
+    "/productos-vendidos",
     "/punto-equilibrio",
     "/ventas-datalive",
     "/decomisos",

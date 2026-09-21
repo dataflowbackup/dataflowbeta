@@ -4423,6 +4423,43 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
   });
 
+  // ==========================================
+  // PRODUCTOS VENDIDOS — ranking por unidades con CMV/margen por producto (Financiero)
+  // Permiso propio: es el reporte que se comparte con empleados y supervisores, así que se puede
+  // habilitar sin abrirles el CMV completo.
+  // ==========================================
+  app.get("/api/finance/productos-vendidos", isAuthenticated, requirePermission("productos_vendidos.view", "view"), async (req, res) => {
+    try {
+      const { clientId } = (req as any).rbac;
+      const dateFrom = typeof req.query.dateFrom === "string" ? req.query.dateFrom : "";
+      const dateTo = typeof req.query.dateTo === "string" ? req.query.dateTo : "";
+      if (!dateFrom || !dateTo) return res.status(400).json({ message: "Faltan las fechas del período" });
+      // Sin `localIds` se entienden todos los locales de la empresa.
+      const localIds = String(req.query.localIds ?? "")
+        .split(",")
+        .map((n) => parseInt(n, 10))
+        .filter((n) => Number.isFinite(n) && n > 0);
+      const topNRaw = parseInt(String(req.query.topN ?? "15"), 10);
+      // `exclude` llega repetido (un parámetro por producto): los nombres traen comas.
+      const rawExclude = req.query.exclude;
+      const exclude = (Array.isArray(rawExclude) ? rawExclude : rawExclude != null ? [rawExclude] : [])
+        .map((v) => String(v))
+        .filter(Boolean)
+        .slice(0, 200);
+      res.json(await storage.computeProductosVendidos(clientId, {
+        source: parseProductSource(req.query.source),
+        dateFrom,
+        dateTo,
+        localIds,
+        topN: Number.isFinite(topNRaw) ? topNRaw : 15,
+        ivaIncluded: req.query.ivaIncluded === "true",
+        exclude,
+      }));
+    } catch (e: any) {
+      res.status(400).json({ message: e.message });
+    }
+  });
+
   // Punto de Equilibrio — Fase 8 (gateado por RBAC granular).
   app.get("/api/finance/breakeven", isAuthenticated, requirePermission("breakeven.view", "view"), async (req, res) => {
     try {
@@ -5766,6 +5803,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         { code: "stock_valuation.delete", name: "Reversar Valorización de Stock", module: "stock_valuation" },
         { code: "cmv.view", name: "Ver CMV (Costo de Mercadería Vendida)", module: "cmv" },
         { code: "cmv_productos.view", name: "Ver CMV Productos (CMV teorico por producto vendido)", module: "cmv_productos" },
+        { code: "productos_vendidos.view", name: "Ver Productos Vendidos (ranking, CMV y margen por producto)", module: "productos_vendidos" },
         { code: "breakeven.view", name: "Ver Punto de Equilibrio", module: "breakeven" },
         { code: "breakeven.create", name: "Crear Punto de Equilibrio", module: "breakeven" },
       ];
