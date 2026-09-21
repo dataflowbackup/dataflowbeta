@@ -47,6 +47,30 @@ interface Node {
   children: Branch[];
 }
 
+export type CmvMode = "compras" | "inventario" | "productos";
+
+interface CmvVariantRow {
+  localId: number;
+  local: string;
+  ventas: number;
+  amount: number;
+  pct: number;
+  detalle: string | null;
+}
+interface CmvVariant {
+  key: CmvMode;
+  label: string;
+  help: string;
+  total: number;
+  pct: number;
+  utilidadBruta: number;
+  utilidadBrutaPct: number;
+  disponible: boolean;
+  rows: CmvVariantRow[];
+  faltantes: Array<{ local: string; ventas: number }>;
+  aviso: string | null;
+}
+
 interface Statement {
   period: { year: number; month: number; economicMonth: string; from: string; to: string };
   locals: Array<{ id: number; name: string }>;
@@ -55,6 +79,13 @@ interface Statement {
   salesSources: string[];
   ventas: { total: number; objetivo: number; lines: Array<{ label: string; amount: number; pct: number; kind: "sistema" | "manual" }> };
   compras: { total: number; pct: number; groups: Node[] };
+  cmv: {
+    mode: CmvMode;
+    modePedido: CmvMode;
+    elegido: string;
+    variantes: CmvVariant[];
+    desvioMerma: { monto: number; puntos: number; locales: string[]; ventasComparadas: number } | null;
+  };
   gastos: { total: number; pct: number; groups: Node[]; merchandiseComputing: Array<{ id: number; label: string; amount: number }> };
   comisiones: { total: number; pct: number; lines: Array<{ concept: string; amount: number; pct: number; byLocal: Array<{ local: string; amount: number }> }> };
   impuestos: {
@@ -236,26 +267,149 @@ function TreeSection({
   );
 }
 
+/**
+ * Los tres costos de mercadería, lado a lado, con el selector de cuál manda en el resultado.
+ * Cada uno se puede abrir para ver de qué local sale y cómo se compone.
+ */
+function CmvSelector({
+  cmv,
+  mode,
+  onChange,
+}: {
+  cmv: Statement["cmv"];
+  mode: CmvMode;
+  onChange: (m: CmvMode) => void;
+}) {
+  const [open, setOpen] = useState<CmvMode | null>(null);
+  const abierta = open ? cmv.variantes.find((x) => x.key === open) : null;
+  return (
+    <Card className={ECON.border}>
+      <CardContent className="pt-5 space-y-3">
+        <div>
+          <p className="text-sm font-semibold">Costo de mercadería</p>
+          <p className="text-xs text-muted-foreground">
+            Los tres se calculan siempre. El que elijas es el que resta en el resultado neto; los otros dos
+            quedan al lado como comparación.
+          </p>
+        </div>
+
+        <div className="grid gap-3 md:grid-cols-3">
+          {cmv.variantes.map((v) => {
+            const activo = v.key === mode;
+            return (
+              <div
+                key={v.key}
+                className={`rounded-lg border p-3 transition-colors ${activo ? `${ECON.border} ${ECON.bg}` : "hover:bg-muted/40"} ${v.disponible ? "cursor-pointer" : "opacity-60"}`}
+                onClick={() => v.disponible && onChange(v.key)}
+                data-testid={`card-cmv-${v.key}`}
+              >
+                <div className="flex items-start gap-2">
+                  <span
+                    className={`mt-0.5 h-3.5 w-3.5 shrink-0 rounded-full border-2 ${activo ? "border-emerald-600 bg-emerald-600" : "border-muted-foreground/40"}`}
+                  />
+                  <div className="min-w-0 flex-1">
+                    <p className="text-xs font-medium leading-tight">{v.label}</p>
+                    {!v.disponible && <Badge variant="outline" className="mt-1 text-[10px]">sin datos este mes</Badge>}
+                  </div>
+                </div>
+                <p className={`mt-2 font-mono text-lg font-bold ${activo ? ECON.text : ""}`}>{formatCurrency(v.total)}</p>
+                <p className="font-mono text-xs text-muted-foreground">{pct(v.pct)} de las ventas</p>
+                <div className="mt-2 border-t pt-2">
+                  <p className="text-[11px] text-muted-foreground">Utilidad bruta que da</p>
+                  <p className={`font-mono text-sm font-semibold ${v.utilidadBruta >= 0 ? ECON.text : "text-destructive"}`}>
+                    {formatCurrency(v.utilidadBruta)} <span className="text-xs font-normal">({pct(v.utilidadBrutaPct)})</span>
+                  </p>
+                </div>
+                <p className="mt-2 text-[11px] text-muted-foreground">{v.help}</p>
+                {v.rows.length > 0 && (
+                  <button
+                    type="button"
+                    className={`mt-2 text-[11px] ${ECON.text} hover:underline`}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setOpen(open === v.key ? null : v.key);
+                    }}
+                  >
+                    {open === v.key ? "Ocultar composición" : "Ver composición"}
+                  </button>
+                )}
+              </div>
+            );
+          })}
+        </div>
+
+        {abierta && (
+          <div className="rounded-lg border p-3">
+            <p className="text-xs font-semibold mb-2">{abierta.label} — cómo se compone</p>
+            <div className="space-y-1">
+              {abierta.rows.map((r) => (
+                <div key={r.localId} className="flex items-center gap-2 py-1 border-b last:border-0 text-sm">
+                  <span className="flex-1 min-w-0 truncate">
+                    {r.local}
+                    {r.detalle && <span className="ml-2 text-[11px] text-muted-foreground">{r.detalle}</span>}
+                  </span>
+                  <span className="w-32 text-right font-mono text-xs text-muted-foreground">{formatCurrency(r.ventas)}</span>
+                  <span className="w-32 text-right font-mono">{formatCurrency(r.amount)}</span>
+                  <span className="w-14 text-right font-mono text-xs text-muted-foreground">{pct(r.pct)}</span>
+                </div>
+              ))}
+            </div>
+            {abierta.faltantes.length > 0 && (
+              <p className="mt-2 text-[11px] text-amber-700 dark:text-amber-400">
+                Sin dato en: {abierta.faltantes.map((f) => f.local).join(", ")}
+              </p>
+            )}
+          </div>
+        )}
+
+        {cmv.variantes.filter((v) => v.aviso).map((v) => (
+          <div key={v.key} className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-2.5 flex gap-2 items-start">
+            <AlertTriangle className="h-3.5 w-3.5 text-amber-600 dark:text-amber-500 mt-0.5 shrink-0" />
+            <p className="text-xs text-amber-700 dark:text-amber-400">
+              <span className="font-semibold">{v.label}:</span> {v.aviso}
+            </p>
+          </div>
+        ))}
+
+        {cmv.desvioMerma && (
+          <div className={`rounded-lg border ${ECON.border} ${ECON.bg} p-2.5`}>
+            <p className={`text-xs ${ECON.text}`}>
+              <span className="font-semibold">Desvío de costeo:</span> el costo real por inventarios supera al teórico
+              por recetas en <span className="font-mono font-semibold">{formatCurrency(cmv.desvioMerma.monto)}</span> (
+              {cmv.desvioMerma.puntos.toFixed(2)} puntos de las ventas). Eso es merma, desperdicio y faltante que el
+              costeo no explica. Comparado solo sobre {cmv.desvioMerma.locales.join(", ")}, que tienen los dos cálculos.
+            </p>
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
 export function StatementTab({
   year,
   month,
   monthLabel,
   localIds,
   salesSources,
+  cmvMode,
+  onCmvModeChange,
 }: {
   year: number;
   month: number;
   monthLabel: string;
   localIds: number[];
   salesSources: string[];
+  cmvMode: CmvMode;
+  onCmvModeChange: (mode: CmvMode) => void;
 }) {
   const localParam = localIds.length > 0 ? localIds.join(",") : "";
   const sourcesParam = salesSources.join(",");
 
   const { data, isLoading, isError, error } = useQuery<Statement>({
-    queryKey: ["/api/economic/statement", year, month, localParam, sourcesParam],
+    queryKey: ["/api/economic/statement", year, month, localParam, sourcesParam, cmvMode],
     queryFn: async () => {
-      const qs = new URLSearchParams({ year: String(year), month: String(month), salesSources: sourcesParam });
+      const qs = new URLSearchParams({ year: String(year), month: String(month), salesSources: sourcesParam, cmvMode });
       if (localParam) qs.set("localIds", localParam);
       const res = await fetch(`/api/economic/statement?${qs}`, { credentials: "include" });
       if (!res.ok) throw new Error((await res.json().catch(() => ({})))?.message || "Error al calcular");
@@ -318,6 +472,17 @@ export function StatementTab({
         </div>
       )}
 
+      <CmvSelector cmv={data.cmv} mode={data.cmv.mode} onChange={onCmvModeChange} />
+
+      {data.cmv.mode !== data.cmv.modePedido && (
+        <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 flex gap-2 items-start">
+          <AlertTriangle className="h-4 w-4 text-amber-600 dark:text-amber-500 mt-0.5 shrink-0" />
+          <p className="text-sm text-amber-700 dark:text-amber-400">
+            No hay datos del costo elegido en este mes, así que el informe se está calculando con las compras.
+          </p>
+        </div>
+      )}
+
       <Card className="overflow-hidden">
         <CardContent className="p-0">
           {/* Encabezado de columnas */}
@@ -370,15 +535,28 @@ export function StatementTab({
             />
           )}
 
-          {/* ── COMPRAS ── */}
-          <TreeSection
-            title="Costo de insumos (compras del mes)"
-            total={data.compras.total}
-            totalPct={data.compras.pct}
-            groups={data.compras.groups}
-            keyPrefix="compras"
-            emptyText="No hay facturas de compra cargadas en este mes."
-          />
+          {/* ── COSTO DE MERCADERÍA (la variante que eligió el usuario) ── */}
+          {data.cmv.mode === "compras" ? (
+            <TreeSection
+              title="Costo de mercadería — compras del mes"
+              total={data.compras.total}
+              totalPct={data.compras.pct}
+              groups={data.compras.groups}
+              keyPrefix="compras"
+              emptyText="No hay facturas de compra cargadas en este mes."
+            />
+          ) : (
+            <>
+              <SectionHeader
+                title={`Costo de mercadería — ${data.cmv.elegido}`}
+                amount={R.costoMercaderia}
+                pctValue={I.foodCostPct}
+              />
+              {(data.cmv.variantes.find((v) => v.key === data.cmv.mode)?.rows ?? []).map((r) => (
+                <Row key={r.localId} label={r.local} amount={r.amount} pctValue={r.pct} level={0} meta={r.detalle ?? undefined} />
+              ))}
+            </>
+          )}
 
           <Row label="UTILIDAD BRUTA" amount={R.utilidadBruta} pctValue={I.utilidadBrutaPct} level={0} bold tone="total" />
 

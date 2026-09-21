@@ -8,6 +8,8 @@ import {
 } from "@shared/salesSources";
 import { computeRecipeMetrics, recipeGrossPrice, recipeRemovesIva } from "@shared/recipePricing";
 import { subRecipeUnitCost } from "@shared/supplyMetrics";
+import { buildCmvForBalance } from "@shared/balanceCmv";
+import { buildCmvProductosForBalance } from "@shared/balanceCmvProductos";
 import { db } from "./db";
 import { eq, and, desc, asc, gte, lte, sql, isNull, isNotNull, inArray, or, lt } from "drizzle-orm";
 import {
@@ -4541,6 +4543,11 @@ export class DatabaseStorage implements IStorage {
       month: number;
       localIds?: number[];
       salesSources: Array<"datalive" | "fudo" | "shares">;
+      /**
+       * Cuál de los tres costos de mercadería manda en el resultado neto. Los tres se calculan
+       * siempre; este solo elige el que se resta (decisión del usuario, 21-sep-2026).
+       */
+      cmvMode?: "compras" | "inventario" | "productos";
     },
   ) {
     const { year, month } = opts;
@@ -4554,8 +4561,9 @@ export class DatabaseStorage implements IStorage {
       return Number.isFinite(n) ? n : 0;
     };
 
-    const allLocals = await db.select({ id: locals.id, name: locals.name }).from(locals)
-      .where(eq(locals.clientId, clientId));
+    const allLocals = (await db.select({ id: locals.id, name: locals.name }).from(locals)
+      .where(eq(locals.clientId, clientId)))
+      .map((l) => ({ id: Number(l.id), name: String(l.name) }));
     const localIds = opts.localIds && opts.localIds.length > 0
       ? allLocals.filter((l) => opts.localIds!.includes(l.id)).map((l) => l.id)
       : allLocals.map((l) => l.id);
@@ -4564,6 +4572,12 @@ export class DatabaseStorage implements IStorage {
 
     // ── VENTAS ────────────────────────────────────────────────────────────────
     const ventasLines: Array<{ label: string; amount: number; kind: "sistema" | "manual" }> = [];
+    /** Ventas por local: el CMV por inventario y el teórico se aplican local por local. */
+    const ventasByLocal: Record<number, number> = {};
+    const addVentaLocal = (lid: number, amount: number) => {
+      if (Math.abs(amount) < 0.005) return;
+      ventasByLocal[lid] = (ventasByLocal[lid] ?? 0) + amount;
+    };
     const addVenta = (label: string, amount: number, kind: "sistema" | "manual") => {
       // Medio centavo de tolerancia: el resto entre el total y las columnas da -1e-10 cuando
       // cierran exactas, y esa linea fantasma no tiene que aparecer en el informe.
@@ -4580,14 +4594,17 @@ export class DatabaseStorage implements IStorage {
     for (const source of opts.salesSources) {
       if (localIds.length === 0) break;
       if (source === "fudo") {
-        const rows = await db.select({ medio: fudoPagos.medioPago, importe: fudoPagos.importe })
+        const rows = await db.select({ localId: fudoPagos.localId, medio: fudoPagos.medioPago, importe: fudoPagos.importe })
           .from(fudoPagos).where(and(
             eq(fudoPagos.clientId, clientId),
             inArray(fudoPagos.localId, localIds),
             gte(fudoPagos.fecha, from),
             lte(fudoPagos.fecha, to),
           ));
-        for (const r of rows) addVenta(withSrc(String(r.medio ?? "Sin especificar"), source), num(r.importe), "sistema");
+        for (const r of rows) {
+          addVenta(withSrc(String(r.medio ?? "Sin especificar"), source), num(r.importe), "sistema");
+          addVentaLocal(Number(r.localId), num(r.importe));
+        }
       } else if (source === "shares") {
         const rows = await db.select().from(sharesVentas).where(and(
           eq(sharesVentas.clientId, clientId),
@@ -4601,6 +4618,7 @@ export class DatabaseStorage implements IStorage {
           addVenta(withSrc("Efectivo online", source), num(r.ventaEfectivoOnline), "sistema");
           addVenta(withSrc("Operaciones online", source), num(r.ventaOperOnline), "sistema");
           addVenta(withSrc("Mercado Pago", source), num(r.ventaMercadopago), "sistema");
+          addVentaLocal(Number(r.localId), num(r.ventaTotal));
         }
       } else {
         const rows = await db.select().from(dataliveVentas).where(and(
@@ -4615,6 +4633,7 @@ export class DatabaseStorage implements IStorage {
           // Datalive trae el total además del corte: lo que no está en ninguna columna va a "Otros".
           const resto = num(r.ventaTotal) - num(r.ventaEfectivo) - num(r.ventaOnline);
           addVenta(withSrc("Otros medios", source), resto, "sistema");
+          addVentaLocal(Number(r.localId), num(r.ventaTotal));
         }
       }
     }
@@ -4624,7 +4643,10 @@ export class DatabaseStorage implements IStorage {
       inArray(economicManualSales.localId, localIds),
       eq(economicManualSales.economicMonth, economicMonth),
     ));
-    for (const s of manualSales) addVenta(s.concept, num(s.amount), "manual");
+    for (const s of manualSales) {
+      addVenta(s.concept, num(s.amount), "manual");
+      addVentaLocal(Number(s.localId), num(s.amount));
+    }
 
     const ventasTotal = ventasLines.reduce((a, l) => a + l.amount, 0);
     /** % sobre ventas: el denominador de TODO el informe (common size income statement). */
@@ -4675,6 +4697,7 @@ export class DatabaseStorage implements IStorage {
       children: Map<string, { label: string; amount: number; items: Map<number, { invoiceId: number; label: string; amount: number; date: string; source: string; ref: string }> }>;
     }
     const comprasTree = new Map<string, ComprasNode>();
+    const comprasByLocal: Record<number, number> = {};
 
     for (const it of itemRows) {
       const inv = invoiceById.get(it.invoiceId);
@@ -4683,6 +4706,9 @@ export class DatabaseStorage implements IStorage {
       const signo = String(inv.invoiceType ?? "").toUpperCase().startsWith("NC") ? -1 : 1;
       const amount = num(it.subtotal) * signo;
       if (!amount) continue;
+
+      const invLocalId = Number(inv.localId);
+      comprasByLocal[invLocalId] = (comprasByLocal[invLocalId] ?? 0) + amount;
 
       const rubroId = it.supplyRubroId ?? it.subRubroRubroId ?? null;
       const rubro = rubroId != null ? (rubroNameById.get(rubroId) ?? SIN_RUBRO) : SIN_RUBRO;
@@ -4891,10 +4917,113 @@ export class DatabaseStorage implements IStorage {
     ));
     const ventasObjetivo = goalRows.reduce<number>((a, g) => a + num((g as any).facturacionObjetivo), 0);
 
+    // ── LOS TRES COSTOS DE MERCADERÍA ────────────────────────────────────────
+    //
+    // Los tres se calculan siempre y cada uno da su propia utilidad bruta. Solo uno manda en el
+    // resultado neto: el que elija el usuario en pantalla. Miden cosas distintas:
+    //   compras     → lo que se compró en el mes. Proxy de caja: un mes de mucha compra y poco
+    //                 consumo da un resultado falso, pero siempre hay dato.
+    //   inventario  → Ei + Compras − Ef. Lo que realmente se consumió. El correcto contable.
+    //   productos   → Σ (unidades vendidas × costo de receta). Lo que se DEBERÍA haber consumido.
+    //                 La brecha contra el anterior es merma, desperdicio y faltante.
+    const cmvList = await db.select().from(cmvCalculations).where(eq(cmvCalculations.clientId, clientId));
+    const cmvProdList = await db.select().from(cmvProductoCalculations).where(eq(cmvProductoCalculations.clientId, clientId));
+
+    const invBalance = buildCmvForBalance(cmvList as any, localIds, year, month, ventasByLocal);
+    const prodBalance = buildCmvProductosForBalance(cmvProdList as any, localIds, year, month, ventasByLocal);
+
+    const cmvById = new Map(cmvList.map((c: any) => [c.id, c]));
+
+    const cmvVariants = {
+      compras: {
+        key: "compras" as const,
+        label: "Por compras del mes",
+        help: "Lo que se compró, de las facturas del mes. Siempre hay dato, pero no distingue lo comprado de lo consumido.",
+        total: comprasTotal,
+        pct: pct(comprasTotal),
+        utilidadBruta: ventasTotal - comprasTotal,
+        utilidadBrutaPct: pct(ventasTotal - comprasTotal),
+        disponible: true,
+        // La composición son los locales, con el mismo detalle que el árbol de compras de arriba.
+        rows: localIds.map((lid) => ({
+          localId: lid,
+          local: localNameById.get(lid) ?? `Local ${lid}`,
+          ventas: ventasByLocal[lid] ?? 0,
+          amount: comprasByLocal[lid] ?? 0,
+          pct: (ventasByLocal[lid] ?? 0) > 0 ? ((comprasByLocal[lid] ?? 0) / (ventasByLocal[lid] ?? 0)) * 100 : 0,
+          detalle: null as string | null,
+        })).filter((r) => r.ventas !== 0 || r.amount !== 0),
+        faltantes: [] as Array<{ local: string; ventas: number }>,
+        aviso: null as string | null,
+      },
+      inventario: {
+        key: "inventario" as const,
+        label: "Por inventarios (inicial + compras − final)",
+        help: "Lo que realmente se consumió. Es el costo correcto, pero necesita los dos inventarios del mes cargados.",
+        total: invBalance.totalCmv,
+        pct: pct(invBalance.totalCmv),
+        utilidadBruta: ventasTotal - invBalance.totalCmv,
+        utilidadBrutaPct: pct(ventasTotal - invBalance.totalCmv),
+        disponible: invBalance.rows.length > 0,
+        rows: invBalance.rows.map((r) => {
+          const c: any = r.cmvId != null ? cmvById.get(r.cmvId) : null;
+          const detalle = c
+            ? `Inicial ${num(c.stockInicial).toFixed(0)} + compras ${num(c.compras).toFixed(0)} − final ${num(c.stockFinal).toFixed(0)}`
+            : null;
+          return {
+            localId: r.localId,
+            local: localNameById.get(r.localId) ?? `Local ${r.localId}`,
+            ventas: r.ventas,
+            amount: r.cmvAmount,
+            pct: r.pct,
+            detalle,
+          };
+        }),
+        faltantes: invBalance.missing.map((m) => ({
+          local: localNameById.get(m.localId) ?? `Local ${m.localId}`,
+          ventas: m.ventas,
+        })),
+        aviso: invBalance.hasMissing
+          ? "Hay locales sin CMV del mes cargado: sus ventas quedan sin costo que las respalde."
+          : null,
+      },
+      productos: {
+        key: "productos" as const,
+        label: "Por productos vendidos (teórico)",
+        help: "Lo que se debería haber consumido según las recetas. La diferencia contra el de inventarios es merma.",
+        total: prodBalance.totalCmv,
+        pct: pct(prodBalance.totalCmv),
+        utilidadBruta: ventasTotal - prodBalance.totalCmv,
+        utilidadBrutaPct: pct(ventasTotal - prodBalance.totalCmv),
+        disponible: prodBalance.rows.length > 0,
+        rows: prodBalance.rows.map((r) => ({
+          localId: r.localId,
+          local: localNameById.get(r.localId) ?? `Local ${r.localId}`,
+          ventas: r.ventas,
+          amount: r.cmvAmount,
+          pct: r.pct,
+          detalle: r.coberturaPct != null ? `Cobertura de costeo ${r.coberturaPct.toFixed(1)}%` : null,
+        })),
+        faltantes: prodBalance.missing.map((m) => ({
+          local: localNameById.get(m.localId) ?? `Local ${m.localId}`,
+          ventas: m.ventas,
+        })),
+        aviso: prodBalance.lowCoverageRows.length > 0
+          ? `Cobertura de costeo baja en ${prodBalance.lowCoverageRows.length} local(es): el costo teórico está subvaluado y la comparación no es limpia.`
+          : prodBalance.hasMissing
+            ? "Hay locales sin CMV Productos del mes calculado."
+            : null,
+      },
+    };
+
+    // Si el modo elegido no tiene datos se cae a compras, que siempre los tiene: mostrar un
+    // resultado neto con costo cero sería peor que avisar.
+    const pedido = opts.cmvMode ?? "compras";
+    const cmvMode = cmvVariants[pedido].disponible ? pedido : "compras";
+    const cmvElegido = cmvVariants[cmvMode];
+
     // ── RESUMEN ───────────────────────────────────────────────────────────────
-    // El costo de mercadería de esta vista es el de COMPRAS; el bloque C suma las otras dos
-    // variantes (por inventarios y por productos vendidos) con su selector.
-    const utilidadBruta = ventasTotal - comprasTotal;
+    const utilidadBruta = ventasTotal - cmvElegido.total;
     const resultadoOperativo = utilidadBruta - gastosTotal - comisionesTotal;
     const resultadoAntesImpuestos = resultadoOperativo - impuestosOperativosTotal;
     const resultadoNeto = resultadoAntesImpuestos - gananciasTotal;
@@ -4911,6 +5040,32 @@ export class DatabaseStorage implements IStorage {
         lines: ventasLines.map((l) => ({ ...l, pct: pct(l.amount) })).sort((a, b) => b.amount - a.amount),
       },
       compras: { total: comprasTotal, pct: pct(comprasTotal), groups: comprasGroups },
+      /** Los tres costos de mercadería, cuál manda y la brecha entre el real y el teórico. */
+      cmv: {
+        mode: cmvMode,
+        modePedido: pedido,
+        elegido: cmvElegido.label,
+        variantes: [cmvVariants.compras, cmvVariants.inventario, cmvVariants.productos],
+        /**
+         * Inventario − teórico: lo que el costeo no explica (merma, desperdicio, faltante).
+         * SOLO sobre los locales que tienen los DOS cálculos: restar un total de 3 locales contra
+         * uno de 1 no mide merma, mide qué locales faltan calcular.
+         */
+        desvioMerma: (() => {
+          const prodByLocal = new Map(cmvVariants.productos.rows.map((r) => [r.localId, r]));
+          const comunes = cmvVariants.inventario.rows.filter((r) => prodByLocal.has(r.localId));
+          if (comunes.length === 0) return null;
+          const inv = comunes.reduce((a, r) => a + r.amount, 0);
+          const teo = comunes.reduce((a, r) => a + (prodByLocal.get(r.localId)?.amount ?? 0), 0);
+          const ventas = comunes.reduce((a, r) => a + r.ventas, 0);
+          return {
+            monto: inv - teo,
+            puntos: ventas > 0 ? ((inv - teo) / ventas) * 100 : 0,
+            locales: comunes.map((r) => r.local),
+            ventasComparadas: ventas,
+          };
+        })(),
+      },
       gastos: { total: gastosTotal, pct: pct(gastosTotal), groups: gastosGroups, merchandiseComputing },
       comisiones: { total: comisionesTotal, pct: pct(comisionesTotal), lines: comisiones },
       impuestos: {
@@ -4921,7 +5076,7 @@ export class DatabaseStorage implements IStorage {
       },
       resumen: {
         ventas: ventasTotal,
-        costoMercaderia: comprasTotal,
+        costoMercaderia: cmvElegido.total,
         utilidadBruta,
         gastos: gastosTotal,
         comisiones: comisionesTotal,
@@ -4932,7 +5087,7 @@ export class DatabaseStorage implements IStorage {
         resultadoNeto,
       },
       indicadores: {
-        foodCostPct: pct(comprasTotal),
+        foodCostPct: pct(cmvElegido.total),
         utilidadBrutaPct: pct(utilidadBruta),
         gastosPct: pct(gastosTotal),
         resultadoOperativoPct: pct(resultadoOperativo),

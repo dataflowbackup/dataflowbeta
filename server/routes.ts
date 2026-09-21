@@ -4019,11 +4019,14 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         .split(",")
         .map((s) => s.trim())
         .filter((s): s is "datalive" | "fudo" | "shares" => s === "datalive" || s === "fudo" || s === "shares");
+      const rawMode = String(req.query.cmvMode ?? "compras");
+      const cmvMode = rawMode === "inventario" || rawMode === "productos" ? rawMode : "compras";
       res.json(await storage.computeEconomicStatement(clientId, {
         year,
         month,
         localIds,
         salesSources: salesSources.length > 0 ? salesSources : ["datalive"],
+        cmvMode,
       }));
     } catch (e: any) {
       res.status(500).json({ message: e.message });

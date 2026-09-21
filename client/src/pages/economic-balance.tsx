@@ -40,7 +40,7 @@ import { TaxesTab } from "@/components/economic/taxes-tab";
 import { CommissionsTab } from "@/components/economic/commissions-tab";
 import { ManualSalesTab } from "@/components/economic/manual-sales-tab";
 import { ECON } from "@/components/economic/econ-shared";
-import { StatementTab } from "@/components/economic/statement-tab";
+import { StatementTab, type CmvMode } from "@/components/economic/statement-tab";
 
 const SHORT_MONTHS = ["Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"];
 
@@ -130,6 +130,8 @@ export default function EconomicBalancePage() {
    * comisiones y ventas que no salen de los extractos ni de los sistemas de gestión.
    */
   const [mainTab, setMainTab] = usePersistentFilter("balanceEconomico.mainTab", "general");
+  /** Cual de los tres costos de mercaderia manda en el resultado neto. */
+  const [cmvMode, setCmvMode] = usePersistentFilter<CmvMode>("balanceEconomico.cmvMode", "compras");
   const [expandedGroupIds, setExpandedGroupIds] = useState<number[]>([]);
   const [ventasOpen, setVentasOpen] = useState(false);
 
@@ -654,6 +656,8 @@ export default function EconomicBalancePage() {
           monthLabel={monthLabel}
           localIds={selectedLocalIds}
           salesSources={salesSources}
+          cmvMode={cmvMode}
+          onCmvModeChange={setCmvMode}
         />
       )}
 
