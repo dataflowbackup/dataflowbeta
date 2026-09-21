@@ -79,6 +79,12 @@ interface MenuItem {
    */
   permission?: string;
   /**
+   * Color del icono (clases Tailwind). Opt-in: sin esto el icono hereda el color del menu.
+   * Lo usa el Estado de Resultado Economico, en verde, para no confundirse con el Financiero,
+   * que se le parece mucho y esta justo al lado.
+   */
+  iconClass?: string;
+  /**
    * Punto 6 (ago-26): item atado a un sistema de ventas. Si la empresa lo tiene
    * apagado en Preferencias, el item no se muestra.
    */
@@ -132,7 +138,7 @@ const menuSections: MenuSection[] = [
       { title: "Categorias Mov.", url: "/categorias-movimientos", icon: Tags },
       { title: "Grupos Financ.", url: "/grupos-financieros", icon: FolderTree },
       { title: "Estado de Resultado Financiero", url: "/balance", icon: LineChart },
-      { title: "Estado de Resultado Economico", url: "/balances-economicos", icon: BarChart3 },
+      { title: "Estado de Resultado Economico", url: "/balances-economicos", icon: BarChart3, iconClass: "text-emerald-600 dark:text-emerald-500" },
       { title: "CMC", url: "/cmc", icon: ShoppingCart, permission: "cmc.view" },
       { title: "PAP", url: "/pap", icon: Truck, permission: "pap.view" },
       { title: "Valorizar Stock", url: "/valorizar-stock", icon: Package, permission: "stock_valuation.view" },
@@ -212,7 +218,7 @@ function CollapsibleMenuSection({
                 <SidebarMenuItem key={item.title}>
                   <SidebarMenuButton asChild isActive={isActive(item.url)} className="h-8">
                     <Link href={item.url} data-testid={`link-${item.url.slice(1)}`}>
-                      <item.icon className="h-4 w-4" />
+                      <item.icon className={cn("h-4 w-4", item.iconClass)} />
                       <span className="text-sm">{item.title}</span>
                     </Link>
                   </SidebarMenuButton>

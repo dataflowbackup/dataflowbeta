@@ -36,6 +36,10 @@ import {
   type CmvProductoCalculationLike,
 } from "@shared/balanceCmvProductos";
 import { MONTH_NAMES_ES } from "@shared/economicMonth";
+import { TaxesTab } from "@/components/economic/taxes-tab";
+import { CommissionsTab } from "@/components/economic/commissions-tab";
+import { ManualSalesTab } from "@/components/economic/manual-sales-tab";
+import { ECON } from "@/components/economic/econ-shared";
 
 const SHORT_MONTHS = ["Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"];
 
@@ -118,6 +122,11 @@ export default function EconomicBalancePage() {
     });
   }, [enabledSalesSources.join(",")]);
   const [viewMode, setViewMode] = usePersistentFilter("balanceEconomico.viewMode", "monthly");
+  /**
+   * Solapa principal. "general" es el Estado de Resultado; las otras tres son de CARGA: impuestos,
+   * comisiones y ventas que no salen de los extractos ni de los sistemas de gestión.
+   */
+  const [mainTab, setMainTab] = usePersistentFilter("balanceEconomico.mainTab", "general");
   const [expandedGroupIds, setExpandedGroupIds] = useState<number[]>([]);
   const [ventasOpen, setVentasOpen] = useState(false);
 
@@ -170,6 +179,9 @@ export default function EconomicBalancePage() {
 
   const month = parseInt(selectedMonth, 10);
   const year = parseInt(selectedYear, 10);
+  /** Mes económico "YYYY-MM": la clave con la que se guardan impuestos, comisiones y ventas. */
+  const economicMonthKey = `${year}-${String(month).padStart(2, "0")}`;
+  const monthLabel = `${MONTH_NAMES_ES[month - 1]} ${year}`;
 
   const years = Array.from({ length: 5 }, (_, i) => currentYear - 2 + i);
   const yearOptions = years.map((y) => ({ value: String(y), label: String(y) }));
@@ -464,6 +476,8 @@ export default function EconomicBalancePage() {
 
   return (
     <div className="space-y-6">
+      {/* Banda verde: es la marca del modulo, para distinguirlo del Resultado Financiero. */}
+      <div className={`h-1 w-full rounded-full ${ECON.bgSolid}`} />
       <PageHeader
         title="Estado de Resultado Económico"
         description="Rentabilidad devengada: ventas del sistema y gastos por mes económico"
@@ -596,14 +610,40 @@ export default function EconomicBalancePage() {
         </Popover>
       </div>
 
+      <Tabs value={mainTab} onValueChange={setMainTab}>
+        <TabsList>
+          <TabsTrigger value="general">General</TabsTrigger>
+          <TabsTrigger value="impuestos">Impuestos</TabsTrigger>
+          <TabsTrigger value="comisiones">Comisiones</TabsTrigger>
+          <TabsTrigger value="ventas">Ventas manuales</TabsTrigger>
+        </TabsList>
+      </Tabs>
+
+      {mainTab === "impuestos" && (
+        <TaxesTab
+          locals={locals}
+          economicMonth={economicMonthKey}
+          monthLabel={monthLabel}
+          salesSource={salesSources[0] ?? "fudo"}
+        />
+      )}
+      {mainTab === "comisiones" && (
+        <CommissionsTab locals={locals} economicMonth={economicMonthKey} monthLabel={monthLabel} />
+      )}
+      {mainTab === "ventas" && (
+        <ManualSalesTab locals={locals} economicMonth={economicMonthKey} monthLabel={monthLabel} />
+      )}
+
+      {mainTab === "general" && (
       <Tabs value={viewMode} onValueChange={setViewMode}>
         <TabsList>
           <TabsTrigger value="monthly">Vista Mensual</TabsTrigger>
           <TabsTrigger value="annual">Vista Anual</TabsTrigger>
         </TabsList>
       </Tabs>
+      )}
 
-      {isLoading ? (
+      {mainTab === "general" && (isLoading ? (
         <Card>
           <CardContent className="space-y-3 py-6">
             <Skeleton className="h-6 w-48" />
@@ -1059,7 +1099,7 @@ export default function EconomicBalancePage() {
             </p>
           </CardContent>
         </Card>
-      )}
+      ))}
     </div>
   );
 }

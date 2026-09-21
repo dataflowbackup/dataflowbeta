@@ -80,6 +80,9 @@ import {
   supplierSupplyMappings,
   cmvProductoCalculations,
   cmvProductoLines,
+  economicTaxes,
+  economicCommissions,
+  economicManualSales,
   monthlyGoals,
   decomisos,
   decomisoProductMappings,
@@ -151,6 +154,9 @@ import {
   type SupplierSupplyMapping,
   type CmvProductoCalculation,
   type CmvProductoLine,
+  type EconomicTax,
+  type EconomicCommission,
+  type EconomicManualSale,
   type InsertFinancialImportBatch,
   type FinancialImportBatch,
   type InsertFinancialImportJob,
@@ -4286,6 +4292,230 @@ export class DatabaseStorage implements IStorage {
       .where(and(eq(financialGroups.id, groupId), eq(financialGroups.clientId, clientId)))
       .returning();
     return updated;
+  }
+
+  // ==========================================
+  // ESTADO DE RESULTADO ECONÓMICO — carga manual por local y mes (sep-2026)
+  // Impuestos, comisiones y ventas que no salen de los extractos ni de los sistemas de gestión.
+  // ==========================================
+
+  /** Ventas del mes económico desagregadas por medio de pago, para calcular IIBB y crédito. */
+  async getEconomicSalesByPaymentMethod(
+    clientId: number,
+    opts: { localId: number; economicMonth: string; source: "fudo" | "datalive" | "shares" },
+  ): Promise<Array<{ method: string; amount: number }>> {
+    const [y, m] = opts.economicMonth.split("-").map((n) => parseInt(n, 10));
+    if (!Number.isFinite(y) || !Number.isFinite(m)) return [];
+    const from = `${y}-${String(m).padStart(2, "0")}-01`;
+    const to = `${y}-${String(m).padStart(2, "0")}-${String(new Date(Date.UTC(y, m, 0)).getUTCDate()).padStart(2, "0")}`;
+
+    if (opts.source === "fudo") {
+      // FUDO es la única fuente con medios de pago abiertos: trae una fila por medio y día.
+      const rows = await db.select({ medio: fudoPagos.medioPago, importe: fudoPagos.importe })
+        .from(fudoPagos)
+        .where(and(
+          eq(fudoPagos.clientId, clientId),
+          eq(fudoPagos.localId, opts.localId),
+          gte(fudoPagos.fecha, from),
+          lte(fudoPagos.fecha, to),
+        ));
+      const map = new Map<string, number>();
+      for (const r of rows) {
+        const k = String(r.medio ?? "").trim() || "Sin especificar";
+        map.set(k, (map.get(k) ?? 0) + (parseFloat(String(r.importe ?? 0)) || 0));
+      }
+      return Array.from(map.entries()).map(([method, amount]) => ({ method, amount }))
+        .sort((a, b) => b.amount - a.amount);
+    }
+
+    // Datalive y Shares no traen el detalle: solo las columnas fijas del archivo. El selector de
+    // medios de pago existe igual, pero con esa granularidad más gruesa.
+    if (opts.source === "shares") {
+      const rows = await db.select().from(sharesVentas)
+        .where(and(
+          eq(sharesVentas.clientId, clientId),
+          eq(sharesVentas.localId, opts.localId),
+          gte(sharesVentas.fecha, from),
+          lte(sharesVentas.fecha, to),
+        ));
+      const acc = { Efectivo: 0, Tarjeta: 0, "Efectivo online": 0, "Operaciones online": 0, "Mercado Pago": 0 };
+      for (const r of rows) {
+        acc.Efectivo += parseFloat(String(r.ventaEfectivo ?? 0)) || 0;
+        acc.Tarjeta += parseFloat(String(r.ventaTarjeta ?? 0)) || 0;
+        acc["Efectivo online"] += parseFloat(String(r.ventaEfectivoOnline ?? 0)) || 0;
+        acc["Operaciones online"] += parseFloat(String(r.ventaOperOnline ?? 0)) || 0;
+        acc["Mercado Pago"] += parseFloat(String(r.ventaMercadopago ?? 0)) || 0;
+      }
+      return Object.entries(acc).map(([method, amount]) => ({ method, amount })).filter((x) => x.amount !== 0);
+    }
+
+    const rows = await db.select().from(dataliveVentas)
+      .where(and(
+        eq(dataliveVentas.clientId, clientId),
+        eq(dataliveVentas.localId, opts.localId),
+        gte(dataliveVentas.fecha, from),
+        lte(dataliveVentas.fecha, to),
+      ));
+    let efectivo = 0;
+    let online = 0;
+    for (const r of rows) {
+      efectivo += parseFloat(String(r.ventaEfectivo ?? 0)) || 0;
+      online += parseFloat(String(r.ventaOnline ?? 0)) || 0;
+    }
+    return [{ method: "Efectivo", amount: efectivo }, { method: "Online", amount: online }]
+      .filter((x) => x.amount !== 0);
+  }
+
+  async listEconomicTaxes(
+    clientId: number,
+    opts: { localId?: number; economicMonth?: string } = {},
+  ): Promise<EconomicTax[]> {
+    const conds = [eq(economicTaxes.clientId, clientId)];
+    if (opts.localId != null) conds.push(eq(economicTaxes.localId, opts.localId));
+    if (opts.economicMonth) conds.push(eq(economicTaxes.economicMonth, opts.economicMonth));
+    return db.select().from(economicTaxes).where(and(...conds)).orderBy(economicTaxes.localId, economicTaxes.taxKind);
+  }
+
+  /** Alta o edición por (local, mes, impuesto): el usuario carga uno por vez y lo corrige. */
+  async upsertEconomicTax(
+    clientId: number,
+    data: {
+      localId: number;
+      economicMonth: string;
+      taxKind: string;
+      mode: string;
+      ratePct: number;
+      excludedPaymentMethods: string[];
+      manualAmount: number;
+      calcBase: number;
+      amount: number;
+      notes?: string | null;
+      updatedBy?: string | null;
+    },
+  ): Promise<EconomicTax> {
+    const values = {
+      clientId,
+      localId: data.localId,
+      economicMonth: data.economicMonth,
+      taxKind: data.taxKind,
+      mode: data.mode,
+      ratePct: String(data.ratePct ?? 0),
+      excludedPaymentMethods: JSON.stringify(data.excludedPaymentMethods ?? []),
+      manualAmount: String(data.manualAmount ?? 0),
+      calcBase: String(data.calcBase ?? 0),
+      amount: String(data.amount ?? 0),
+      notes: data.notes ?? null,
+      updatedBy: data.updatedBy ?? null,
+      updatedAt: new Date(),
+    };
+    const [existing] = await db.select().from(economicTaxes).where(and(
+      eq(economicTaxes.clientId, clientId),
+      eq(economicTaxes.localId, data.localId),
+      eq(economicTaxes.economicMonth, data.economicMonth),
+      eq(economicTaxes.taxKind, data.taxKind),
+    ));
+    if (existing) {
+      const [updated] = await db.update(economicTaxes).set(values).where(eq(economicTaxes.id, existing.id)).returning();
+      return updated;
+    }
+    const [created] = await db.insert(economicTaxes).values(values).returning();
+    return created;
+  }
+
+  async deleteEconomicTax(clientId: number, id: number): Promise<void> {
+    await db.delete(economicTaxes).where(and(eq(economicTaxes.id, id), eq(economicTaxes.clientId, clientId)));
+  }
+
+  async listEconomicCommissions(
+    clientId: number,
+    opts: { localId?: number; economicMonth?: string } = {},
+  ): Promise<EconomicCommission[]> {
+    const conds = [eq(economicCommissions.clientId, clientId)];
+    if (opts.localId != null) conds.push(eq(economicCommissions.localId, opts.localId));
+    if (opts.economicMonth) conds.push(eq(economicCommissions.economicMonth, opts.economicMonth));
+    return db.select().from(economicCommissions).where(and(...conds))
+      .orderBy(economicCommissions.localId, economicCommissions.concept);
+  }
+
+  async upsertEconomicCommission(
+    clientId: number,
+    data: { localId: number; economicMonth: string; concept: string; amount: number; notes?: string | null; updatedBy?: string | null },
+  ): Promise<EconomicCommission> {
+    const values = {
+      clientId,
+      localId: data.localId,
+      economicMonth: data.economicMonth,
+      concept: data.concept,
+      amount: String(data.amount ?? 0),
+      notes: data.notes ?? null,
+      updatedBy: data.updatedBy ?? null,
+      updatedAt: new Date(),
+    };
+    const [existing] = await db.select().from(economicCommissions).where(and(
+      eq(economicCommissions.clientId, clientId),
+      eq(economicCommissions.localId, data.localId),
+      eq(economicCommissions.economicMonth, data.economicMonth),
+      eq(economicCommissions.concept, data.concept),
+    ));
+    if (existing) {
+      const [updated] = await db.update(economicCommissions).set(values).where(eq(economicCommissions.id, existing.id)).returning();
+      return updated;
+    }
+    const [created] = await db.insert(economicCommissions).values(values).returning();
+    return created;
+  }
+
+  async deleteEconomicCommission(clientId: number, id: number): Promise<void> {
+    await db.delete(economicCommissions).where(and(eq(economicCommissions.id, id), eq(economicCommissions.clientId, clientId)));
+  }
+
+  async listEconomicManualSales(
+    clientId: number,
+    opts: { localId?: number; economicMonth?: string } = {},
+  ): Promise<EconomicManualSale[]> {
+    const conds = [eq(economicManualSales.clientId, clientId)];
+    if (opts.localId != null) conds.push(eq(economicManualSales.localId, opts.localId));
+    if (opts.economicMonth) conds.push(eq(economicManualSales.economicMonth, opts.economicMonth));
+    return db.select().from(economicManualSales).where(and(...conds))
+      .orderBy(economicManualSales.localId, desc(economicManualSales.id));
+  }
+
+  /** Las ventas manuales son una lista suelta: se crean, se editan por id y se borran. */
+  async createEconomicManualSale(
+    clientId: number,
+    data: { localId: number; economicMonth: string; concept: string; paymentMethod?: string | null; amount: number; notes?: string | null; createdBy?: string | null },
+  ): Promise<EconomicManualSale> {
+    const [created] = await db.insert(economicManualSales).values({
+      clientId,
+      localId: data.localId,
+      economicMonth: data.economicMonth,
+      concept: data.concept,
+      paymentMethod: data.paymentMethod ?? null,
+      amount: String(data.amount ?? 0),
+      notes: data.notes ?? null,
+      createdBy: data.createdBy ?? null,
+      updatedAt: new Date(),
+    }).returning();
+    return created;
+  }
+
+  async updateEconomicManualSale(
+    clientId: number,
+    id: number,
+    data: { concept?: string; paymentMethod?: string | null; amount?: number; notes?: string | null },
+  ): Promise<EconomicManualSale | undefined> {
+    const patch: Record<string, any> = { updatedAt: new Date() };
+    if (data.concept !== undefined) patch.concept = data.concept;
+    if (data.paymentMethod !== undefined) patch.paymentMethod = data.paymentMethod;
+    if (data.amount !== undefined) patch.amount = String(data.amount);
+    if (data.notes !== undefined) patch.notes = data.notes;
+    const [updated] = await db.update(economicManualSales).set(patch)
+      .where(and(eq(economicManualSales.id, id), eq(economicManualSales.clientId, clientId))).returning();
+    return updated;
+  }
+
+  async deleteEconomicManualSale(clientId: number, id: number): Promise<void> {
+    await db.delete(economicManualSales).where(and(eq(economicManualSales.id, id), eq(economicManualSales.clientId, clientId)));
   }
 
   async getSales(clientId: number): Promise<Sale[]> {

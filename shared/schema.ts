@@ -1946,6 +1946,112 @@ export const insertCmvProductoLineSchema = createInsertSchema(cmvProductoLines).
 export type InsertCmvProductoLine = z.infer<typeof insertCmvProductoLineSchema>;
 export type CmvProductoLine = typeof cmvProductoLines.$inferSelect;
 
+// ==========================================
+// ESTADO DE RESULTADO ECONÓMICO — carga manual por local y mes (sep-2026)
+//
+// Tres cosas que el Estado de Resultado necesita y que NO salen de los extractos:
+//  - IMPUESTOS: el IVA y Ganancias se liquidan fuera del sistema; IIBB y el impuesto al crédito
+//    se pueden calcular sobre las ventas pero dejando medios de pago afuera.
+//  - COMISIONES: Rappi, Pedidos Ya, Mercado Pago y las demás. REEMPLAZAN a las categorías de
+//    comisión de los extractos en el económico; si no, el costo se contaría dos veces.
+//  - VENTAS MANUALES: lo que se vende por fuera de los sistemas de gestión.
+//
+// Las tres se guardan por (empresa, local, MES ECONÓMICO), no por fecha de acreditación: el
+// económico mide el mes en que el hecho ocurrió. Ver shared/economicMonth.ts.
+// ==========================================
+
+export const economicTaxes = pgTable(
+  "economic_taxes",
+  {
+    id: serial("id").primaryKey(),
+    clientId: integer("client_id").notNull().references(() => clients.id, { onDelete: "cascade" }),
+    localId: integer("local_id").notNull().references(() => locals.id),
+    /** "YYYY-MM". */
+    economicMonth: varchar("economic_month", { length: 7 }).notNull(),
+    /** iva | iibb | ganancias | credito | debito | cheque — ver shared/economicStatement.ts. */
+    taxKind: varchar("tax_kind", { length: 30 }).notNull(),
+    /** "manual" = importe a mano. "calculado" = alícuota × ventas de los medios NO excluidos. */
+    mode: varchar("mode", { length: 12 }).notNull().default("manual"),
+    ratePct: decimal("rate_pct", { precision: 7, scale: 4 }).default("0"),
+    /** Medios de pago EXCLUIDOS del cálculo, como JSON array. Vacío = todas las ventas. */
+    excludedPaymentMethods: text("excluded_payment_methods"),
+    manualAmount: decimal("manual_amount", { precision: 14, scale: 2 }).default("0"),
+    /** Base sobre la que se calculó (ventas de los medios incluidos). Foto, para poder auditarlo. */
+    calcBase: decimal("calc_base", { precision: 14, scale: 2 }).default("0"),
+    /** Importe que se lleva al informe: el manual o el calculado, según `mode`. */
+    amount: decimal("amount", { precision: 14, scale: 2 }).default("0"),
+    notes: text("notes"),
+    updatedBy: varchar("updated_by").references(() => users.id),
+    createdAt: timestamp("created_at").defaultNow(),
+    updatedAt: timestamp("updated_at").defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("economic_taxes_client_local_month_kind_uq").on(
+      table.clientId, table.localId, table.economicMonth, table.taxKind,
+    ),
+  ],
+);
+
+export const insertEconomicTaxSchema = createInsertSchema(economicTaxes).omit({ id: true, createdAt: true, updatedAt: true });
+export type InsertEconomicTax = z.infer<typeof insertEconomicTaxSchema>;
+export type EconomicTax = typeof economicTaxes.$inferSelect;
+
+export const economicCommissions = pgTable(
+  "economic_commissions",
+  {
+    id: serial("id").primaryKey(),
+    clientId: integer("client_id").notNull().references(() => clients.id, { onDelete: "cascade" }),
+    localId: integer("local_id").notNull().references(() => locals.id),
+    economicMonth: varchar("economic_month", { length: 7 }).notNull(),
+    /**
+     * Clave de una comisión conocida (rappi, pedidos_ya, mp_posnet…) o el nombre libre de una
+     * agregada por el usuario. Una sola columna para las dos cosas: así el índice único vale para
+     * ambas y no hay que inventar filas "otra #1", "otra #2".
+     */
+    concept: varchar("concept", { length: 120 }).notNull(),
+    amount: decimal("amount", { precision: 14, scale: 2 }).default("0"),
+    notes: text("notes"),
+    updatedBy: varchar("updated_by").references(() => users.id),
+    createdAt: timestamp("created_at").defaultNow(),
+    updatedAt: timestamp("updated_at").defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("economic_commissions_client_local_month_concept_uq").on(
+      table.clientId, table.localId, table.economicMonth, table.concept,
+    ),
+  ],
+);
+
+export const insertEconomicCommissionSchema = createInsertSchema(economicCommissions).omit({ id: true, createdAt: true, updatedAt: true });
+export type InsertEconomicCommission = z.infer<typeof insertEconomicCommissionSchema>;
+export type EconomicCommission = typeof economicCommissions.$inferSelect;
+
+export const economicManualSales = pgTable(
+  "economic_manual_sales",
+  {
+    id: serial("id").primaryKey(),
+    clientId: integer("client_id").notNull().references(() => clients.id, { onDelete: "cascade" }),
+    localId: integer("local_id").notNull().references(() => locals.id),
+    economicMonth: varchar("economic_month", { length: 7 }).notNull(),
+    concept: varchar("concept", { length: 160 }).notNull(),
+    /** Opcional. Define si la venta entra o no en el cálculo de IIBB y del impuesto al crédito. */
+    paymentMethod: varchar("payment_method", { length: 80 }),
+    amount: decimal("amount", { precision: 14, scale: 2 }).default("0"),
+    notes: text("notes"),
+    createdBy: varchar("created_by").references(() => users.id),
+    createdAt: timestamp("created_at").defaultNow(),
+    updatedAt: timestamp("updated_at").defaultNow(),
+  },
+  // Sin índice único: son varias ventas sueltas por mes, no una por concepto.
+  (table) => [
+    index("economic_manual_sales_client_local_month_idx").on(table.clientId, table.localId, table.economicMonth),
+  ],
+);
+
+export const insertEconomicManualSaleSchema = createInsertSchema(economicManualSales).omit({ id: true, createdAt: true, updatedAt: true });
+export type InsertEconomicManualSale = z.infer<typeof insertEconomicManualSaleSchema>;
+export type EconomicManualSale = typeof economicManualSales.$inferSelect;
+
 
 // ==========================================
 // OPERATIONAL AUDITS (Auditorías Operativas)

@@ -39,6 +39,7 @@ import type {
 } from "@shared/schema";
 import { computeInvoiceTaxes } from "@shared/invoiceTaxComputation";
 import { isEconomicMonth } from "@shared/economicMonth";
+import { isTaxKind, TAX_KIND_BY_KEY, computeTaxAmount } from "@shared/economicStatement";
 import { computeBreakeven } from "@shared/breakeven";
 import { registerBulkInvoiceImportRoutes } from "./routesBulkInvoiceImport";
 import { db } from "./db";
@@ -3971,6 +3972,224 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
       const data = await storage.getEconomicBalance(clientId, year, parseLocals(), salesSources);
       res.json(data);
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
+  // ==========================================
+  // ESTADO DE RESULTADO ECONÓMICO — carga manual (sep-2026)
+  // Impuestos, comisiones y ventas que no salen de los extractos ni de los sistemas de gestión.
+  // Todo por (local, mes económico): el económico mide el mes en que el hecho ocurrió.
+  // ==========================================
+
+  /** Medios de pago disponibles del mes, para elegir cuáles quedan fuera del cálculo de IIBB. */
+  app.get("/api/economic/payment-methods", isAuthenticated, async (req, res) => {
+    try {
+      const clientId = await getClientId(req);
+      const localId = parseInt(String(req.query.localId ?? ""), 10);
+      const economicMonth = String(req.query.economicMonth ?? "");
+      if (!Number.isFinite(localId) || !isEconomicMonth(economicMonth)) {
+        return res.status(400).json({ message: "Falta el local o el mes (YYYY-MM)" });
+      }
+      res.json(await storage.getEconomicSalesByPaymentMethod(clientId, {
+        localId,
+        economicMonth,
+        source: parseProductSource(req.query.source),
+      }));
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
+  app.get("/api/economic/taxes", isAuthenticated, async (req, res) => {
+    try {
+      const clientId = await getClientId(req);
+      const localId = req.query.localId ? parseInt(String(req.query.localId), 10) : undefined;
+      const economicMonth = typeof req.query.economicMonth === "string" ? req.query.economicMonth : undefined;
+      res.json(await storage.listEconomicTaxes(clientId, {
+        localId: Number.isFinite(localId as number) ? localId : undefined,
+        economicMonth,
+      }));
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
+  app.post("/api/economic/taxes", isAuthenticated, async (req, res) => {
+    try {
+      const clientId = await getClientId(req);
+      const actorId = await getAuthenticatedUserId(req);
+      const schema = z.object({
+        localId: z.coerce.number().int().positive(),
+        economicMonth: z.string().refine(isEconomicMonth, "Mes inválido (YYYY-MM)"),
+        taxKind: z.string().refine(isTaxKind, "Impuesto desconocido"),
+        mode: z.enum(["manual", "calculado"]).default("manual"),
+        ratePct: z.coerce.number().min(0).max(100).default(0),
+        excludedPaymentMethods: z.array(z.string()).default([]),
+        manualAmount: z.coerce.number().default(0),
+        salesSource: z.enum(["fudo", "datalive", "shares"]).default("fudo"),
+        notes: z.string().nullable().optional(),
+      });
+      const parsed = schema.safeParse(req.body);
+      if (!parsed.success) return res.status(400).json({ message: "Datos inválidos", errors: parsed.error.flatten() });
+      const d = parsed.data;
+
+      const def = TAX_KIND_BY_KEY[d.taxKind];
+      // Un impuesto que no admite cálculo se guarda siempre a mano, aunque llegue "calculado".
+      const mode = def.calculable ? d.mode : "manual";
+
+      // El importe se calcula SIEMPRE en el servidor: el cliente manda los parámetros, no el total.
+      const salesByPaymentMethod = mode === "calculado"
+        ? await storage.getEconomicSalesByPaymentMethod(clientId, {
+            localId: d.localId, economicMonth: d.economicMonth, source: d.salesSource,
+          })
+        : [];
+      const { amount, base } = computeTaxAmount({
+        mode,
+        ratePct: d.ratePct,
+        manualAmount: d.manualAmount,
+        salesByPaymentMethod,
+        excludedPaymentMethods: d.excludedPaymentMethods,
+      });
+
+      res.json(await storage.upsertEconomicTax(clientId, {
+        localId: d.localId,
+        economicMonth: d.economicMonth,
+        taxKind: d.taxKind,
+        mode,
+        ratePct: d.ratePct,
+        excludedPaymentMethods: d.excludedPaymentMethods,
+        manualAmount: d.manualAmount,
+        calcBase: base,
+        amount,
+        notes: d.notes ?? null,
+        updatedBy: actorId,
+      }));
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
+  app.delete("/api/economic/taxes/:id", isAuthenticated, async (req, res) => {
+    try {
+      const clientId = await getClientId(req);
+      const id = parseInt(req.params.id, 10);
+      if (!Number.isFinite(id)) return res.status(400).json({ message: "ID inválido" });
+      await storage.deleteEconomicTax(clientId, id);
+      res.json({ ok: true });
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
+  app.get("/api/economic/commissions", isAuthenticated, async (req, res) => {
+    try {
+      const clientId = await getClientId(req);
+      const localId = req.query.localId ? parseInt(String(req.query.localId), 10) : undefined;
+      const economicMonth = typeof req.query.economicMonth === "string" ? req.query.economicMonth : undefined;
+      res.json(await storage.listEconomicCommissions(clientId, {
+        localId: Number.isFinite(localId as number) ? localId : undefined,
+        economicMonth,
+      }));
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
+  app.post("/api/economic/commissions", isAuthenticated, async (req, res) => {
+    try {
+      const clientId = await getClientId(req);
+      const actorId = await getAuthenticatedUserId(req);
+      const schema = z.object({
+        localId: z.coerce.number().int().positive(),
+        economicMonth: z.string().refine(isEconomicMonth, "Mes inválido (YYYY-MM)"),
+        concept: z.string().trim().min(1, "Falta el concepto").max(120),
+        amount: z.coerce.number().default(0),
+        notes: z.string().nullable().optional(),
+      });
+      const parsed = schema.safeParse(req.body);
+      if (!parsed.success) return res.status(400).json({ message: "Datos inválidos", errors: parsed.error.flatten() });
+      res.json(await storage.upsertEconomicCommission(clientId, { ...parsed.data, updatedBy: actorId }));
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
+  app.delete("/api/economic/commissions/:id", isAuthenticated, async (req, res) => {
+    try {
+      const clientId = await getClientId(req);
+      const id = parseInt(req.params.id, 10);
+      if (!Number.isFinite(id)) return res.status(400).json({ message: "ID inválido" });
+      await storage.deleteEconomicCommission(clientId, id);
+      res.json({ ok: true });
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
+  app.get("/api/economic/manual-sales", isAuthenticated, async (req, res) => {
+    try {
+      const clientId = await getClientId(req);
+      const localId = req.query.localId ? parseInt(String(req.query.localId), 10) : undefined;
+      const economicMonth = typeof req.query.economicMonth === "string" ? req.query.economicMonth : undefined;
+      res.json(await storage.listEconomicManualSales(clientId, {
+        localId: Number.isFinite(localId as number) ? localId : undefined,
+        economicMonth,
+      }));
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
+  app.post("/api/economic/manual-sales", isAuthenticated, async (req, res) => {
+    try {
+      const clientId = await getClientId(req);
+      const actorId = await getAuthenticatedUserId(req);
+      const schema = z.object({
+        localId: z.coerce.number().int().positive(),
+        economicMonth: z.string().refine(isEconomicMonth, "Mes inválido (YYYY-MM)"),
+        concept: z.string().trim().min(1, "Falta el concepto").max(160),
+        paymentMethod: z.string().trim().max(80).nullable().optional(),
+        amount: z.coerce.number().default(0),
+        notes: z.string().nullable().optional(),
+      });
+      const parsed = schema.safeParse(req.body);
+      if (!parsed.success) return res.status(400).json({ message: "Datos inválidos", errors: parsed.error.flatten() });
+      res.json(await storage.createEconomicManualSale(clientId, { ...parsed.data, createdBy: actorId }));
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
+  app.put("/api/economic/manual-sales/:id", isAuthenticated, async (req, res) => {
+    try {
+      const clientId = await getClientId(req);
+      const id = parseInt(req.params.id, 10);
+      if (!Number.isFinite(id)) return res.status(400).json({ message: "ID inválido" });
+      const schema = z.object({
+        concept: z.string().trim().min(1).max(160).optional(),
+        paymentMethod: z.string().trim().max(80).nullable().optional(),
+        amount: z.coerce.number().optional(),
+        notes: z.string().nullable().optional(),
+      });
+      const parsed = schema.safeParse(req.body);
+      if (!parsed.success) return res.status(400).json({ message: "Datos inválidos", errors: parsed.error.flatten() });
+      const updated = await storage.updateEconomicManualSale(clientId, id, parsed.data);
+      if (!updated) return res.status(404).json({ message: "Venta no encontrada" });
+      res.json(updated);
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
+  app.delete("/api/economic/manual-sales/:id", isAuthenticated, async (req, res) => {
+    try {
+      const clientId = await getClientId(req);
+      const id = parseInt(req.params.id, 10);
+      if (!Number.isFinite(id)) return res.status(400).json({ message: "ID inválido" });
+      await storage.deleteEconomicManualSale(clientId, id);
+      res.json({ ok: true });
     } catch (e: any) {
       res.status(500).json({ message: e.message });
     }
