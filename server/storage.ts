@@ -4548,6 +4548,12 @@ export class DatabaseStorage implements IStorage {
        * siempre; este solo elige el que se resta (decisión del usuario, 21-sep-2026).
        */
       cmvMode?: "compras" | "inventario" | "productos";
+      /**
+       * Saltea los extras (top 10, ventas no facturadas, punto de equilibrio y mes anterior).
+       * Lo usa la llamada recursiva que trae el mes anterior para comparar: ahí alcanza con el
+       * resumen, y sin esto la recursión no tendría fondo.
+       */
+      skipExtras?: boolean;
     },
   ) {
     const { year, month } = opts;
@@ -5028,6 +5034,102 @@ export class DatabaseStorage implements IStorage {
     const resultadoAntesImpuestos = resultadoOperativo - impuestosOperativosTotal;
     const resultadoNeto = resultadoAntesImpuestos - gananciasTotal;
 
+    // ── EXTRAS del informe ───────────────────────────────────────────────────
+    // Se calculan solo en la vista completa: cuando este mismo método se llama para traer el mes
+    // anterior (`skipExtras`), alcanza con el resumen y no vale la pena pagar estas consultas.
+    const extras: Record<string, unknown> = {};
+    if (!opts.skipExtras) {
+      // 1. Los 10 productos más vendidos del mes, con su CMV% y su margen de contribución.
+      //    Reusa el mismo cálculo que el sub-módulo Productos Vendidos.
+      const topSource = opts.salesSources[0] ?? "fudo";
+      const vendidos = await this.computeProductosVendidos(clientId, {
+        source: topSource,
+        dateFrom: from,
+        dateTo: to,
+        localIds,
+        topN: 10,
+        ivaIncluded: true, // El informe trabaja en bruto: el margen se mide contra el precio con IVA.
+      });
+      extras.topProductos = {
+        source: topSource,
+        coberturaPct: vendidos.totals.coberturaPct,
+        unidades: vendidos.totals.unidades,
+        items: vendidos.items.map((it) => ({
+          rank: it.rank,
+          producto: it.producto,
+          cantidad: it.cantidad,
+          participacionPct: it.participacionPct,
+          cmvPct: it.cmvPct,
+          margenPct: it.margenPct,
+          variacionPct: it.variacionPct,
+          esNuevo: it.esNuevo,
+        })),
+      };
+
+      // 2. Ventas no facturadas. El flag de fiscalización SOLO existe en FUDO: en Datalive y
+      //    Shares no hay forma de saberlo, así que se devuelve null en vez de un cero engañoso.
+      if (opts.salesSources.includes("fudo")) {
+        const fisc = await this.getDashboardVentasFiscalizadas(clientId, year, month, localIds);
+        // El corte sale de `fudo_ventas` (la venta del día) y el informe suma `fudo_pagos` (los
+        // medios de pago). Los dos archivos se importan por separado y no siempre cierran entre
+        // sí, así que el % se mide contra el total de FUDO y se avisa cuando difieren: sin eso,
+        // "no facturada $27,8M" al lado de "ventas $50,2M" se lee como un 55% que no es.
+        const brecha = fisc.ventaTotal - ventasTotal;
+        extras.ventasNoFacturadas = {
+          disponible: true,
+          ventaTotal: fisc.ventaTotal,
+          facturada: fisc.fiscalizada,
+          noFacturada: fisc.noFiscalizada,
+          sinDato: fisc.sinDato,
+          noFacturadaPct: fisc.ventaTotal > 0 ? (fisc.noFiscalizada / fisc.ventaTotal) * 100 : 0,
+          diasSinDato: fisc.diasSinDato,
+          ventasDelInforme: ventasTotal,
+          brechaConInforme: brecha,
+          coincideConInforme: fisc.ventaTotal > 0 && Math.abs(brecha) / fisc.ventaTotal < 0.01,
+        };
+      } else {
+        extras.ventasNoFacturadas = {
+          disponible: false,
+          motivo: "El corte de ventas facturadas solo existe en FUDO; las otras fuentes no traen el dato.",
+        };
+      }
+
+      // 3. Punto de equilibrio del mes: cuánto había que vender para dar cero.
+      //    Costos fijos = gastos + comisiones + impuestos operativos. El margen de contribución es
+      //    la utilidad bruta sobre ventas, o sea lo que queda de cada peso vendido después del
+      //    costo de mercadería. Sin margen positivo no hay equilibrio posible.
+      const costosFijos = gastosTotal + comisionesTotal + impuestosOperativosTotal;
+      const margenContribucionPct = ventasTotal > 0 ? (utilidadBruta / ventasTotal) * 100 : 0;
+      extras.puntoEquilibrio = margenContribucionPct > 0
+        ? {
+            alcanzable: true,
+            costosFijos,
+            margenContribucionPct,
+            ventasNecesarias: (costosFijos / margenContribucionPct) * 100,
+            /** Cuánto de más (o de menos) se vendió respecto del equilibrio. */
+            excedente: ventasTotal - (costosFijos / margenContribucionPct) * 100,
+          }
+        : { alcanzable: false, costosFijos, margenContribucionPct, ventasNecesarias: null, excedente: null };
+
+      // 4. El mes anterior, para comparar cada línea. Se resuelve llamando a este mismo método
+      //    con `skipExtras`, así la comparación usa exactamente el mismo criterio de cálculo.
+      const prevMonth = month === 1 ? 12 : month - 1;
+      const prevYear = month === 1 ? year - 1 : year;
+      const anterior = await this.computeEconomicStatement(clientId, {
+        year: prevYear,
+        month: prevMonth,
+        localIds: opts.localIds,
+        salesSources: opts.salesSources,
+        cmvMode: opts.cmvMode,
+        skipExtras: true,
+      });
+      extras.anterior = {
+        period: anterior.period,
+        resumen: anterior.resumen,
+        indicadores: anterior.indicadores,
+      };
+    }
+
     return {
       period: { year, month, economicMonth, from, to },
       locals: allLocals.filter((l) => localSet.has(l.id)),
@@ -5093,6 +5195,7 @@ export class DatabaseStorage implements IStorage {
         resultadoOperativoPct: pct(resultadoOperativo),
         resultadoNetoPct: pct(resultadoNeto),
       },
+      ...extras,
     };
   }
 

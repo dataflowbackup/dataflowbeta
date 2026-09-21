@@ -96,6 +96,47 @@ interface Statement {
   };
   resumen: Record<string, number>;
   indicadores: Record<string, number>;
+  topProductos?: {
+    source: string;
+    coberturaPct: number | null;
+    unidades: number;
+    items: Array<{
+      rank: number;
+      producto: string;
+      cantidad: number;
+      participacionPct: number;
+      cmvPct: number | null;
+      margenPct: number | null;
+      variacionPct: number | null;
+      esNuevo: boolean;
+    }>;
+  };
+  ventasNoFacturadas?:
+    | {
+        disponible: true;
+        ventaTotal: number;
+        facturada: number;
+        noFacturada: number;
+        sinDato: number;
+        noFacturadaPct: number;
+        diasSinDato: number;
+        ventasDelInforme: number;
+        brechaConInforme: number;
+        coincideConInforme: boolean;
+      }
+    | { disponible: false; motivo: string };
+  puntoEquilibrio?: {
+    alcanzable: boolean;
+    costosFijos: number;
+    margenContribucionPct: number;
+    ventasNecesarias: number | null;
+    excedente: number | null;
+  };
+  anterior?: {
+    period: { year: number; month: number; economicMonth: string };
+    resumen: Record<string, number>;
+    indicadores: Record<string, number>;
+  };
 }
 
 const pct = (v: number) => `${v.toFixed(1)}%`;
@@ -626,6 +667,196 @@ export function StatementTab({
           </div>
         </CardContent>
       </Card>
+
+      {/* ── CONTRA EL MES ANTERIOR ── */}
+      {data.anterior && (
+        <Card>
+          <CardContent className="pt-6">
+            <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-3">
+              Contra el mes anterior ({data.anterior.period.economicMonth})
+            </p>
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b text-xs text-muted-foreground">
+                    <th className="text-left font-medium py-2">Concepto</th>
+                    <th className="text-right font-medium py-2">Este mes</th>
+                    <th className="text-right font-medium py-2">Mes anterior</th>
+                    <th className="text-right font-medium py-2">Diferencia</th>
+                    <th className="text-right font-medium py-2">Var. %</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {[
+                    { key: "ventas", label: "Ventas", bueno: "sube" as const },
+                    { key: "costoMercaderia", label: "Costo de mercadería", bueno: "baja" as const },
+                    { key: "utilidadBruta", label: "Utilidad bruta", bueno: "sube" as const },
+                    { key: "gastos", label: "Gastos operativos", bueno: "baja" as const },
+                    { key: "comisiones", label: "Comisiones", bueno: "baja" as const },
+                    { key: "resultadoNeto", label: "Resultado neto", bueno: "sube" as const },
+                  ].map(({ key, label, bueno }) => {
+                    const hoy = R[key] ?? 0;
+                    const antes = data.anterior!.resumen[key] ?? 0;
+                    const dif = hoy - antes;
+                    const varPct = antes !== 0 ? (dif / Math.abs(antes)) * 100 : null;
+                    // Lo "bueno" depende de la línea: que las ventas suban es bueno, que los
+                    // gastos suban no. Sin esto, todo el verde y el rojo mienten la mitad del tiempo.
+                    const positivo = bueno === "sube" ? dif >= 0 : dif <= 0;
+                    const color = dif === 0 ? "" : positivo ? "text-emerald-600 dark:text-emerald-500" : "text-destructive";
+                    return (
+                      <tr key={key} className="border-b last:border-0">
+                        <td className="py-2">{label}</td>
+                        <td className="py-2 text-right font-mono">{formatCurrency(hoy)}</td>
+                        <td className="py-2 text-right font-mono text-muted-foreground">{formatCurrency(antes)}</td>
+                        <td className={`py-2 text-right font-mono ${color}`}>
+                          {dif >= 0 ? "+" : ""}
+                          {formatCurrency(dif)}
+                        </td>
+                        <td className={`py-2 text-right font-mono ${color}`}>
+                          {varPct == null ? "—" : `${varPct >= 0 ? "+" : ""}${varPct.toFixed(1)}%`}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* ── PUNTO DE EQUILIBRIO Y VENTAS NO FACTURADAS ── */}
+      <div className="grid gap-4 md:grid-cols-2">
+        {data.puntoEquilibrio && (
+          <Card>
+            <CardContent className="pt-6 space-y-2">
+              <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Punto de equilibrio del mes</p>
+              {!data.puntoEquilibrio.alcanzable ? (
+                <p className="text-sm text-destructive">
+                  El margen de contribución no es positivo: con este costo de mercadería no hay volumen de ventas
+                  que alcance el equilibrio.
+                </p>
+              ) : (
+                <>
+                  <p className={`text-2xl font-bold font-mono ${ECON.text}`}>
+                    {formatCurrency(data.puntoEquilibrio.ventasNecesarias ?? 0)}
+                  </p>
+                  <p className="text-xs text-muted-foreground">
+                    Costos fijos {formatCurrency(data.puntoEquilibrio.costosFijos)} ÷ margen de contribución{" "}
+                    {pct(data.puntoEquilibrio.margenContribucionPct)}. Gastos + comisiones + impuestos operativos.
+                  </p>
+                  <p
+                    className={`text-sm font-medium ${(data.puntoEquilibrio.excedente ?? 0) >= 0 ? "text-emerald-600 dark:text-emerald-500" : "text-destructive"}`}
+                  >
+                    {(data.puntoEquilibrio.excedente ?? 0) >= 0 ? "Se vendió " : "Faltaron "}
+                    {formatCurrency(Math.abs(data.puntoEquilibrio.excedente ?? 0))}
+                    {(data.puntoEquilibrio.excedente ?? 0) >= 0 ? " por encima del equilibrio" : " para llegar al equilibrio"}
+                  </p>
+                </>
+              )}
+            </CardContent>
+          </Card>
+        )}
+
+        {data.ventasNoFacturadas && (
+          <Card>
+            <CardContent className="pt-6 space-y-2">
+              <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Ventas no facturadas</p>
+              {!data.ventasNoFacturadas.disponible ? (
+                <p className="text-sm text-muted-foreground">{data.ventasNoFacturadas.motivo}</p>
+              ) : (
+                <>
+                  <p className="text-2xl font-bold font-mono text-amber-600 dark:text-amber-500">
+                    {formatCurrency(data.ventasNoFacturadas.noFacturada)}
+                  </p>
+                  <p className="text-xs text-muted-foreground">
+                    {pct(data.ventasNoFacturadas.noFacturadaPct)} de {formatCurrency(data.ventasNoFacturadas.ventaTotal)} que
+                    FUDO registra como venta del mes. Facturado: {formatCurrency(data.ventasNoFacturadas.facturada)}.
+                  </p>
+                  {!data.ventasNoFacturadas.coincideConInforme && (
+                    <p className="text-[11px] text-amber-700 dark:text-amber-400">
+                      Ojo: FUDO registra {formatCurrency(data.ventasNoFacturadas.ventaTotal)} de venta y el informe suma{" "}
+                      {formatCurrency(data.ventasNoFacturadas.ventasDelInforme)} de medios de pago. Son dos archivos
+                      distintos de FUDO y no están cerrando entre sí, así que el porcentaje va medido contra el total
+                      de FUDO, no contra el del informe.
+                    </p>
+                  )}
+                  {data.ventasNoFacturadas.diasSinDato > 0 && (
+                    <p className="text-[11px] text-muted-foreground">
+                      {data.ventasNoFacturadas.diasSinDato} día(s) importados antes de que se leyera el corte: ahí no se
+                      sabe, no es "no facturado".
+                    </p>
+                  )}
+                </>
+              )}
+            </CardContent>
+          </Card>
+        )}
+      </div>
+
+      {/* ── TOP 10 PRODUCTOS ── */}
+      {data.topProductos && data.topProductos.items.length > 0 && (
+        <Card>
+          <CardContent className="pt-6">
+            <div className="flex items-baseline justify-between gap-3 flex-wrap mb-3">
+              <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                Los 10 productos más vendidos del mes
+              </p>
+              <p className="text-[11px] text-muted-foreground">
+                Origen: {data.topProductos.source === "fudo" ? "FUDO" : data.topProductos.source === "shares" ? "Shares" : "Datalive"} ·
+                cobertura de costeo {data.topProductos.coberturaPct == null ? "—" : pct(data.topProductos.coberturaPct)}
+              </p>
+            </div>
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b text-xs text-muted-foreground">
+                    <th className="text-left font-medium py-2 w-8">#</th>
+                    <th className="text-left font-medium py-2">Producto</th>
+                    <th className="text-right font-medium py-2">Unidades</th>
+                    <th className="text-right font-medium py-2">% del total</th>
+                    <th className="text-right font-medium py-2">CMV %</th>
+                    <th className="text-right font-medium py-2">Margen %</th>
+                    <th className="text-right font-medium py-2">vs mes ant.</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {data.topProductos.items.map((it) => (
+                    <tr key={it.producto} className="border-b last:border-0">
+                      <td className="py-2 text-xs text-muted-foreground">{it.rank}</td>
+                      <td className="py-2">{it.producto}</td>
+                      <td className="py-2 text-right font-mono">{it.cantidad.toLocaleString("es-AR")}</td>
+                      <td className="py-2 text-right font-mono">{pct(it.participacionPct)}</td>
+                      <td className="py-2 text-right font-mono">{it.cmvPct == null ? "—" : pct(it.cmvPct)}</td>
+                      <td className={`py-2 text-right font-mono ${it.margenPct != null ? ECON.text : ""}`}>
+                        {it.margenPct == null ? "—" : pct(it.margenPct)}
+                      </td>
+                      <td className="py-2 text-right font-mono text-xs">
+                        {it.esNuevo ? (
+                          <Badge variant="secondary" className="text-[10px]">nuevo</Badge>
+                        ) : it.variacionPct == null ? (
+                          "—"
+                        ) : (
+                          <span className={it.variacionPct >= 0 ? "text-emerald-600 dark:text-emerald-500" : "text-destructive"}>
+                            {it.variacionPct >= 0 ? "+" : ""}
+                            {it.variacionPct.toFixed(1)}%
+                          </span>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            {data.topProductos.coberturaPct != null && data.topProductos.coberturaPct < 95 && (
+              <p className="mt-3 text-[11px] text-amber-700 dark:text-amber-400">
+                Los productos con "—" no tienen costo cargado todavía. Se les asigna en CMV Productos o en Productos
+                Vendidos, y con eso se completan estas dos columnas.
+              </p>
+            )}
+          </CardContent>
+        </Card>
+      )}
 
       {/* ── INDICADORES ── */}
       <Card>
