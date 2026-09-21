@@ -20,8 +20,14 @@ export function formatNumber(value: number | string | null | undefined, decimals
   }).format(num);
 }
 
-/** Miles con punto y decimales con coma, mientras se escribe (máx. 2 decimales). */
-export function formatEsArAmountInput(raw: string): string {
+/**
+ * Miles con punto y decimales con coma, mientras se escribe.
+ *
+ * `maxDecimals` es 2 para importes. Las CANTIDADES usan más: desde sep-2026 los insumos se
+ * cargan en kilos y litros ("1,125 Kg" en vez de "1125 gramos"), y una especia puede entrar
+ * con 0,00025 Kg. Para eso está `formatEsArQuantityInput`.
+ */
+export function formatEsArAmountInput(raw: string, maxDecimals = 2): string {
   if (raw === "") return "";
   const noDots = raw.replace(/\s/g, "").replace(/\./g, "");
   const only = noDots.replace(/[^\d,]/g, "");
@@ -35,7 +41,7 @@ export function formatEsArAmountInput(raw: string): string {
     intPart = only.slice(0, commaIdx);
     decPart = only.slice(commaIdx + 1).replace(/,/g, "");
   }
-  decPart = decPart.slice(0, 2);
+  decPart = decPart.slice(0, maxDecimals);
   intPart = intPart.replace(/^0+(?=\d)/, "");
   if (intPart === "" && decPart !== "") intPart = "0";
   if (intPart === "" && commaIdx !== -1 && decPart === "") return "0,";
@@ -48,6 +54,26 @@ export function formatEsArAmountInput(raw: string): string {
     return grouped === "" ? "0," : `${grouped},`;
   }
   return grouped;
+}
+
+/**
+ * Cantidades de insumo mientras se escriben. Admite hasta 6 decimales: en kilos y litros, un
+ * gramo son 0,001 y hay recetas con 0,00025 Kg de especias. Recortar antes rompería el costo
+ * de esas recetas al editarlas.
+ */
+export function formatEsArQuantityInput(raw: string): string {
+  return formatEsArAmountInput(raw, 6);
+}
+
+/** Número → texto es-AR para precargar un input de cantidad (sin ceros de relleno). */
+export function quantityToEsArInput(value: number | string | null | undefined): string {
+  if (value === null || value === undefined || value === "") return "";
+  const n = typeof value === "string" ? parseFloat(value) : value;
+  if (!Number.isFinite(n)) return "";
+  // `toFixed(6)` y afuera los ceros sobrantes: 0,34 no se muestra como 0,340000.
+  const fixed = n.toFixed(6).replace(/0+$/, "").replace(/\.$/, "");
+  // Pasa por la misma máscara que al tipear, para que los miles se agrupen igual.
+  return formatEsArQuantityInput(fixed.replace(".", ","));
 }
 
 /** Convierte valor del input es-AR a número (NaN si inválido). */

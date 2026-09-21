@@ -1304,8 +1304,15 @@ export class DatabaseStorage implements IStorage {
     return (result.rowCount ?? 0) > 0;
   }
 
+  /**
+   * Solo las unidades ACTIVAS. Las viejas (Gramos, Mililitros) quedaron desactivadas por la
+   * migración de sep-2026 en lugar de borradas, porque las valorizaciones de stock guardan un
+   * snapshot de la unidad y borrar la fila rompería esas referencias.
+   */
   async getUnits(clientId: number): Promise<UnitOfMeasure[]> {
-    return db.select().from(unitsOfMeasure).where(eq(unitsOfMeasure.clientId, clientId)).orderBy(unitsOfMeasure.name);
+    return db.select().from(unitsOfMeasure)
+      .where(and(eq(unitsOfMeasure.clientId, clientId), eq(unitsOfMeasure.active, true)))
+      .orderBy(unitsOfMeasure.name);
   }
 
   async createUnit(unit: InsertUnitOfMeasure): Promise<UnitOfMeasure> {

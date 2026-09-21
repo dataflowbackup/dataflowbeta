@@ -24,6 +24,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
+import { QuantityInput } from "@/components/quantity-input";
 import { formatCurrency, formatPercentage, formatNumber } from "@/lib/formatters";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Plus, Trash2, TrendingUp, DollarSign, Percent, Package, ChefHat, Upload, Check, ChevronsUpDown, ExternalLink } from "lucide-react";
@@ -1051,12 +1052,13 @@ export default function RecipeFormPage() {
                               <FormItem>
                                 <FormLabel>Cantidad Total Necesaria</FormLabel>
                                 <FormControl>
-                                  <Input
-                                    type="number"
-                                    step="0.0001"
-                                    min="0"
-                                    {...ingField}
-                                    className="font-mono"
+                                  <QuantityInput
+                                    value={ingField.value}
+                                    onChange={ingField.onChange}
+                                    onBlur={ingField.onBlur}
+                                    name={ingField.name}
+                                    ref={ingField.ref}
+                                    unit={isSubRecipeIng ? null : supply?.unitOfMeasure?.abbreviation ?? null}
                                     data-testid={`input-quantity-${index}`}
                                   />
                                 </FormControl>
@@ -1074,16 +1076,16 @@ export default function RecipeFormPage() {
                                 <FormItem>
                                   <FormLabel>Cantidad Util Final</FormLabel>
                                   <FormControl>
-                                    <Input
-                                      type="number"
-                                      step="0.0001"
-                                      min="0"
-                                      {...ingField}
-                                      className="font-mono"
-                                      onChange={(e) => {
-                                        ingField.onChange(e);
+                                    <QuantityInput
+                                      value={ingField.value}
+                                      onChange={(n) => {
+                                        ingField.onChange(n);
                                         setTimeout(() => handleIngredientWasteCalc(index), 100);
                                       }}
+                                      onBlur={ingField.onBlur}
+                                      name={ingField.name}
+                                      ref={ingField.ref}
+                                      unit={supply?.unitOfMeasure?.abbreviation ?? null}
                                       data-testid={`input-useful-${index}`}
                                     />
                                   </FormControl>

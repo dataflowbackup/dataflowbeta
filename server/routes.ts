@@ -1133,37 +1133,22 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
   });
 
-  app.post("/api/units", isAuthenticated, async (req, res) => {
-    try {
-      const clientId = await getClientId(req);
-      const data = await storage.createUnit({ ...req.body, clientId });
-      res.json(data);
-    } catch (e: any) {
-      res.status(500).json({ message: e.message });
-    }
-  });
+  /*
+   * Catálogo CERRADO (sep-2026): las unidades son tres y no se tocan — Kilogramos (Kg),
+   * Litros (Lt) y Unidad (Und). Que cada empresa inventara las suyas (Gramos, Mililitros,
+   * "Undida") hacía que la misma mercadería se cargara en escalas distintas y que el costeo
+   * no fuera comparable. Se cierra en el servidor y no solo en la pantalla: la API es la que
+   * tiene que sostener la regla.
+   */
+  const CATALOGO_CERRADO = {
+    message:
+      "Las unidades de medida son fijas: Kilogramos (Kg), Litros (Lt) y Unidad (Und). " +
+      "No se pueden crear, editar ni eliminar.",
+  };
 
-  app.patch("/api/units/:id", isAuthenticated, async (req, res) => {
-    try {
-      const clientId = await getClientId(req);
-      const data = await storage.updateUnit(clientId, parseInt(req.params.id), req.body);
-      if (!data) return res.status(404).json({ message: "Unit not found or access denied" });
-      res.json(data);
-    } catch (e: any) {
-      res.status(500).json({ message: e.message });
-    }
-  });
-
-  app.delete("/api/units/:id", isAuthenticated, async (req, res) => {
-    try {
-      const clientId = await getClientId(req);
-      const deleted = await storage.deleteUnit(clientId, parseInt(req.params.id));
-      if (!deleted) return res.status(404).json({ message: "Unit not found or access denied" });
-      res.json({ success: true });
-    } catch (e: any) {
-      res.status(500).json({ message: e.message });
-    }
-  });
+  app.post("/api/units", isAuthenticated, async (_req, res) => res.status(403).json(CATALOGO_CERRADO));
+  app.patch("/api/units/:id", isAuthenticated, async (_req, res) => res.status(403).json(CATALOGO_CERRADO));
+  app.delete("/api/units/:id", isAuthenticated, async (_req, res) => res.status(403).json(CATALOGO_CERRADO));
 
   app.get("/api/supplies", isAuthenticated, async (req, res) => {
     try {

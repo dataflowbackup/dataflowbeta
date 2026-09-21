@@ -34,6 +34,7 @@ import { Separator } from "@/components/ui/separator";
 import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
+import { QuantityInput } from "@/components/quantity-input";
 import { formatCurrency, formatDateInput } from "@/lib/formatters";
 import { Plus, Trash2, Calculator, AlertTriangle, TrendingUp, TrendingDown, Check, ChevronsUpDown, Sparkles } from "lucide-react";
 import { Alert, AlertDescription } from "@/components/ui/alert";
@@ -1368,14 +1369,16 @@ export default function InvoiceFormPage() {
                           name={`items.${index}.quantity`}
                           render={({ field: itemField }) => (
                             <FormItem>
-                              <FormLabel>Cantidad {unitAbbr && <span className="text-muted-foreground font-mono">({unitAbbr})</span>}</FormLabel>
+                              <FormLabel>Cantidad</FormLabel>
                               <FormControl>
-                                <Input
-                                  type="number"
-                                  step="0.0001"
-                                  min="0"
-                                  {...itemField}
-                                  className="font-mono"
+                                {/* Con coma decimal: en kilos y litros se carga "1,125", no "1125". */}
+                                <QuantityInput
+                                  value={itemField.value}
+                                  onChange={itemField.onChange}
+                                  onBlur={itemField.onBlur}
+                                  name={itemField.name}
+                                  ref={itemField.ref}
+                                  unit={unitAbbr || null}
                                   data-testid={`input-quantity-${index}`}
                                 />
                               </FormControl>
