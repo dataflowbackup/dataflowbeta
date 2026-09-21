@@ -4518,6 +4518,429 @@ export class DatabaseStorage implements IStorage {
     await db.delete(economicManualSales).where(and(eq(economicManualSales.id, id), eq(economicManualSales.clientId, clientId)));
   }
 
+  /**
+   * ESTADO DE RESULTADO ECONÓMICO de UN mes — el informe completo, con el árbol de 3 niveles.
+   *
+   * Sigue el modelo del Excel del usuario: cada sección se abre en grupos, cada grupo en
+   * sub-grupos y cada sub-grupo en los comprobantes que lo componen, con el % sobre el total de
+   * ventas en todas las líneas (common size).
+   *
+   * De dónde sale cada sección:
+   *  - VENTAS: del sistema de gestión, abierto por medio de pago, + las ventas manuales cargadas.
+   *  - COMPRAS: de las FACTURAS del mes, agrupadas por rubro y sub-rubro del insumo. El rubro sale
+   *    de `supplies.rubro_id` y, si está vacío (lo habitual), del rubro del sub-rubro.
+   *  - GASTOS: de los movimientos de extractos por MES ECONÓMICO, solo de los grupos tildados.
+   *  - COMISIONES e IMPUESTOS: de lo cargado a mano en sus solapas.
+   *
+   * Todo EN BRUTO, con IVA (decisión del usuario del 21-sep-2026).
+   */
+  async computeEconomicStatement(
+    clientId: number,
+    opts: {
+      year: number;
+      month: number;
+      localIds?: number[];
+      salesSources: Array<"datalive" | "fudo" | "shares">;
+    },
+  ) {
+    const { year, month } = opts;
+    const economicMonth = `${year}-${String(month).padStart(2, "0")}`;
+    const from = `${economicMonth}-01`;
+    const lastDay = new Date(Date.UTC(year, month, 0)).getUTCDate();
+    const to = `${economicMonth}-${String(lastDay).padStart(2, "0")}`;
+
+    const num = (v: unknown): number => {
+      const n = parseFloat(String(v ?? "0"));
+      return Number.isFinite(n) ? n : 0;
+    };
+
+    const allLocals = await db.select({ id: locals.id, name: locals.name }).from(locals)
+      .where(eq(locals.clientId, clientId));
+    const localIds = opts.localIds && opts.localIds.length > 0
+      ? allLocals.filter((l) => opts.localIds!.includes(l.id)).map((l) => l.id)
+      : allLocals.map((l) => l.id);
+    const localSet = new Set(localIds);
+    const localNameById = new Map(allLocals.map((l) => [l.id, l.name]));
+
+    // ── VENTAS ────────────────────────────────────────────────────────────────
+    const ventasLines: Array<{ label: string; amount: number; kind: "sistema" | "manual" }> = [];
+    const addVenta = (label: string, amount: number, kind: "sistema" | "manual") => {
+      // Medio centavo de tolerancia: el resto entre el total y las columnas da -1e-10 cuando
+      // cierran exactas, y esa linea fantasma no tiene que aparecer en el informe.
+      if (Math.abs(amount) < 0.005) return;
+      const found = ventasLines.find((l) => l.label === label && l.kind === kind);
+      if (found) found.amount += amount;
+      else ventasLines.push({ label, amount, kind });
+    };
+
+    const multiSource = opts.salesSources.length > 1;
+    const srcLabel = (s: string) => (s === "datalive" ? "Datalive" : s === "shares" ? "Shares" : "FUDO");
+    const withSrc = (label: string, s: string) => (multiSource ? `${label} (${srcLabel(s)})` : label);
+
+    for (const source of opts.salesSources) {
+      if (localIds.length === 0) break;
+      if (source === "fudo") {
+        const rows = await db.select({ medio: fudoPagos.medioPago, importe: fudoPagos.importe })
+          .from(fudoPagos).where(and(
+            eq(fudoPagos.clientId, clientId),
+            inArray(fudoPagos.localId, localIds),
+            gte(fudoPagos.fecha, from),
+            lte(fudoPagos.fecha, to),
+          ));
+        for (const r of rows) addVenta(withSrc(String(r.medio ?? "Sin especificar"), source), num(r.importe), "sistema");
+      } else if (source === "shares") {
+        const rows = await db.select().from(sharesVentas).where(and(
+          eq(sharesVentas.clientId, clientId),
+          inArray(sharesVentas.localId, localIds),
+          gte(sharesVentas.fecha, from),
+          lte(sharesVentas.fecha, to),
+        ));
+        for (const r of rows) {
+          addVenta(withSrc("Efectivo", source), num(r.ventaEfectivo), "sistema");
+          addVenta(withSrc("Tarjeta", source), num(r.ventaTarjeta), "sistema");
+          addVenta(withSrc("Efectivo online", source), num(r.ventaEfectivoOnline), "sistema");
+          addVenta(withSrc("Operaciones online", source), num(r.ventaOperOnline), "sistema");
+          addVenta(withSrc("Mercado Pago", source), num(r.ventaMercadopago), "sistema");
+        }
+      } else {
+        const rows = await db.select().from(dataliveVentas).where(and(
+          eq(dataliveVentas.clientId, clientId),
+          inArray(dataliveVentas.localId, localIds),
+          gte(dataliveVentas.fecha, from),
+          lte(dataliveVentas.fecha, to),
+        ));
+        for (const r of rows) {
+          addVenta(withSrc("Efectivo", source), num(r.ventaEfectivo), "sistema");
+          addVenta(withSrc("Online", source), num(r.ventaOnline), "sistema");
+          // Datalive trae el total además del corte: lo que no está en ninguna columna va a "Otros".
+          const resto = num(r.ventaTotal) - num(r.ventaEfectivo) - num(r.ventaOnline);
+          addVenta(withSrc("Otros medios", source), resto, "sistema");
+        }
+      }
+    }
+
+    const manualSales = localIds.length === 0 ? [] : await db.select().from(economicManualSales).where(and(
+      eq(economicManualSales.clientId, clientId),
+      inArray(economicManualSales.localId, localIds),
+      eq(economicManualSales.economicMonth, economicMonth),
+    ));
+    for (const s of manualSales) addVenta(s.concept, num(s.amount), "manual");
+
+    const ventasTotal = ventasLines.reduce((a, l) => a + l.amount, 0);
+    /** % sobre ventas: el denominador de TODO el informe (common size income statement). */
+    const pct = (v: number) => (ventasTotal !== 0 ? (v / ventasTotal) * 100 : 0);
+
+    // ── COMPRAS (costo de insumos, de las facturas del mes) ───────────────────
+    const invoiceRows = localIds.length === 0 ? [] : await db.select({
+      id: invoices.id,
+      localId: invoices.localId,
+      invoiceDate: invoices.invoiceDate,
+      invoiceType: invoices.invoiceType,
+      invoiceNumber: invoices.invoiceNumber,
+      expenseType: invoices.expenseType,
+      supplierName: suppliers.tradeName,
+    }).from(invoices)
+      .leftJoin(suppliers, eq(suppliers.id, invoices.supplierId))
+      .where(and(
+        eq(invoices.clientId, clientId),
+        inArray(invoices.localId, localIds),
+        eq(invoices.status, "active"),
+        gte(invoices.invoiceDate, from),
+        lte(invoices.invoiceDate, to),
+      ));
+    const invoiceById = new Map(invoiceRows.map((i) => [i.id, i]));
+
+    const itemRows = invoiceRows.length === 0 ? [] : await db.select({
+      invoiceId: invoiceItems.invoiceId,
+      subtotal: invoiceItems.subtotal,
+      description: invoiceItems.description,
+      supplyRubroId: supplies.rubroId,
+      supplySubRubroId: supplies.subRubroId,
+      subRubroName: subRubros.name,
+      subRubroRubroId: subRubros.rubroId,
+    }).from(invoiceItems)
+      .leftJoin(supplies, eq(supplies.id, invoiceItems.supplyId))
+      .leftJoin(subRubros, eq(subRubros.id, supplies.subRubroId))
+      .where(inArray(invoiceItems.invoiceId, invoiceRows.map((i) => i.id)));
+
+    const rubroRows = await db.select({ id: rubros.id, name: rubros.name }).from(rubros)
+      .where(eq(rubros.clientId, clientId));
+    const rubroNameById = new Map(rubroRows.map((r) => [r.id, r.name]));
+
+    const SIN_RUBRO = "Sin rubro asignado";
+    const SIN_SUB = "Sin sub-rubro";
+    interface ComprasNode {
+      label: string;
+      amount: number;
+      children: Map<string, { label: string; amount: number; items: Map<number, { invoiceId: number; label: string; amount: number; date: string; source: string; ref: string }> }>;
+    }
+    const comprasTree = new Map<string, ComprasNode>();
+
+    for (const it of itemRows) {
+      const inv = invoiceById.get(it.invoiceId);
+      if (!inv) continue;
+      // Una nota de crédito RESTA: es una devolución o un ajuste a favor.
+      const signo = String(inv.invoiceType ?? "").toUpperCase().startsWith("NC") ? -1 : 1;
+      const amount = num(it.subtotal) * signo;
+      if (!amount) continue;
+
+      const rubroId = it.supplyRubroId ?? it.subRubroRubroId ?? null;
+      const rubro = rubroId != null ? (rubroNameById.get(rubroId) ?? SIN_RUBRO) : SIN_RUBRO;
+      const sub = it.subRubroName ?? SIN_SUB;
+
+      if (!comprasTree.has(rubro)) comprasTree.set(rubro, { label: rubro, amount: 0, children: new Map() });
+      const nodo = comprasTree.get(rubro)!;
+      nodo.amount += amount;
+      if (!nodo.children.has(sub)) nodo.children.set(sub, { label: sub, amount: 0, items: new Map() });
+      const hijo = nodo.children.get(sub)!;
+      hijo.amount += amount;
+
+      // Una factura puede tener varios ítems del mismo sub-rubro: se acumulan en una sola línea.
+      const prev = hijo.items.get(inv.id);
+      if (prev) {
+        prev.amount += amount;
+      } else {
+        const fecha = String(inv.invoiceDate).slice(0, 10);
+        hijo.items.set(inv.id, {
+          invoiceId: inv.id,
+          label: `${inv.supplierName ?? "Sin proveedor"} (${fecha.slice(8, 10)}/${fecha.slice(5, 7)})`,
+          amount,
+          date: fecha,
+          source: String(inv.expenseType) === "admin" ? "Factura — Administración" : "Factura (IVA) — Compras",
+          ref: `${inv.invoiceType} ${inv.invoiceNumber}`,
+        });
+      }
+    }
+
+    const comprasGroups = Array.from(comprasTree.values())
+      .map((g) => ({
+        label: g.label,
+        amount: g.amount,
+        pct: pct(g.amount),
+        children: Array.from(g.children.values())
+          .map((c) => ({
+            label: c.label,
+            amount: c.amount,
+            pct: pct(c.amount),
+            items: Array.from(c.items.values()).sort((a, b) => b.amount - a.amount)
+              .map((i) => ({ ...i, pct: pct(i.amount) })),
+          }))
+          .sort((a, b) => b.amount - a.amount),
+      }))
+      .sort((a, b) => b.amount - a.amount);
+    const comprasTotal = comprasGroups.reduce((a, g) => a + g.amount, 0);
+
+    // ── GASTOS (movimientos de extractos por mes económico) ───────────────────
+    const allFinancialGroups = await db.select().from(financialGroups).where(eq(financialGroups.clientId, clientId));
+    const allCategories = await db.select().from(transactionCategories).where(eq(transactionCategories.clientId, clientId));
+    const groupById = new Map(allFinancialGroups.map((g) => [g.id, g]));
+    const catById = new Map(allCategories.map((c) => [c.id, c]));
+
+    const movFinGroupIds = new Set(
+      allFinancialGroups.filter((g) => String(g.type) === MOVIMIENTOS_FINANCIEROS_GROUP_TYPE).map((g) => g.id),
+    );
+
+    // El mes económico puede caer en otro mes de acreditación: se lee un margen a cada lado.
+    const scanFrom = `${year}-${String(month).padStart(2, "0")}-01`;
+    const scanFromWide = new Date(Date.UTC(year, month - 3, 1)).toISOString().slice(0, 10);
+    const scanToWide = new Date(Date.UTC(year, month + 2, 0)).toISOString().slice(0, 10);
+    void scanFrom;
+
+    const txRows = await db.select().from(transactions).where(and(
+      eq(transactions.clientId, clientId),
+      gte(transactions.transactionDate, scanFromWide),
+      lte(transactions.transactionDate, scanToWide),
+    ));
+    const splitParentIds = new Set(
+      txRows.filter((t) => t.parentTransactionId != null).map((t) => t.parentTransactionId as number),
+    );
+
+    interface GastoNode {
+      id: number;
+      label: string;
+      amount: number;
+      computes: boolean;
+      isMerchandise: boolean;
+      children: Map<number, { id: number; label: string; amount: number; items: Array<{ label: string; amount: number; date: string; source: string; ref: string; pct: number }> }>;
+    }
+    const gastosTree = new Map<number, GastoNode>();
+
+    for (const tx of txRows) {
+      if (!tx.categoryId) continue;
+      if (splitParentIds.has(tx.id)) continue;
+      if (tx.localId == null || !localSet.has(tx.localId)) continue;
+      const cat = catById.get(tx.categoryId);
+      if (!cat) continue;
+      if (typeof cat.specialType === "string" && OTROS_MOVIMIENTOS_SPECIAL_TYPES.has(cat.specialType)) continue;
+      // `financialGroupId` directo, sin el fallback a los grupos legacy que usa getEconomicBalance:
+      // se verificó en producción que las 1.024 categorías de las 4 empresas lo tienen cargado y
+      // que CERO movimientos dependen de ese camino viejo.
+      const gid = (cat as any).financialGroupId as number | null | undefined;
+      if (gid == null || movFinGroupIds.has(gid)) continue;
+      const group = groupById.get(gid);
+      if (!group || String(group.type) !== "expense") continue;
+
+      const econ = resolveEconomicMonth(tx as any);
+      if (econ !== economicMonth) continue;
+
+      const amount = num(tx.amount);
+      // Neto en la dirección del grupo: un reintegro (ingreso en un grupo de gasto) resta.
+      const net = tx.type === "expense" ? amount : -amount;
+      if (!net) continue;
+
+      if (!gastosTree.has(group.id)) {
+        gastosTree.set(group.id, {
+          id: group.id,
+          label: group.name,
+          amount: 0,
+          computes: group.economicComputes ?? true,
+          isMerchandise: !!group.isMerchandise,
+          children: new Map(),
+        });
+      }
+      const nodo = gastosTree.get(group.id)!;
+      nodo.amount += net;
+      if (!nodo.children.has(cat.id)) nodo.children.set(cat.id, { id: cat.id, label: cat.name, amount: 0, items: [] });
+      const hijo = nodo.children.get(cat.id)!;
+      hijo.amount += net;
+      const fecha = String(tx.transactionDate).slice(0, 10);
+      hijo.items.push({
+        label: String(tx.description ?? "").trim() || cat.name,
+        amount: net,
+        date: fecha,
+        source: localNameById.get(tx.localId) ?? "—",
+        ref: String(tx.id),
+        pct: 0,
+      });
+    }
+
+    const gastosGroups = Array.from(gastosTree.values())
+      .map((g) => ({
+        id: g.id,
+        label: g.label,
+        amount: g.amount,
+        pct: pct(g.amount),
+        computes: g.computes,
+        isMerchandise: g.isMerchandise,
+        children: Array.from(g.children.values())
+          .map((c) => ({
+            id: c.id,
+            label: c.label,
+            amount: c.amount,
+            pct: pct(c.amount),
+            items: c.items.sort((a, b) => b.amount - a.amount).map((i) => ({ ...i, pct: pct(i.amount) })),
+          }))
+          .sort((a, b) => b.amount - a.amount),
+      }))
+      .sort((a, b) => b.amount - a.amount);
+
+    const gastosComputan = gastosGroups.filter((g) => g.computes);
+    const gastosTotal = gastosComputan.reduce((a, g) => a + g.amount, 0);
+    /** Grupos de mercadería que quedaron tildados: su costo se estaría contando dos veces. */
+    const merchandiseComputing = gastosComputan.filter((g) => g.isMerchandise && g.amount !== 0)
+      .map((g) => ({ id: g.id, label: g.label, amount: g.amount }));
+
+    // ── COMISIONES ────────────────────────────────────────────────────────────
+    const commissionRows = localIds.length === 0 ? [] : await db.select().from(economicCommissions).where(and(
+      eq(economicCommissions.clientId, clientId),
+      inArray(economicCommissions.localId, localIds),
+      eq(economicCommissions.economicMonth, economicMonth),
+    ));
+    const commissionsByConcept = new Map<string, { concept: string; amount: number; byLocal: Array<{ local: string; amount: number }> }>();
+    for (const r of commissionRows) {
+      const amount = num(r.amount);
+      if (!commissionsByConcept.has(r.concept)) {
+        commissionsByConcept.set(r.concept, { concept: r.concept, amount: 0, byLocal: [] });
+      }
+      const node = commissionsByConcept.get(r.concept)!;
+      node.amount += amount;
+      node.byLocal.push({ local: localNameById.get(r.localId) ?? `Local ${r.localId}`, amount });
+    }
+    const comisiones = Array.from(commissionsByConcept.values())
+      .map((c) => ({ ...c, pct: pct(c.amount) }))
+      .sort((a, b) => b.amount - a.amount);
+    const comisionesTotal = comisiones.reduce((a, c) => a + c.amount, 0);
+
+    // ── IMPUESTOS ─────────────────────────────────────────────────────────────
+    const taxRows = localIds.length === 0 ? [] : await db.select().from(economicTaxes).where(and(
+      eq(economicTaxes.clientId, clientId),
+      inArray(economicTaxes.localId, localIds),
+      eq(economicTaxes.economicMonth, economicMonth),
+    ));
+    const taxByKind = new Map<string, { kind: string; amount: number; byLocal: Array<{ local: string; amount: number; mode: string }> }>();
+    for (const r of taxRows) {
+      const amount = num(r.amount);
+      if (!taxByKind.has(r.taxKind)) taxByKind.set(r.taxKind, { kind: r.taxKind, amount: 0, byLocal: [] });
+      const node = taxByKind.get(r.taxKind)!;
+      node.amount += amount;
+      node.byLocal.push({ local: localNameById.get(r.localId) ?? `Local ${r.localId}`, amount, mode: String(r.mode) });
+    }
+    const impuestos = Array.from(taxByKind.values()).map((t) => ({ ...t, pct: pct(t.amount) }));
+    // Ganancias resta al final: se calcula SOBRE el resultado, así que no puede estar arriba.
+    const impuestosOperativos = impuestos.filter((t) => t.kind !== "ganancias");
+    const ganancias = impuestos.find((t) => t.kind === "ganancias") ?? null;
+    const impuestosOperativosTotal = impuestosOperativos.reduce((a, t) => a + t.amount, 0);
+    const gananciasTotal = ganancias?.amount ?? 0;
+
+    // ── PRESUPUESTO (Objetivos Mensuales) ─────────────────────────────────────
+    const goalRows = localIds.length === 0 ? [] : await db.select().from(monthlyGoals).where(and(
+      eq(monthlyGoals.clientId, clientId),
+      inArray(monthlyGoals.localId, localIds),
+      eq(monthlyGoals.year, year),
+      eq(monthlyGoals.month, month),
+    ));
+    const ventasObjetivo = goalRows.reduce<number>((a, g) => a + num((g as any).facturacionObjetivo), 0);
+
+    // ── RESUMEN ───────────────────────────────────────────────────────────────
+    // El costo de mercadería de esta vista es el de COMPRAS; el bloque C suma las otras dos
+    // variantes (por inventarios y por productos vendidos) con su selector.
+    const utilidadBruta = ventasTotal - comprasTotal;
+    const resultadoOperativo = utilidadBruta - gastosTotal - comisionesTotal;
+    const resultadoAntesImpuestos = resultadoOperativo - impuestosOperativosTotal;
+    const resultadoNeto = resultadoAntesImpuestos - gananciasTotal;
+
+    return {
+      period: { year, month, economicMonth, from, to },
+      locals: allLocals.filter((l) => localSet.has(l.id)),
+      allLocalsCount: allLocals.length,
+      isAllLocals: localIds.length === allLocals.length,
+      salesSources: opts.salesSources,
+      ventas: {
+        total: ventasTotal,
+        objetivo: ventasObjetivo,
+        lines: ventasLines.map((l) => ({ ...l, pct: pct(l.amount) })).sort((a, b) => b.amount - a.amount),
+      },
+      compras: { total: comprasTotal, pct: pct(comprasTotal), groups: comprasGroups },
+      gastos: { total: gastosTotal, pct: pct(gastosTotal), groups: gastosGroups, merchandiseComputing },
+      comisiones: { total: comisionesTotal, pct: pct(comisionesTotal), lines: comisiones },
+      impuestos: {
+        operativos: impuestosOperativos,
+        operativosTotal: impuestosOperativosTotal,
+        ganancias,
+        gananciasTotal,
+      },
+      resumen: {
+        ventas: ventasTotal,
+        costoMercaderia: comprasTotal,
+        utilidadBruta,
+        gastos: gastosTotal,
+        comisiones: comisionesTotal,
+        resultadoOperativo,
+        impuestosOperativos: impuestosOperativosTotal,
+        resultadoAntesImpuestos,
+        ganancias: gananciasTotal,
+        resultadoNeto,
+      },
+      indicadores: {
+        foodCostPct: pct(comprasTotal),
+        utilidadBrutaPct: pct(utilidadBruta),
+        gastosPct: pct(gastosTotal),
+        resultadoOperativoPct: pct(resultadoOperativo),
+        resultadoNetoPct: pct(resultadoNeto),
+      },
+    };
+  }
+
   async getSales(clientId: number): Promise<Sale[]> {
     return db.select().from(sales).where(eq(sales.clientId, clientId)).orderBy(desc(sales.saleDate));
   }

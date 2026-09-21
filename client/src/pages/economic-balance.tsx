@@ -40,6 +40,7 @@ import { TaxesTab } from "@/components/economic/taxes-tab";
 import { CommissionsTab } from "@/components/economic/commissions-tab";
 import { ManualSalesTab } from "@/components/economic/manual-sales-tab";
 import { ECON } from "@/components/economic/econ-shared";
+import { StatementTab } from "@/components/economic/statement-tab";
 
 const SHORT_MONTHS = ["Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"];
 
@@ -121,7 +122,9 @@ export default function EconomicBalancePage() {
       return kept.length > 0 ? kept : [enabledSalesSources[0] as SalesSource];
     });
   }, [enabledSalesSources.join(",")]);
-  const [viewMode, setViewMode] = usePersistentFilter("balanceEconomico.viewMode", "monthly");
+  // "statement" es la vista nueva (sep-2026) y es la que abre. Las otras dos quedan mientras el
+  // bloque C no reemplace el cuadro de CMV de la Vista Mensual.
+  const [viewMode, setViewMode] = usePersistentFilter("balanceEconomico.viewMode2", "statement");
   /**
    * Solapa principal. "general" es el Estado de Resultado; las otras tres son de CARGA: impuestos,
    * comisiones y ventas que no salen de los extractos ni de los sistemas de gestión.
@@ -637,13 +640,24 @@ export default function EconomicBalancePage() {
       {mainTab === "general" && (
       <Tabs value={viewMode} onValueChange={setViewMode}>
         <TabsList>
+          <TabsTrigger value="statement">Estado de Resultado</TabsTrigger>
           <TabsTrigger value="monthly">Vista Mensual</TabsTrigger>
           <TabsTrigger value="annual">Vista Anual</TabsTrigger>
         </TabsList>
       </Tabs>
       )}
 
-      {mainTab === "general" && (isLoading ? (
+      {mainTab === "general" && viewMode === "statement" && (
+        <StatementTab
+          year={year}
+          month={month}
+          monthLabel={monthLabel}
+          localIds={selectedLocalIds}
+          salesSources={salesSources}
+        />
+      )}
+
+      {mainTab === "general" && viewMode !== "statement" && (isLoading ? (
         <Card>
           <CardContent className="space-y-3 py-6">
             <Skeleton className="h-6 w-48" />

@@ -4002,6 +4002,34 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
   });
 
+  /** Estado de Resultado Económico de UN mes, con el árbol de 3 niveles del informe. */
+  app.get("/api/economic/statement", isAuthenticated, async (req, res) => {
+    try {
+      const clientId = await getClientId(req);
+      const year = parseInt(String(req.query.year ?? ""), 10);
+      const month = parseInt(String(req.query.month ?? ""), 10);
+      if (!Number.isFinite(year) || !Number.isFinite(month) || month < 1 || month > 12) {
+        return res.status(400).json({ message: "Año o mes inválido" });
+      }
+      const localIds = String(req.query.localIds ?? "")
+        .split(",")
+        .map((n) => parseInt(n, 10))
+        .filter((n) => Number.isFinite(n) && n > 0);
+      const salesSources = String(req.query.salesSources ?? "datalive")
+        .split(",")
+        .map((s) => s.trim())
+        .filter((s): s is "datalive" | "fudo" | "shares" => s === "datalive" || s === "fudo" || s === "shares");
+      res.json(await storage.computeEconomicStatement(clientId, {
+        year,
+        month,
+        localIds,
+        salesSources: salesSources.length > 0 ? salesSources : ["datalive"],
+      }));
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
   app.get("/api/economic/taxes", isAuthenticated, async (req, res) => {
     try {
       const clientId = await getClientId(req);
