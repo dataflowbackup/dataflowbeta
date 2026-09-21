@@ -18,7 +18,9 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { formatCurrency } from "@/lib/formatters";
-import { ChevronRight, ChevronDown, AlertTriangle, ExternalLink } from "lucide-react";
+import { ChevronRight, ChevronDown, AlertTriangle, ExternalLink, FileDown, ChevronsDownUp, ChevronsUpDown } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { buildEconomicStatementPdf, type StatementPdfRow } from "@/lib/economic-statement-pdf";
 import { commissionLabel, TAX_KIND_BY_KEY, type TaxKind } from "@shared/economicStatement";
 import { ECON } from "./econ-shared";
 
@@ -139,6 +141,14 @@ interface Statement {
   };
 }
 
+/**
+ * Ancho de las dos columnas numéricas, en un solo lugar. Tienen que coincidir en el encabezado,
+ * en las filas, en los títulos de sección y en el resultado neto: si una se desalinea, la columna
+ * de porcentaje se corta contra el borde de la tarjeta.
+ */
+const COL_IMPORTE = "w-40";
+const COL_PCT = "w-20";
+
 const pct = (v: number) => `${v.toFixed(1)}%`;
 const fmtDate = (iso?: string) => {
   if (!iso) return "";
@@ -179,7 +189,7 @@ function Row({
     tone === "total" ? `font-semibold ${ECON.text}` : tone === "negative" ? "text-destructive" : tone === "muted" ? "text-muted-foreground" : "";
   return (
     <div
-      className={`flex items-center gap-2 py-1.5 border-b last:border-0 ${pad} ${onClick ? "cursor-pointer hover:bg-emerald-50/60 dark:hover:bg-emerald-950/20" : ""} ${bold ? "font-semibold" : ""}`}
+      className={`flex items-center gap-2 py-1.5 pr-3 border-b last:border-0 ${pad} ${onClick ? "cursor-pointer hover:bg-emerald-50/60 dark:hover:bg-emerald-950/20" : ""} ${bold ? "font-semibold" : ""}`}
       onClick={onClick}
       data-testid={testId}
     >
@@ -191,19 +201,43 @@ function Row({
         {meta && <span className="ml-2 text-[11px] text-muted-foreground">{meta}</span>}
       </div>
       {right}
-      <span className={`w-36 shrink-0 text-right font-mono text-sm ${toneClass}`}>{formatCurrency(amount)}</span>
-      <span className="w-16 shrink-0 text-right font-mono text-xs text-muted-foreground">{pct(pctValue)}</span>
+      <span className={`${COL_IMPORTE} shrink-0 text-right font-mono text-sm ${toneClass}`}>{formatCurrency(amount)}</span>
+      <span className={`${COL_PCT} shrink-0 text-right font-mono text-xs text-muted-foreground`}>{pct(pctValue)}</span>
     </div>
   );
 }
 
-/** Encabezado de una sección, con su total y su % sobre ventas. */
-function SectionHeader({ title, amount, pctValue }: { title: string; amount: number; pctValue: number }) {
+/**
+ * Encabezado de una sección. Pliega y despliega TODO lo que tiene abajo de una sola vez: con
+ * 22 rubros de compras abiertos, llegar al resultado neto era hacer scroll a ciegas.
+ */
+function SectionHeader({
+  title,
+  amount,
+  pctValue,
+  open,
+  onToggle,
+  testId,
+}: {
+  title: string;
+  amount: number;
+  pctValue: number;
+  open?: boolean;
+  onToggle?: () => void;
+  testId?: string;
+}) {
   return (
-    <div className={`flex items-center gap-2 px-2 py-2 ${ECON.bg} border-b ${ECON.border}`}>
+    <div
+      className={`flex items-center gap-2 pl-2 pr-3 py-2 ${ECON.bg} border-b ${ECON.border} ${onToggle ? "cursor-pointer hover:brightness-95" : ""}`}
+      onClick={onToggle}
+      data-testid={testId}
+    >
+      <span className={`w-4 shrink-0 ${ECON.text}`}>
+        {onToggle ? (open ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />) : null}
+      </span>
       <span className={`flex-1 text-xs font-semibold uppercase tracking-wide ${ECON.text}`}>{title}</span>
-      <span className={`w-36 text-right font-mono text-sm font-semibold ${ECON.text}`}>{formatCurrency(amount)}</span>
-      <span className={`w-16 text-right font-mono text-xs ${ECON.textSoft}`}>{pct(pctValue)}</span>
+      <span className={`${COL_IMPORTE} text-right font-mono text-sm font-semibold ${ECON.text}`}>{formatCurrency(amount)}</span>
+      <span className={`${COL_PCT} text-right font-mono text-xs ${ECON.textSoft}`}>{pct(pctValue)}</span>
     </div>
   );
 }
@@ -216,6 +250,12 @@ function TreeSection({
   groups,
   emptyText,
   keyPrefix,
+  open,
+  onToggleSection,
+  openGroups,
+  openBranches,
+  onToggleGroup,
+  onToggleBranch,
 }: {
   title: string;
   total: number;
@@ -223,16 +263,25 @@ function TreeSection({
   groups: Node[];
   emptyText: string;
   keyPrefix: string;
+  /** El estado de plegado vive en StatementTab: el PDF exporta exactamente lo que se ve. */
+  open: boolean;
+  onToggleSection: () => void;
+  openGroups: string[];
+  openBranches: string[];
+  onToggleGroup: (k: string) => void;
+  onToggleBranch: (k: string) => void;
 }) {
-  const [openGroups, setOpenGroups] = useState<string[]>([]);
-  const [openBranches, setOpenBranches] = useState<string[]>([]);
-  const toggle = (arr: string[], set: (v: string[]) => void, k: string) =>
-    set(arr.includes(k) ? arr.filter((x) => x !== k) : [...arr, k]);
-
   return (
     <div>
-      <SectionHeader title={title} amount={total} pctValue={totalPct} />
-      {groups.length === 0 ? (
+      <SectionHeader
+        title={title}
+        amount={total}
+        pctValue={totalPct}
+        open={open}
+        onToggle={onToggleSection}
+        testId={`section-${keyPrefix}`}
+      />
+      {!open ? null : groups.length === 0 ? (
         <p className="px-4 py-3 text-sm text-muted-foreground">{emptyText}</p>
       ) : (
         groups.map((g, gi) => {
@@ -248,7 +297,7 @@ function TreeSection({
                 bold
                 hasChildren={g.children.length > 0}
                 open={gOpen}
-                onClick={() => toggle(openGroups, setOpenGroups, gk)}
+                onClick={() => onToggleGroup(gk)}
                 meta={g.computes === false ? <Badge variant="outline" className="text-[10px]">no computa</Badge> : undefined}
                 testId={`row-${gk}`}
               />
@@ -265,7 +314,7 @@ function TreeSection({
                         level={1}
                         hasChildren={c.items.length > 0}
                         open={cOpen}
-                        onClick={() => toggle(openBranches, setOpenBranches, ck)}
+                        onClick={() => onToggleBranch(ck)}
                       />
                       {cOpen &&
                         c.items.map((it, ii) => (
@@ -458,7 +507,202 @@ export function StatementTab({
     },
   });
 
+  /**
+   * Todo el plegado vive acá y no adentro de cada sección: el PDF exporta exactamente lo que se
+   * ve en pantalla, así que necesita leer este estado.
+   */
+  const [openSections, setOpenSections] = useState<string[]>(["ventas", "costo", "gastos", "comisiones", "impuestos"]);
+  const [openGroups, setOpenGroups] = useState<string[]>([]);
+  const [openBranches, setOpenBranches] = useState<string[]>([]);
   const [openVentas, setOpenVentas] = useState(true);
+
+  const flip = (arr: string[], set: (v: string[]) => void, k: string) =>
+    set(arr.includes(k) ? arr.filter((x) => x !== k) : [...arr, k]);
+  const isSectionOpen = (k: string) => openSections.includes(k);
+
+  /**
+   * Aplana a filas EXACTAMENTE lo que se está viendo: respeta qué secciones, qué grupos y qué
+   * sub-grupos quedaron desplegados. Es lo que se manda al PDF, así el papel sale igual que la
+   * pantalla.
+   */
+  const buildPdfRows = (d: Statement): StatementPdfRow[] => {
+    const out: StatementPdfRow[] = [];
+    const push = (
+      label: string,
+      amount: number,
+      pctValue: number | null,
+      level: 0 | 1 | 2 | 3,
+      kind: StatementPdfRow["kind"],
+      meta?: string,
+    ) => out.push({ label, amount, pct: pctValue, level, kind, meta });
+
+    const tree = (groups: Node[], keyPrefix: string) => {
+      groups.forEach((g, gi) => {
+        const gk = `${keyPrefix}-${gi}`;
+        push(g.label, g.amount, g.pct, 0, "row");
+        if (!openGroups.includes(gk)) return;
+        g.children.forEach((c, ci) => {
+          const ck = `${gk}-${ci}`;
+          push(c.label, c.amount, c.pct, 1, "row");
+          if (!openBranches.includes(ck)) return;
+          for (const it of c.items) {
+            const meta = [fmtDate(it.date), it.source, it.invoiceId ? it.ref : null].filter(Boolean).join(" · ");
+            push(it.label, it.amount, it.pct, 2, "row", meta || undefined);
+          }
+        });
+      });
+    };
+
+    // Ventas
+    push("Ventas", d.ventas.total, 100, 0, "section");
+    if (isSectionOpen("ventas")) {
+      push("Detalle por medio de pago", d.ventas.total, 100, 0, "row");
+      if (openVentas) for (const l of d.ventas.lines) push(l.label, l.amount, l.pct, 1, "row", l.kind === "manual" ? "manual" : undefined);
+      if (d.ventas.objetivo > 0) push("Objetivo del mes", d.ventas.objetivo, null, 0, "row");
+    }
+
+    // Costo de mercadería
+    const variante = d.cmv.variantes.find((v) => v.key === d.cmv.mode);
+    push(
+      d.cmv.mode === "compras" ? "Costo de mercadería — compras del mes" : `Costo de mercadería — ${d.cmv.elegido}`,
+      d.resumen.costoMercaderia,
+      d.indicadores.foodCostPct,
+      0,
+      "section",
+    );
+    if (isSectionOpen("costo")) {
+      if (d.cmv.mode === "compras") tree(d.compras.groups, "costo");
+      else for (const r of variante?.rows ?? []) push(r.local, r.amount, r.pct, 0, "row", r.detalle ?? undefined);
+    }
+    push("Utilidad bruta", d.resumen.utilidadBruta, d.indicadores.utilidadBrutaPct, 0, "subtotal");
+
+    // Gastos
+    push("Gastos operativos", d.gastos.total, d.gastos.pct, 0, "section");
+    if (isSectionOpen("gastos")) tree(d.gastos.groups.filter((g) => g.computes !== false), "gastos");
+
+    // Comisiones
+    push("Comisiones", d.comisiones.total, d.comisiones.pct, 0, "section");
+    if (isSectionOpen("comisiones")) for (const c of d.comisiones.lines) push(commissionLabel(c.concept), c.amount, c.pct, 0, "row");
+
+    push("Resultado operativo", d.resumen.resultadoOperativo, d.indicadores.resultadoOperativoPct, 0, "subtotal");
+
+    // Impuestos
+    const impPct = d.ventas.total ? (d.impuestos.operativosTotal / d.ventas.total) * 100 : 0;
+    push("Impuestos sobre ingresos y movimientos", d.impuestos.operativosTotal, impPct, 0, "section");
+    if (isSectionOpen("impuestos")) {
+      for (const t of d.impuestos.operativos) push(TAX_KIND_BY_KEY[t.kind as TaxKind]?.label ?? t.kind, t.amount, t.pct, 0, "row");
+    }
+
+    push(
+      "Resultado antes de impuestos",
+      d.resumen.resultadoAntesImpuestos,
+      d.ventas.total ? (d.resumen.resultadoAntesImpuestos / d.ventas.total) * 100 : 0,
+      0,
+      "subtotal",
+    );
+    push(
+      "Impuesto a las Ganancias",
+      d.impuestos.gananciasTotal,
+      d.ventas.total ? (d.impuestos.gananciasTotal / d.ventas.total) * 100 : 0,
+      0,
+      "row",
+    );
+    push("Resultado neto", d.resumen.resultadoNeto, d.indicadores.resultadoNetoPct, 0, "grand");
+
+    return out;
+  };
+
+  /** Plega todo de una: con 22 rubros abiertos, llegar al resultado neto era scroll a ciegas. */
+  const plegarTodo = () => {
+    setOpenSections([]);
+    setOpenGroups([]);
+    setOpenBranches([]);
+    setOpenVentas(false);
+  };
+
+  /** Abre todo hasta el comprobante. Las claves son las mismas que arma el árbol al dibujarse. */
+  const desplegarTodo = () => {
+    if (!data) return;
+    const gs: string[] = [];
+    const bs: string[] = [];
+    const walk = (groups: Node[], keyPrefix: string) => {
+      groups.forEach((g, gi) => {
+        const gk = `${keyPrefix}-${gi}`;
+        gs.push(gk);
+        g.children.forEach((_c, ci) => bs.push(`${gk}-${ci}`));
+      });
+    };
+    walk(data.compras.groups, "costo");
+    walk(data.gastos.groups.filter((g) => g.computes !== false), "gastos");
+    setOpenSections(["ventas", "costo", "gastos", "comisiones", "impuestos"]);
+    setOpenGroups(gs);
+    setOpenBranches(bs);
+    setOpenVentas(true);
+  };
+
+  const exportPdf = () => {
+    if (!data) return;
+    const v = data.ventasNoFacturadas;
+    const pe = data.puntoEquilibrio;
+    const doc = buildEconomicStatementPdf({
+      monthLabel,
+      localsLabel: data.isAllLocals
+        ? `Todos los locales (${data.allLocalsCount})`
+        : `${data.locals.map((l) => l.name).join(" · ")} (${data.locals.length} de ${data.allLocalsCount})`,
+      sourcesLabel: data.salesSources
+        .map((s) => (s === "fudo" ? "FUDO" : s === "shares" ? "Shares" : "Datalive"))
+        .join(" + "),
+      cmvLabel: data.cmv.elegido,
+      rows: buildPdfRows(data),
+      indicadores: [
+        { label: "Food cost %", value: data.indicadores.foodCostPct },
+        { label: "Utilidad bruta %", value: data.indicadores.utilidadBrutaPct },
+        { label: "Gastos %", value: data.indicadores.gastosPct },
+        { label: "Resultado operativo %", value: data.indicadores.resultadoOperativoPct },
+        { label: "Resultado neto %", value: data.indicadores.resultadoNetoPct },
+      ],
+      puntoEquilibrio:
+        pe && pe.alcanzable && pe.ventasNecesarias != null
+          ? {
+              ventasNecesarias: pe.ventasNecesarias,
+              costosFijos: pe.costosFijos,
+              margenPct: pe.margenContribucionPct,
+              excedente: pe.excedente ?? 0,
+            }
+          : null,
+      ventasNoFacturadas:
+        v && v.disponible ? { noFacturada: v.noFacturada, pct: v.noFacturadaPct, total: v.ventaTotal } : null,
+      comparativo: data.anterior
+        ? {
+            mesAnterior: data.anterior.period.economicMonth,
+            lineas: [
+              { label: "Ventas", hoy: data.resumen.ventas, antes: data.anterior.resumen.ventas },
+              { label: "Costo de mercadería", hoy: data.resumen.costoMercaderia, antes: data.anterior.resumen.costoMercaderia },
+              { label: "Utilidad bruta", hoy: data.resumen.utilidadBruta, antes: data.anterior.resumen.utilidadBruta },
+              { label: "Gastos operativos", hoy: data.resumen.gastos, antes: data.anterior.resumen.gastos },
+              { label: "Comisiones", hoy: data.resumen.comisiones, antes: data.anterior.resumen.comisiones },
+              { label: "Resultado neto", hoy: data.resumen.resultadoNeto, antes: data.anterior.resumen.resultadoNeto },
+            ],
+          }
+        : null,
+      topProductos: data.topProductos
+        ? {
+            source: data.topProductos.source,
+            coberturaPct: data.topProductos.coberturaPct,
+            items: data.topProductos.items,
+          }
+        : null,
+    });
+    doc.save(`estado-resultado-economico_${data.period.economicMonth}.pdf`);
+  };
+  const treeProps = (keyPrefix: string) => ({
+    open: isSectionOpen(keyPrefix),
+    onToggleSection: () => flip(openSections, setOpenSections, keyPrefix),
+    openGroups,
+    openBranches,
+    onToggleGroup: (k: string) => flip(openGroups, setOpenGroups, k),
+    onToggleBranch: (k: string) => flip(openBranches, setOpenBranches, k),
+  });
 
   if (isLoading) {
     return (
@@ -481,14 +725,27 @@ export function StatementTab({
   return (
     <div className="space-y-4">
       <Card className={ECON.border}>
-        <CardContent className="py-3 text-xs text-muted-foreground flex flex-wrap gap-x-4 gap-y-1">
-          <span>
-            <span className="font-medium text-foreground">{monthLabel}</span> · {data.isAllLocals
-              ? `Todos los locales (${data.allLocalsCount})`
-              : `${data.locals.map((l) => l.name).join(" · ")} (${data.locals.length} de ${data.allLocalsCount})`}
-          </span>
-          <span>Ventas de: {data.salesSources.map((s) => (s === "fudo" ? "FUDO" : s === "shares" ? "Shares" : "Datalive")).join(" + ")}</span>
-          <span>Todos los importes en bruto, con IVA</span>
+        <CardContent className="py-3 flex flex-wrap items-center justify-between gap-3">
+          <div className="text-xs text-muted-foreground flex flex-wrap gap-x-4 gap-y-1">
+            <span>
+              <span className="font-medium text-foreground">{monthLabel}</span> · {data.isAllLocals
+                ? `Todos los locales (${data.allLocalsCount})`
+                : `${data.locals.map((l) => l.name).join(" · ")} (${data.locals.length} de ${data.allLocalsCount})`}
+            </span>
+            <span>Ventas de: {data.salesSources.map((s) => (s === "fudo" ? "FUDO" : s === "shares" ? "Shares" : "Datalive")).join(" + ")}</span>
+            <span>Todos los importes en bruto, con IVA</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <Button variant="outline" size="sm" onClick={plegarTodo} data-testid="button-plegar-todo">
+              <ChevronsDownUp className="h-3.5 w-3.5 mr-1.5" /> Plegar todo
+            </Button>
+            <Button variant="outline" size="sm" onClick={desplegarTodo} data-testid="button-desplegar-todo">
+              <ChevronsUpDown className="h-3.5 w-3.5 mr-1.5" /> Desplegar todo
+            </Button>
+            <Button size="sm" className={ECON.bgSolid} onClick={exportPdf} data-testid="button-export-statement-pdf">
+              <FileDown className="h-4 w-4 mr-1.5" /> PDF
+            </Button>
+          </div>
         </CardContent>
       </Card>
 
@@ -527,15 +784,24 @@ export function StatementTab({
       <Card className="overflow-hidden">
         <CardContent className="p-0">
           {/* Encabezado de columnas */}
-          <div className="flex items-center gap-2 px-2 py-2 border-b bg-muted/40 text-[11px] font-medium text-muted-foreground uppercase tracking-wide">
+          <div className="flex items-center gap-2 pl-2 pr-3 py-2 border-b bg-muted/40 text-[11px] font-medium text-muted-foreground uppercase tracking-wide">
             <span className="w-4 shrink-0" />
             <span className="flex-1">Concepto</span>
-            <span className="w-36 text-right">Importe</span>
-            <span className="w-16 text-right">% s/Ventas</span>
+            <span className={`${COL_IMPORTE} text-right`}>Importe</span>
+            <span className={`${COL_PCT} text-right whitespace-nowrap`}>% s/Vtas</span>
           </div>
 
           {/* ── VENTAS ── */}
-          <SectionHeader title="Ventas" amount={data.ventas.total} pctValue={100} />
+          <SectionHeader
+            title="Ventas"
+            amount={data.ventas.total}
+            pctValue={100}
+            open={isSectionOpen("ventas")}
+            onToggle={() => flip(openSections, setOpenSections, "ventas")}
+            testId="section-ventas"
+          />
+          {isSectionOpen("ventas") && (
+          <>
           <Row
             label="Detalle por medio de pago"
             amount={data.ventas.total}
@@ -575,6 +841,8 @@ export function StatementTab({
               }
             />
           )}
+          </>
+          )}
 
           {/* ── COSTO DE MERCADERÍA (la variante que eligió el usuario) ── */}
           {data.cmv.mode === "compras" ? (
@@ -583,8 +851,9 @@ export function StatementTab({
               total={data.compras.total}
               totalPct={data.compras.pct}
               groups={data.compras.groups}
-              keyPrefix="compras"
+              keyPrefix="costo"
               emptyText="No hay facturas de compra cargadas en este mes."
+              {...treeProps("costo")}
             />
           ) : (
             <>
@@ -592,8 +861,11 @@ export function StatementTab({
                 title={`Costo de mercadería — ${data.cmv.elegido}`}
                 amount={R.costoMercaderia}
                 pctValue={I.foodCostPct}
+                open={isSectionOpen("costo")}
+                onToggle={() => flip(openSections, setOpenSections, "costo")}
+                testId="section-costo"
               />
-              {(data.cmv.variantes.find((v) => v.key === data.cmv.mode)?.rows ?? []).map((r) => (
+              {isSectionOpen("costo") && (data.cmv.variantes.find((v) => v.key === data.cmv.mode)?.rows ?? []).map((r) => (
                 <Row key={r.localId} label={r.local} amount={r.amount} pctValue={r.pct} level={0} meta={r.detalle ?? undefined} />
               ))}
             </>
@@ -609,11 +881,19 @@ export function StatementTab({
             groups={data.gastos.groups.filter((g) => g.computes !== false)}
             keyPrefix="gastos"
             emptyText="No hay movimientos con mes económico en este período."
+            {...treeProps("gastos")}
           />
 
           {/* ── COMISIONES ── */}
-          <SectionHeader title="Comisiones" amount={data.comisiones.total} pctValue={data.comisiones.pct} />
-          {data.comisiones.lines.length === 0 ? (
+          <SectionHeader
+            title="Comisiones"
+            amount={data.comisiones.total}
+            pctValue={data.comisiones.pct}
+            open={isSectionOpen("comisiones")}
+            onToggle={() => flip(openSections, setOpenSections, "comisiones")}
+            testId="section-comisiones"
+          />
+          {!isSectionOpen("comisiones") ? null : data.comisiones.lines.length === 0 ? (
             <p className="px-4 py-3 text-sm text-muted-foreground">
               No hay comisiones cargadas en este mes. Cargalas en la solapa Comisiones.
             </p>
@@ -626,8 +906,15 @@ export function StatementTab({
           <Row label="RESULTADO OPERATIVO" amount={R.resultadoOperativo} pctValue={I.resultadoOperativoPct} level={0} bold tone="total" />
 
           {/* ── IMPUESTOS OPERATIVOS ── */}
-          <SectionHeader title="Impuestos sobre ingresos y movimientos" amount={data.impuestos.operativosTotal} pctValue={0} />
-          {data.impuestos.operativos.length === 0 ? (
+          <SectionHeader
+            title="Impuestos sobre ingresos y movimientos"
+            amount={data.impuestos.operativosTotal}
+            pctValue={data.ventas.total ? (data.impuestos.operativosTotal / data.ventas.total) * 100 : 0}
+            open={isSectionOpen("impuestos")}
+            onToggle={() => flip(openSections, setOpenSections, "impuestos")}
+            testId="section-impuestos"
+          />
+          {!isSectionOpen("impuestos") ? null : data.impuestos.operativos.length === 0 ? (
             <p className="px-4 py-3 text-sm text-muted-foreground">
               No hay impuestos cargados en este mes. Cargalos en la solapa Impuestos.
             </p>
@@ -655,13 +942,13 @@ export function StatementTab({
             meta="se calcula sobre el resultado, por eso resta acá"
           />
 
-          <div className={`flex items-center gap-2 px-2 py-3 ${ECON.bg} border-t-2 ${ECON.border}`}>
+          <div className={`flex items-center gap-2 pl-2 pr-3 py-3 ${ECON.bg} border-t-2 ${ECON.border}`}>
             <span className="w-4 shrink-0" />
             <span className={`flex-1 text-sm font-bold uppercase tracking-wide ${ECON.text}`}>Resultado neto</span>
-            <span className={`w-36 text-right font-mono text-base font-bold ${R.resultadoNeto >= 0 ? ECON.text : "text-destructive"}`}>
+            <span className={`${COL_IMPORTE} text-right font-mono text-base font-bold ${R.resultadoNeto >= 0 ? ECON.text : "text-destructive"}`}>
               {formatCurrency(R.resultadoNeto)}
             </span>
-            <span className={`w-16 text-right font-mono text-xs font-semibold ${R.resultadoNeto >= 0 ? ECON.text : "text-destructive"}`}>
+            <span className={`${COL_PCT} text-right font-mono text-xs font-semibold ${R.resultadoNeto >= 0 ? ECON.text : "text-destructive"}`}>
               {pct(I.resultadoNetoPct)}
             </span>
           </div>
