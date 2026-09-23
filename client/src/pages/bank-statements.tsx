@@ -668,11 +668,14 @@ export default function BankStatementsPage() {
 
   const deleteBatchMutation = useMutation({
     mutationFn: async ({ batchId, confirmCode }: { batchId: string; confirmCode: string }) => {
-      return apiRequest(
+      // Mismo detalle que en la masiva: apiRequest devuelve el Response, hace falta el .json()
+      // (sin el, el toast decia "Se eliminaron undefined movimientos").
+      const res = await apiRequest(
         "DELETE",
         `/api/transactions/batch/${encodeURIComponent(batchId)}`,
         { confirmCode },
       );
+      return res.json();
     },
     onSuccess: (data: any) => {
       queryClient.invalidateQueries({ queryKey: ["/api/transactions"] });
@@ -1015,7 +1018,11 @@ export default function BankStatementsPage() {
       filterCategoryId?: string;
       mode?: "uncategorize" | "assign-local";
     }) => {
-      return apiRequest("POST", "/api/transactions/batch-categorize", data);
+      // OJO: `apiRequest` devuelve el Response crudo, no el JSON. Sin este `.json()` el onSuccess
+      // recibia un Response y `data.updatedIds` / `data.updated` / `data.message` eran undefined:
+      // el parcheo de cache nunca se aplicaba y caia siempre al invalidate (= recarga completa).
+      const res = await apiRequest("POST", "/api/transactions/batch-categorize", data);
+      return res.json();
     },
     onSuccess: (data: any, variables) => {
       // El servidor devuelve los ids que toco: se parchean en memoria en vez de invalidar la query

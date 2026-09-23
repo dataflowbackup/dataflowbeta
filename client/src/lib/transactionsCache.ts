@@ -53,13 +53,33 @@ export function removeTransactionsFromCache(ids: number[]): void {
  * Red de seguridad: si el servidor no mando los ids (version vieja de la funcion todavia
  * desplegada, o una respuesta inesperada), se vuelve al comportamiento anterior. Lento, pero
  * nunca deja la pantalla mostrando datos viejos.
+ *
+ * Avisa por consola porque este camino es justamente el que hace que "el arreglo no se note":
+ * la pantalla queda bien, pero vuelve a tardar lo de antes. Si esto aparece, hay algo roto.
  */
-export function invalidateTransactions(): void {
+export function invalidateTransactions(motivo = "sin ids en la respuesta"): void {
+  console.warn(
+    `[transactionsCache] Recarga completa de movimientos (${motivo}). ` +
+      `Deberia haberse parcheado el cache: revisar que el endpoint devuelva updatedIds/deletedIds ` +
+      `y que la mutacion haga res.json().`,
+  );
   queryClient.invalidateQueries({ queryKey: TRANSACTIONS_KEY });
 }
 
-/** Los ids que devolvio el servidor, o `null` si no vinieron. */
+/**
+ * Los ids que devolvio el servidor, o `null` si no vinieron.
+ *
+ * El error que ya nos comimos una vez: `apiRequest` devuelve el `Response` crudo, asi que si la
+ * mutacion se olvida del `.json()` aca llega un Response y todos los campos son undefined. Se
+ * detecta explicitamente para que el sintoma no sea "anda igual de lento" sin explicacion.
+ */
 export function idsDeLaRespuesta(respuesta: any, campo: "updatedIds" | "deletedIds"): number[] | null {
+  if (typeof Response !== "undefined" && respuesta instanceof Response) {
+    console.error(
+      "[transactionsCache] Llego un Response sin parsear: a la mutacion le falta `res.json()`.",
+    );
+    return null;
+  }
   const ids = respuesta?.[campo];
   if (!Array.isArray(ids)) return null;
   const limpios = ids.filter((n: unknown) => typeof n === "number" && Number.isFinite(n));
