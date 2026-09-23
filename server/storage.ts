@@ -479,14 +479,14 @@ export interface IStorage {
     clientId: number,
     filters: BatchTransactionFilters,
   ): Promise<number[]>;
-  /** Aplica una acción masiva con un solo UPDATE (sin pasar por la lista de ids). */
+  /** Aplica una acción masiva con un solo UPDATE. Devuelve los ids tocados. */
   batchUpdateTransactionsByFilter(
     clientId: number,
     filters: BatchTransactionFilters,
     updateData: Partial<InsertTransaction>,
-  ): Promise<number>;
+  ): Promise<number[]>;
   /** Idem borrando. */
-  batchDeleteTransactionsByFilter(clientId: number, filters: BatchTransactionFilters): Promise<number>;
+  batchDeleteTransactionsByFilter(clientId: number, filters: BatchTransactionFilters): Promise<number[]>;
   /** Valida fila de efectivo (local, importe). Categoría es opcional. */
   assertCashMovementRowValid(
     clientId: number,
@@ -513,7 +513,7 @@ export interface IStorage {
   createTransactionsBatch(transactionsList: InsertTransaction[]): Promise<number>;
   updateTransaction(clientId: number, id: number, transaction: Partial<InsertTransaction>): Promise<Transaction | undefined>;
   deleteTransaction(clientId: number, id: number): Promise<boolean>;
-  batchDeleteTransactions(clientId: number, ids: number[]): Promise<number>;
+  batchDeleteTransactions(clientId: number, ids: number[]): Promise<number[]>;
 
   listCashRegisters(clientId: number, includeInactive?: boolean): Promise<CashRegister[]>;
   createCashRegister(clientId: number, name: string): Promise<CashRegister>;
@@ -2835,7 +2835,7 @@ export class DatabaseStorage implements IStorage {
     clientId: number,
     filters: BatchTransactionFilters,
     updateData: Partial<InsertTransaction>,
-  ): Promise<number> {
+  ): Promise<number[]> {
     if (filters.ids !== undefined) {
       throw new Error("batchUpdateTransactionsByFilter no acepta ids explícitos");
     }
@@ -2845,14 +2845,14 @@ export class DatabaseStorage implements IStorage {
       .set(updateData)
       .where(and(...conds))
       .returning({ id: transactions.id });
-    return rows.length;
+    return (rows as Array<{ id: number }>).map((r) => r.id);
   }
 
   /** Igual que `batchUpdateTransactionsByFilter` pero borrando. */
   async batchDeleteTransactionsByFilter(
     clientId: number,
     filters: BatchTransactionFilters,
-  ): Promise<number> {
+  ): Promise<number[]> {
     if (filters.ids !== undefined) {
       throw new Error("batchDeleteTransactionsByFilter no acepta ids explícitos");
     }
@@ -2861,7 +2861,7 @@ export class DatabaseStorage implements IStorage {
       .delete(transactions)
       .where(and(...conds))
       .returning({ id: transactions.id });
-    return rows.length;
+    return (rows as Array<{ id: number }>).map((r) => r.id);
   }
 
   /** WHERE compartido por las acciones masivas. No incluye `filters.ids` (se agrega aparte). */
@@ -3140,10 +3140,10 @@ export class DatabaseStorage implements IStorage {
     clientId: number,
     ids: number[],
     updateData: Partial<InsertTransaction>,
-  ): Promise<number> {
-    if (ids.length === 0) return 0;
+  ): Promise<number[]> {
+    if (ids.length === 0) return [];
     const CHUNK = 500; // muy por debajo del límite de variables de SQLite
-    let updated = 0;
+    const tocados: number[] = [];
     for (let i = 0; i < ids.length; i += CHUNK) {
       const chunk = ids.slice(i, i + CHUNK);
       const rows = await db
@@ -3151,9 +3151,9 @@ export class DatabaseStorage implements IStorage {
         .set(updateData)
         .where(and(eq(transactions.clientId, clientId), inArray(transactions.id, chunk)))
         .returning({ id: transactions.id });
-      updated += rows.length;
+      tocados.push(...(rows as Array<{ id: number }>).map((r) => r.id));
     }
-    return updated;
+    return tocados;
   }
 
   async deleteTransaction(clientId: number, id: number): Promise<boolean> {
@@ -3166,18 +3166,18 @@ export class DatabaseStorage implements IStorage {
   }
 
   /** Borra en lote por ids (un DELETE por chunk) para no desbordar el timeout con miles de filas. */
-  async batchDeleteTransactions(clientId: number, ids: number[]): Promise<number> {
-    if (ids.length === 0) return 0;
+  async batchDeleteTransactions(clientId: number, ids: number[]): Promise<number[]> {
+    if (ids.length === 0) return [];
     const CHUNK = 500;
-    let deleted = 0;
+    const borrados: number[] = [];
     for (let i = 0; i < ids.length; i += CHUNK) {
       const rows = await db
         .delete(transactions)
         .where(and(eq(transactions.clientId, clientId), inArray(transactions.id, ids.slice(i, i + CHUNK))))
         .returning({ id: transactions.id });
-      deleted += rows.length;
+      borrados.push(...(rows as Array<{ id: number }>).map((r) => r.id));
     }
-    return deleted;
+    return borrados;
   }
 
   async deleteTransactionBatch(clientId: number, importBatchId: string): Promise<number> {

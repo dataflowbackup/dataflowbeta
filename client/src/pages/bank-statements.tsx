@@ -48,6 +48,12 @@ import {
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
+import {
+  patchTransactionsInCache,
+  removeTransactionsFromCache,
+  invalidateTransactions,
+  idsDeLaRespuesta,
+} from "@/lib/transactionsCache";
 import { formatCurrency, formatDate } from "@/lib/formatters";
 import { cn } from "@/lib/utils";
 import { GenericBankMappingDialog } from "@/components/generic-bank-mapping-dialog";
@@ -511,7 +517,11 @@ export default function BankStatementsPage() {
     queryKey: ["/api/transactions"],
     queryFn: async () => {
       const PAGE_SIZE = 800;
-      const MAX_PAGES = 250;
+      // Tope anti-loop, no un limite de negocio. Antes eran 250 paginas (200.000 movimientos) y al
+      // cruzarlo el listado devolvia lo que tenia EN SILENCIO: faltaban los mas viejos y los totales
+      // de las solapas mentian sin ningun aviso. Con ~50.000 movimientos por mes eso estaba a semanas
+      // de pasar (sep-2026: 159.337). Ahora el tope es lejano y, si alguna vez se alcanza, se avisa.
+      const MAX_PAGES = 2000;
       const mergedById = new Map<number, TransactionWithRelations>();
       let afterDate: string | undefined;
       let afterId: number | undefined;
@@ -571,6 +581,15 @@ export default function BankStatementsPage() {
         afterDate = nextAfter;
         afterId = last.id;
         pageIdx += 1;
+      }
+
+      // Si se salio por el tope y no porque se acabaron los datos, el listado esta incompleto.
+      // Mejor un error visible que una pantalla que muestra numeros equivocados.
+      if (pageIdx >= MAX_PAGES) {
+        throw new Error(
+          `El listado supera el tope de ${MAX_PAGES * PAGE_SIZE} movimientos y quedaria incompleto. ` +
+            `Avisá para pasar el listado a filtrado por servidor.`,
+        );
       }
 
       return Array.from(mergedById.values()).sort((a, b) => {
@@ -998,8 +1017,39 @@ export default function BankStatementsPage() {
     }) => {
       return apiRequest("POST", "/api/transactions/batch-categorize", data);
     },
-    onSuccess: (data: any) => {
-      queryClient.invalidateQueries({ queryKey: ["/api/transactions"] });
+    onSuccess: (data: any, variables) => {
+      // El servidor devuelve los ids que toco: se parchean en memoria en vez de invalidar la query
+      // y rebajar los ~159k movimientos de a 800 por request (sep-2026). Si no vinieron los ids,
+      // se cae al comportamiento viejo.
+      const ids = idsDeLaRespuesta(data, "updatedIds");
+      if (ids) {
+        const catsById = new Map(categories.map((c) => [c.id, c]));
+        const localsById = new Map(locals.map((l) => [l.id, l]));
+        patchTransactionsInCache<TransactionWithRelations>(ids, (fila) => {
+          if (variables.mode === "assign-local") {
+            const lid = variables.localId || null;
+            return { ...fila, localId: lid, local: lid ? localsById.get(lid) ?? null : null };
+          }
+          if (variables.mode === "uncategorize") {
+            return { ...fila, categoryId: null, category: null };
+          }
+          const cid = variables.categoryId || null;
+          const patched: TransactionWithRelations = {
+            ...fila,
+            categoryId: cid,
+            category: cid ? catsById.get(cid) ?? null : null,
+          };
+          // La masiva de categorizar puede asignar local de paso (queda opcional en el dialogo).
+          if (variables.localId !== undefined) {
+            const lid = variables.localId || null;
+            patched.localId = lid;
+            patched.local = lid ? localsById.get(lid) ?? null : null;
+          }
+          return patched;
+        });
+      } else {
+        invalidateTransactions();
+      }
       toast({ 
         title: "Clasificacion masiva completada", 
         description: data.message || `Se categorizaron ${data.updated} transacciones`

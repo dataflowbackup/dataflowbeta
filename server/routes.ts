@@ -3571,7 +3571,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const sinLote = () =>
         res.status(400).json({ message: "No hay transacciones para actualizar" });
 
-      let updated = 0;
+      // Los ids tocados vuelven en la respuesta: con ellos el front parchea su cache en vez de
+      // invalidar la query y volver a bajar los ~159k movimientos de a 800 por request (sep-2026).
+      let updatedIds: number[] = [];
       let total = 0;
 
       if (transactionIds && Array.isArray(transactionIds) && transactionIds.length > 0) {
@@ -3595,11 +3597,11 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
             : owned;
         if (idsToUpdate.length === 0) return sinLote();
         total = idsToUpdate.length;
-        updated = await storage.batchUpdateTransactions(clientId, idsToUpdate, updateData);
+        updatedIds = await storage.batchUpdateTransactions(clientId, idsToUpdate, updateData);
       } else if (descFilters !== null || desc2Filter !== null || hasDateRange) {
         // Camino "por criterio": puede alcanzar decenas de miles de movimientos. El criterio viaja
         // como WHERE y la base lo resuelve con un solo UPDATE, sin traer ni mandar la lista de ids.
-        updated = await storage.batchUpdateTransactionsByFilter(
+        updatedIds = await storage.batchUpdateTransactionsByFilter(
           clientId,
           {
             dateFrom: hasDateRange ? dateFrom : undefined,
@@ -3613,15 +3615,18 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
           },
           updateData,
         );
-        if (updated === 0) return sinLote();
-        total = updated;
+        if (updatedIds.length === 0) return sinLote();
+        total = updatedIds.length;
       } else {
         return sinLote();
       }
 
+      const updated = updatedIds.length;
+
       res.json({
         success: true,
         updated,
+        updatedIds,
         total,
         message: assignCaja
           ? `Se asignó la caja a ${updated} de ${total} transacciones`
@@ -3671,13 +3676,15 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         return res.status(403).json({ message: "Algunos movimientos no pertenecen a este cliente" });
       }
 
-      const updated = await storage.batchUpdateTransactions(clientId, idsToUpdate, {
+      const updatedIds = await storage.batchUpdateTransactions(clientId, idsToUpdate, {
         economicMonth: raw,
       } as any);
+      const updated = updatedIds.length;
 
       res.json({
         success: true,
         updated,
+        updatedIds,
         total: idsToUpdate.length,
         message:
           raw === null
@@ -3715,7 +3722,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const sinLote = () =>
         res.status(400).json({ message: "No hay movimientos para borrar con ese criterio" });
 
-      let deleted = 0;
+      let deletedIds: number[] = [];
       let total = 0;
 
       if (Array.isArray(transactionIds) && transactionIds.length > 0) {
@@ -3735,25 +3742,28 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         });
         if (idsToDelete.length === 0) return sinLote();
         total = idsToDelete.length;
-        deleted = await storage.batchDeleteTransactions(clientId, idsToDelete);
+        deletedIds = await storage.batchDeleteTransactions(clientId, idsToDelete);
       } else if (descFilters !== null || hasDateRange) {
         // Por criterio: un solo DELETE, igual que la clasificación masiva.
-        deleted = await storage.batchDeleteTransactionsByFilter(clientId, {
+        deletedIds = await storage.batchDeleteTransactionsByFilter(clientId, {
           dateFrom: hasDateRange ? dateFrom : undefined,
           dateTo: hasDateRange ? dateTo : undefined,
           bankSource: "cash",
           localId: localFilter,
           descriptions: descFilters,
         });
-        if (deleted === 0) return sinLote();
-        total = deleted;
+        if (deletedIds.length === 0) return sinLote();
+        total = deletedIds.length;
       } else {
         return sinLote();
       }
 
+      const deleted = deletedIds.length;
+
       res.json({
         success: true,
         deleted,
+        deletedIds,
         total,
         message: `Se borraron ${deleted} de ${total} movimientos`,
       });

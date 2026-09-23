@@ -55,6 +55,12 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Checkbox } from "@/components/ui/checkbox";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
+import {
+  patchTransactionsInCache,
+  removeTransactionsFromCache,
+  invalidateTransactions,
+  idsDeLaRespuesta,
+} from "@/lib/transactionsCache";
 import { formatCurrency, formatDate, formatEsArAmountInput, formatNumber, parseEsArAmount, normalizeName } from "@/lib/formatters";
 import { toISODate } from "@/lib/dateHelpers";
 import { cn } from "@/lib/utils";
@@ -635,7 +641,9 @@ export default function CashPage() {
     queryKey: ["/api/transactions", "cash"],
     queryFn: async () => {
       const PAGE_SIZE = 800;
-      const MAX_PAGES = 250;
+      // Tope anti-loop, no un limite de negocio: al cruzarlo el listado se truncaba en silencio.
+      // Ver la nota larga en bank-statements.tsx (sep-2026).
+      const MAX_PAGES = 2000;
       const mergedById = new Map<number, TransactionWithRelations>();
       let afterDate: string | undefined;
       let afterId: number | undefined;
@@ -681,6 +689,12 @@ export default function CashPage() {
         afterDate = nextAfter;
         afterId = last.id;
         pageIdx += 1;
+      }
+
+      if (pageIdx >= MAX_PAGES) {
+        throw new Error(
+          `El listado supera el tope de ${MAX_PAGES * PAGE_SIZE} movimientos y quedaria incompleto.`,
+        );
       }
 
       return Array.from(mergedById.values()).sort((a, b) => {
@@ -1328,6 +1342,14 @@ export default function CashPage() {
       return res.json();
     },
     onSuccess: (r: any) => {
+      // Se leen ANTES de los reset de abajo para que quede a la vista que el parcheo usa lo que
+      // se acaba de aplicar (los `set...` no cambian estas consts, pero asi no se presta a duda).
+      const modo = masivaMode;
+      const catElegida = masivaCategoryId ? parseInt(masivaCategoryId, 10) : null;
+      const localNuevo = masivaNewLocalId ? parseInt(masivaNewLocalId, 10) : null;
+      const localAsignado = masivaAssignLocalId ? parseInt(masivaAssignLocalId, 10) : null;
+      const cajaAsignada = masivaCajaId ? parseInt(masivaCajaId, 10) : null;
+
       const n = r.updated ?? r.deleted ?? 0;
       toast({
         title:
@@ -1345,8 +1367,43 @@ export default function CashPage() {
       setMasivaDateFrom(""); setMasivaDateTo(""); setMasivaLocalId(""); setMasivaDescSearch("");
       setMasivaSelectedDescs(new Set()); setMasivaCategoryId(""); setMasivaNewLocalId("");
       setMasivaCajaId(""); setMasivaAssignLocalId(""); setMasivaFilterCategoryId("");
-      queryClient.invalidateQueries({ queryKey: ["/api/transactions"] });
-      refetch();
+      // El servidor devuelve los ids que toco: se parchean en memoria en vez de invalidar y volver
+      // a paginar todos los movimientos (sep-2026). Sin ids, se cae al comportamiento viejo.
+      if (modo === "delete") {
+        const ids = idsDeLaRespuesta(r, "deletedIds");
+        if (ids) removeTransactionsFromCache(ids);
+        else { invalidateTransactions(); refetch(); }
+        return;
+      }
+      const ids = idsDeLaRespuesta(r, "updatedIds");
+      if (!ids) { invalidateTransactions(); refetch(); return; }
+      const catsById = new Map(categories.map((c) => [c.id, c]));
+      const localsById = new Map(locals.map((l) => [l.id, l]));
+      patchTransactionsInCache<TransactionWithRelations>(ids, (fila) => {
+        if (modo === "assign-local") {
+          return {
+            ...fila,
+            localId: localAsignado,
+            local: localAsignado ? localsById.get(localAsignado) ?? null : null,
+          };
+        }
+        if (modo === "assign-caja") {
+          return { ...fila, cashRegisterId: cajaAsignada } as TransactionWithRelations;
+        }
+        if (modo === "uncategorize") {
+          return { ...fila, categoryId: null, category: null };
+        }
+        const patched: TransactionWithRelations = {
+          ...fila,
+          categoryId: catElegida,
+          category: catElegida ? catsById.get(catElegida) ?? null : null,
+        };
+        if (localNuevo !== null) {
+          patched.localId = localNuevo;
+          patched.local = localsById.get(localNuevo) ?? null;
+        }
+        return patched;
+      });
     },
     onError: (e: Error) => toast({ title: "Error", description: e.message, variant: "destructive" }),
   });
