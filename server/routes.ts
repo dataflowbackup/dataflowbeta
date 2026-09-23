@@ -3511,18 +3511,6 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         return res.status(400).json({ message: "Se requiere categoryId" });
       }
 
-      const allTransactions = await storage.getTransactions(clientId);
-      const tenantTxIds = new Set(allTransactions.map(t => t.id));
-
-      const matchesDateRange = (t: (typeof allTransactions)[0]) => {
-        if (!dateFrom || !dateTo) return true;
-        const txDate = new Date(t.transactionDate);
-        const from = new Date(dateFrom);
-        const to = new Date(dateTo);
-        to.setHours(23, 59, 59, 999);
-        return txDate >= from && txDate <= to;
-      };
-
       // Soporte para array de descripciones (multi-select) o descripción única (legacy)
       const descFilters: string[] | null =
         Array.isArray(descriptions) && descriptions.length > 0
@@ -3557,73 +3545,19 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       if (categoryFilter !== null && !Number.isFinite(categoryFilter)) {
         return res.status(400).json({ message: "filterCategoryId invalido" });
       }
-      const matchesCategoryFilter = (t: any) => {
-        if (categoryFilterIsNone) return t.categoryId == null;
-        if (categoryFilter !== null) return t.categoryId === categoryFilter;
-        return true;
-      };
-
       // Estado que tiene que tener el movimiento para entrar en el lote:
-      //  categorizar → sin categoría · descategorizar → con categoría · asignar caja → sin caja.
-      const matchesTargetState = (t: (typeof allTransactions)[0]) => {
-        if (assignCaja) return (t as any).cashRegisterId == null;
-        if (assignLocal) return t.localId == null;
-        return uncategorize ? Boolean(t.categoryId) : !t.categoryId;
-      };
+      //  categorizar → sin categoría · descategorizar → con categoría · asignar caja → sin caja ·
+      //  asignar local → sin local.
+      const targetState = assignCaja
+        ? "sin-caja"
+        : assignLocal
+        ? "sin-local"
+        : uncategorize
+        ? "con-categoria"
+        : "sin-categoria";
 
-      let idsToUpdate: number[] = [];
-
-      if (transactionIds && Array.isArray(transactionIds) && transactionIds.length > 0) {
-        const requestedIds = transactionIds.map((id: any) => parseInt(id));
-        idsToUpdate = requestedIds.filter(id => tenantTxIds.has(id));
-
-        if (idsToUpdate.length !== requestedIds.length) {
-          return res.status(403).json({
-            message: "Algunas transacciones no pertenecen a este cliente"
-          });
-        }
-        // En asignación de caja/local el invariante manda incluso con ids explícitos:
-        // nunca se pisa una caja ni un local ya asignados.
-        if (assignCaja || assignLocal) {
-          const byId = new Map(allTransactions.map(t => [t.id, t]));
-          idsToUpdate = idsToUpdate.filter(id => {
-            const t = byId.get(id);
-            return t != null && matchesTargetState(t);
-          });
-        }
-      } else if (descFilters !== null || desc2Filter !== null) {
-        idsToUpdate = allTransactions
-          .filter(t => {
-            if (!matchesTargetState(t)) return false;
-            if (!matchesDateRange(t)) return false;
-            if (bankSource && t.bankSource !== bankSource) return false;
-            if (localFilter !== null && t.localId !== localFilter) return false;
-            if (!matchesCategoryFilter(t)) return false;
-            if (descFilters !== null && !descFilters.includes(t.description ?? "")) return false;
-            if (desc2Filter !== null && t.description2 !== desc2Filter) return false;
-            return true;
-          })
-          .map(t => t.id);
-      } else if (dateFrom && dateTo) {
-        const from = new Date(dateFrom);
-        const to = new Date(dateTo);
-        to.setHours(23, 59, 59, 999);
-
-        idsToUpdate = allTransactions
-          .filter(t => {
-            const txDate = new Date(t.transactionDate);
-            if (bankSource && t.bankSource !== bankSource) return false;
-            if (localFilter !== null && t.localId !== localFilter) return false;
-            if (!matchesCategoryFilter(t)) return false;
-            if (!(txDate >= from && txDate <= to)) return false;
-            return matchesTargetState(t);
-          })
-          .map(t => t.id);
-      }
-
-      if (idsToUpdate.length === 0) {
-        return res.status(400).json({ message: "No hay transacciones para actualizar" });
-      }
+      // El rango sólo acota si vienen las dos puntas.
+      const hasDateRange = Boolean(dateFrom && dateTo);
 
       const updateData: any = assignCaja
         ? { cashRegisterId: cajaIdToAssign }
@@ -3633,20 +3567,69 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         ? { categoryId: null }
         : { categoryId: categoryId || null };
       if (!uncategorize && !assignCaja && !assignLocal && localId !== undefined) updateData.localId = localId || null;
-      // UPDATE en lote (un solo statement por chunk) para no desbordar el timeout con miles de filas.
-      const updated = await storage.batchUpdateTransactions(clientId, idsToUpdate, updateData);
+
+      const sinLote = () =>
+        res.status(400).json({ message: "No hay transacciones para actualizar" });
+
+      let updated = 0;
+      let total = 0;
+
+      if (transactionIds && Array.isArray(transactionIds) && transactionIds.length > 0) {
+        // Camino "ids explícitos": son los tildados en pantalla, así que el lote es acotado.
+        const requestedIds: number[] = Array.from(
+          new Set(transactionIds.map((id: any) => parseInt(id))),
+        );
+        const owned = await storage.selectTransactionIdsForBatch(clientId, {
+          ids: requestedIds.filter(n => Number.isFinite(n)),
+        });
+        if (owned.length !== requestedIds.length) {
+          return res.status(403).json({
+            message: "Algunas transacciones no pertenecen a este cliente"
+          });
+        }
+        // En asignación de caja/local el invariante manda incluso con ids explícitos:
+        // nunca se pisa una caja ni un local ya asignados.
+        const idsToUpdate =
+          assignCaja || assignLocal
+            ? await storage.selectTransactionIdsForBatch(clientId, { ids: owned, targetState })
+            : owned;
+        if (idsToUpdate.length === 0) return sinLote();
+        total = idsToUpdate.length;
+        updated = await storage.batchUpdateTransactions(clientId, idsToUpdate, updateData);
+      } else if (descFilters !== null || desc2Filter !== null || hasDateRange) {
+        // Camino "por criterio": puede alcanzar decenas de miles de movimientos. El criterio viaja
+        // como WHERE y la base lo resuelve con un solo UPDATE, sin traer ni mandar la lista de ids.
+        updated = await storage.batchUpdateTransactionsByFilter(
+          clientId,
+          {
+            dateFrom: hasDateRange ? dateFrom : undefined,
+            dateTo: hasDateRange ? dateTo : undefined,
+            bankSource: bankSource || undefined,
+            localId: localFilter,
+            categoryFilter: categoryFilterIsNone ? "none" : categoryFilter,
+            descriptions: descFilters,
+            description2: desc2Filter,
+            targetState,
+          },
+          updateData,
+        );
+        if (updated === 0) return sinLote();
+        total = updated;
+      } else {
+        return sinLote();
+      }
 
       res.json({
         success: true,
         updated,
-        total: idsToUpdate.length,
+        total,
         message: assignCaja
-          ? `Se asignó la caja a ${updated} de ${idsToUpdate.length} transacciones`
+          ? `Se asignó la caja a ${updated} de ${total} transacciones`
           : assignLocal
-          ? `Se asignó el local a ${updated} de ${idsToUpdate.length} transacciones`
+          ? `Se asignó el local a ${updated} de ${total} transacciones`
           : uncategorize
-          ? `Se descategorizaron ${updated} de ${idsToUpdate.length} transacciones`
-          : `Se categorizaron ${updated} de ${idsToUpdate.length} transacciones`,
+          ? `Se descategorizaron ${updated} de ${total} transacciones`
+          : `Se categorizaron ${updated} de ${total} transacciones`,
       });
     } catch (e: any) {
       res.status(500).json({ message: e.message });
@@ -3671,17 +3654,19 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       if (!Array.isArray(transactionIds) || transactionIds.length === 0) {
         return res.status(400).json({ message: "No hay movimientos seleccionados" });
       }
-      const requestedIds = transactionIds
-        .map((id: any) => parseInt(String(id), 10))
-        .filter((n: number) => Number.isFinite(n));
+      const requestedIds: number[] = Array.from(
+        new Set(
+          transactionIds
+            .map((id: any) => parseInt(String(id), 10))
+            .filter((n: number) => Number.isFinite(n)),
+        ),
+      );
       if (requestedIds.length === 0) {
         return res.status(400).json({ message: "No hay movimientos seleccionados" });
       }
 
       // Solo se tocan movimientos de ESTE cliente: los ajenos ni se ignoran en silencio, se rechaza.
-      const allTransactions = await storage.getTransactions(clientId);
-      const tenantTxIds = new Set(allTransactions.map((t) => t.id));
-      const idsToUpdate = requestedIds.filter((id: number) => tenantTxIds.has(id));
+      const idsToUpdate = await storage.selectTransactionIdsForBatch(clientId, { ids: requestedIds });
       if (idsToUpdate.length !== requestedIds.length) {
         return res.status(403).json({ message: "Algunos movimientos no pertenecen a este cliente" });
       }
@@ -3715,18 +3700,6 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         return res.status(400).json({ message: "El borrado masivo sólo está disponible para efectivo" });
       }
 
-      const allTransactions = await storage.getTransactions(clientId);
-      const tenantTxIds = new Set(allTransactions.map((t) => t.id));
-
-      const matchesDateRange = (t: (typeof allTransactions)[0]) => {
-        if (!dateFrom || !dateTo) return true;
-        const txDate = new Date(t.transactionDate);
-        const from = new Date(dateFrom);
-        const to = new Date(dateTo);
-        to.setHours(23, 59, 59, 999);
-        return txDate >= from && txDate <= to;
-      };
-
       const descFilters: string[] | null =
         Array.isArray(descriptions) && descriptions.length > 0
           ? descriptions.map((d: any) => String(d).trim()).filter(Boolean)
@@ -3737,44 +3710,52 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const localFilter =
         localId !== undefined && localId !== null && localId !== "all" ? parseInt(String(localId), 10) : null;
 
-      let idsToDelete: number[] = [];
+      const hasDateRange = Boolean(dateFrom && dateTo);
+
+      const sinLote = () =>
+        res.status(400).json({ message: "No hay movimientos para borrar con ese criterio" });
+
+      let deleted = 0;
+      let total = 0;
 
       if (Array.isArray(transactionIds) && transactionIds.length > 0) {
-        const requestedIds = transactionIds.map((id: any) => parseInt(id));
-        idsToDelete = requestedIds.filter((id) => tenantTxIds.has(id));
-        if (idsToDelete.length !== requestedIds.length) {
+        const requestedIds: number[] = Array.from(
+          new Set(transactionIds.map((id: any) => parseInt(id))),
+        );
+        const owned = await storage.selectTransactionIdsForBatch(clientId, {
+          ids: requestedIds.filter((n) => Number.isFinite(n)),
+        });
+        if (owned.length !== requestedIds.length) {
           return res.status(403).json({ message: "Algunas transacciones no pertenecen a este cliente" });
         }
         // Aun con ids explícitos, sólo borramos efectivo.
-        const cashIds = new Set(allTransactions.filter((t) => t.bankSource === "cash").map((t) => t.id));
-        idsToDelete = idsToDelete.filter((id) => cashIds.has(id));
-      } else if (descFilters !== null || (dateFrom && dateTo)) {
-        idsToDelete = allTransactions
-          .filter((t) => {
-            if (t.bankSource !== "cash") return false;
-            if (!matchesDateRange(t)) return false;
-            if (localFilter !== null && t.localId !== localFilter) return false;
-            if (descFilters !== null && !descFilters.includes(t.description ?? "")) return false;
-            return true;
-          })
-          .map((t) => t.id);
-      }
-
-      if (idsToDelete.length === 0) {
-        return res.status(400).json({ message: "No hay movimientos para borrar con ese criterio" });
-      }
-
-      let deleted = 0;
-      for (const id of idsToDelete) {
-        const ok = await storage.deleteTransaction(clientId, id);
-        if (ok) deleted++;
+        const idsToDelete = await storage.selectTransactionIdsForBatch(clientId, {
+          ids: owned,
+          bankSource: "cash",
+        });
+        if (idsToDelete.length === 0) return sinLote();
+        total = idsToDelete.length;
+        deleted = await storage.batchDeleteTransactions(clientId, idsToDelete);
+      } else if (descFilters !== null || hasDateRange) {
+        // Por criterio: un solo DELETE, igual que la clasificación masiva.
+        deleted = await storage.batchDeleteTransactionsByFilter(clientId, {
+          dateFrom: hasDateRange ? dateFrom : undefined,
+          dateTo: hasDateRange ? dateTo : undefined,
+          bankSource: "cash",
+          localId: localFilter,
+          descriptions: descFilters,
+        });
+        if (deleted === 0) return sinLote();
+        total = deleted;
+      } else {
+        return sinLote();
       }
 
       res.json({
         success: true,
         deleted,
-        total: idsToDelete.length,
-        message: `Se borraron ${deleted} de ${idsToDelete.length} movimientos`,
+        total,
+        message: `Se borraron ${deleted} de ${total} movimientos`,
       });
     } catch (e: any) {
       res.status(500).json({ message: e.message });

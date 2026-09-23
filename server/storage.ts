@@ -282,6 +282,28 @@ export const OTROS_MOVIMIENTOS_SPECIAL_TYPES = new Set<string>([
  */
 export const MOVIMIENTOS_FINANCIEROS_GROUP_TYPE = "movimientos_financieros";
 
+/**
+ * Criterio de una acción masiva sobre movimientos (clasificar, descategorizar, asignar caja/local,
+ * borrar). Se resuelve entero en SQL: ver `selectTransactionIdsForBatch`.
+ */
+export type BatchTransactionFilters = {
+  /** Ids explícitos elegidos en pantalla. Acota el lote a ellos (y valida que sean del cliente). */
+  ids?: number[];
+  /** Rango de fechas inclusivo, "YYYY-MM-DD". Sólo se aplica si vienen las dos puntas. */
+  dateFrom?: string;
+  dateTo?: string;
+  bankSource?: string;
+  /** Filtro de BÚSQUEDA por local. No es el local que se asigna. `null` = todos. */
+  localId?: number | null;
+  /** Filtro de BÚSQUEDA por categoría: `"none"` = los que no tienen ninguna. `null` = todas. */
+  categoryFilter?: number | "none" | null;
+  /** Descripciones exactas (multi-select del diálogo). */
+  descriptions?: string[] | null;
+  description2?: string | null;
+  /** Estado que tiene que tener el movimiento para entrar en el lote. */
+  targetState?: "sin-categoria" | "con-categoria" | "sin-caja" | "sin-local" | null;
+};
+
 export interface IStorage {
   upsertUser(user: UpsertUser): Promise<User>;
   getUser(id: string): Promise<User | undefined>;
@@ -452,6 +474,19 @@ export interface IStorage {
   ): Promise<Transaction[]>;
   getTransactionById(clientId: number, id: number): Promise<Transaction | undefined>;
   getTransactionCount(clientId: number, options?: { bankSource?: string }): Promise<number>;
+  /** Resuelve EN SQL los ids que alcanza una acción masiva. Devuelve sólo ids. */
+  selectTransactionIdsForBatch(
+    clientId: number,
+    filters: BatchTransactionFilters,
+  ): Promise<number[]>;
+  /** Aplica una acción masiva con un solo UPDATE (sin pasar por la lista de ids). */
+  batchUpdateTransactionsByFilter(
+    clientId: number,
+    filters: BatchTransactionFilters,
+    updateData: Partial<InsertTransaction>,
+  ): Promise<number>;
+  /** Idem borrando. */
+  batchDeleteTransactionsByFilter(clientId: number, filters: BatchTransactionFilters): Promise<number>;
   /** Valida fila de efectivo (local, importe). Categoría es opcional. */
   assertCashMovementRowValid(
     clientId: number,
@@ -478,6 +513,7 @@ export interface IStorage {
   createTransactionsBatch(transactionsList: InsertTransaction[]): Promise<number>;
   updateTransaction(clientId: number, id: number, transaction: Partial<InsertTransaction>): Promise<Transaction | undefined>;
   deleteTransaction(clientId: number, id: number): Promise<boolean>;
+  batchDeleteTransactions(clientId: number, ids: number[]): Promise<number>;
 
   listCashRegisters(clientId: number, includeInactive?: boolean): Promise<CashRegister[]>;
   createCashRegister(clientId: number, name: string): Promise<CashRegister>;
@@ -2754,6 +2790,128 @@ export class DatabaseStorage implements IStorage {
     return row;
   }
 
+  /**
+   * Resuelve EN SQL los ids que alcanza una acción masiva y devuelve sólo los ids.
+   *
+   * Antes cada endpoint masivo hacía `getTransactions(clientId)` (TODAS las filas del cliente, con
+   * todas sus columnas) y filtraba en JS. Con 159k movimientos eso son ~40 MB viajando de Turso a
+   * la función de Netlify: se pasaba del timeout y el navegador mostraba un 504 (sep-2026).
+   * Filtrando en SQL sólo vuelven los ids del lote.
+   */
+  async selectTransactionIdsForBatch(
+    clientId: number,
+    filters: BatchTransactionFilters,
+  ): Promise<number[]> {
+    const conds = this.buildBatchTransactionConditions(clientId, filters);
+
+    const run = async (extra?: any): Promise<number[]> => {
+      const where = extra ? and(...conds, extra) : and(...conds);
+      const rows = await db.select({ id: transactions.id }).from(transactions).where(where);
+      return (rows as Array<{ id: number }>).map((r) => r.id);
+    };
+
+    if (filters.ids !== undefined) {
+      if (filters.ids.length === 0) return [];
+      const CHUNK = 500; // muy por debajo del límite de variables de SQLite
+      const out: number[] = [];
+      for (let i = 0; i < filters.ids.length; i += CHUNK) {
+        out.push(...(await run(inArray(transactions.id, filters.ids.slice(i, i + CHUNK)))));
+      }
+      return out;
+    }
+    return await run();
+  }
+
+  /**
+   * Aplica la acción masiva con UN solo UPDATE, sin pasar por la lista de ids.
+   *
+   * Es el camino de los lotes grandes: resolver 45k ids y después mandarlos en chunks de 500
+   * son ~90 viajes a Turso, que es la otra forma de comerse el timeout. Acá el criterio viaja
+   * como WHERE y la base hace todo de una. Devuelve cuántas filas tocó.
+   *
+   * `filters.ids` no se admite: ese camino va por `batchUpdateTransactions`, que ya chunkea.
+   */
+  async batchUpdateTransactionsByFilter(
+    clientId: number,
+    filters: BatchTransactionFilters,
+    updateData: Partial<InsertTransaction>,
+  ): Promise<number> {
+    if (filters.ids !== undefined) {
+      throw new Error("batchUpdateTransactionsByFilter no acepta ids explícitos");
+    }
+    const conds = this.buildBatchTransactionConditions(clientId, filters);
+    const rows = await db
+      .update(transactions)
+      .set(updateData)
+      .where(and(...conds))
+      .returning({ id: transactions.id });
+    return rows.length;
+  }
+
+  /** Igual que `batchUpdateTransactionsByFilter` pero borrando. */
+  async batchDeleteTransactionsByFilter(
+    clientId: number,
+    filters: BatchTransactionFilters,
+  ): Promise<number> {
+    if (filters.ids !== undefined) {
+      throw new Error("batchDeleteTransactionsByFilter no acepta ids explícitos");
+    }
+    const conds = this.buildBatchTransactionConditions(clientId, filters);
+    const rows = await db
+      .delete(transactions)
+      .where(and(...conds))
+      .returning({ id: transactions.id });
+    return rows.length;
+  }
+
+  /** WHERE compartido por las acciones masivas. No incluye `filters.ids` (se agrega aparte). */
+  private buildBatchTransactionConditions(clientId: number, filters: BatchTransactionFilters): any[] {
+    const conds: any[] = [eq(transactions.clientId, clientId)];
+
+    // El rango sólo cuenta si vienen las dos puntas (mismo criterio que tenía el filtro en JS).
+    if (filters.dateFrom && filters.dateTo) {
+      conds.push(gte(transactions.transactionDate, filters.dateFrom));
+      conds.push(lte(transactions.transactionDate, filters.dateTo));
+    }
+    if (filters.bankSource) conds.push(eq(transactions.bankSource, filters.bankSource));
+    if (filters.localId != null) conds.push(eq(transactions.localId, filters.localId));
+
+    if (filters.categoryFilter === "none") {
+      conds.push(isNull(transactions.categoryId));
+    } else if (typeof filters.categoryFilter === "number") {
+      conds.push(eq(transactions.categoryId, filters.categoryFilter));
+    }
+
+    if (filters.descriptions && filters.descriptions.length > 0) {
+      // En JS `descriptions.includes(t.description ?? "")` hacía que la cadena vacía alcanzara
+      // también a los NULL. En SQL `IN` nunca matchea NULL, así que ese caso va aparte.
+      const inDesc = inArray(transactions.description, filters.descriptions);
+      conds.push(
+        filters.descriptions.some((d) => d === "")
+          ? or(inDesc, isNull(transactions.description))!
+          : inDesc,
+      );
+    }
+    if (filters.description2 != null) conds.push(eq(transactions.description2, filters.description2));
+
+    switch (filters.targetState) {
+      case "sin-categoria":
+        conds.push(isNull(transactions.categoryId));
+        break;
+      case "con-categoria":
+        conds.push(isNotNull(transactions.categoryId));
+        break;
+      case "sin-caja":
+        conds.push(isNull(transactions.cashRegisterId));
+        break;
+      case "sin-local":
+        conds.push(isNull(transactions.localId));
+        break;
+    }
+
+    return conds;
+  }
+
   async assertCashMovementRowValid(
     clientId: number,
     row: {
@@ -3005,6 +3163,21 @@ export class DatabaseStorage implements IStorage {
       .where(and(eq(transactions.id, id), eq(transactions.clientId, clientId)))
       .returning({ id: transactions.id });
     return deletedRows.length > 0;
+  }
+
+  /** Borra en lote por ids (un DELETE por chunk) para no desbordar el timeout con miles de filas. */
+  async batchDeleteTransactions(clientId: number, ids: number[]): Promise<number> {
+    if (ids.length === 0) return 0;
+    const CHUNK = 500;
+    let deleted = 0;
+    for (let i = 0; i < ids.length; i += CHUNK) {
+      const rows = await db
+        .delete(transactions)
+        .where(and(eq(transactions.clientId, clientId), inArray(transactions.id, ids.slice(i, i + CHUNK))))
+        .returning({ id: transactions.id });
+      deleted += rows.length;
+    }
+    return deleted;
   }
 
   async deleteTransactionBatch(clientId: number, importBatchId: string): Promise<number> {
