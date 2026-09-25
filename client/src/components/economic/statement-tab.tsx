@@ -12,7 +12,8 @@
  * impuestos que resta (decisión del usuario del 21-sep-2026).
  */
 import { useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useMutation } from "@tanstack/react-query";
+import { apiRequest, queryClient } from "@/lib/queryClient";
 import { Link } from "wouter";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -508,6 +509,30 @@ export function StatementTab({
   });
 
   /**
+   * Productos que la empresa sacó del top (ej. "Servicio de mesa"). Se guardan en las
+   * preferencias de la empresa, así quedan afuera para todos y en cualquier computadora.
+   * El servidor manda 30 productos y acá se completa el top 10 con los que siguen.
+   */
+  const EXCLUDED_KEY = "/api/preferences/economic-top-excluded";
+  const { data: excluded = [] } = useQuery<string[]>({ queryKey: [EXCLUDED_KEY] });
+  const saveExcluded = useMutation({
+    mutationFn: async (productos: string[]) => {
+      const res = await apiRequest("PUT", EXCLUDED_KEY, { productos });
+      return (await res.json()) as string[];
+    },
+    // Optimista: el ranking se reacomoda al instante y, si falla, vuelve a lo guardado.
+    onMutate: (productos) => {
+      const prev = queryClient.getQueryData<string[]>([EXCLUDED_KEY]);
+      queryClient.setQueryData([EXCLUDED_KEY], productos);
+      return { prev };
+    },
+    onError: (_e, _v, ctx) => queryClient.setQueryData([EXCLUDED_KEY], ctx?.prev ?? []),
+    onSuccess: (saved) => queryClient.setQueryData([EXCLUDED_KEY], saved),
+  });
+  const excluir = (producto: string) => saveExcluded.mutate([...excluded, producto]);
+  const restablecer = () => saveExcluded.mutate([]);
+
+  /**
    * Todo el plegado vive acá y no adentro de cada sección: el PDF exporta exactamente lo que se
    * ve en pantalla, así que necesita leer este estado.
    */
@@ -689,7 +714,7 @@ export function StatementTab({
         ? {
             source: data.topProductos.source,
             coberturaPct: data.topProductos.coberturaPct,
-            items: data.topProductos.items,
+            items: topVisibles,
           }
         : null,
     });
@@ -721,6 +746,12 @@ export function StatementTab({
   const desvioVentas = data.ventas.objetivo > 0 ? data.ventas.total - data.ventas.objetivo : null;
 
   const sinRubro = data.compras.groups.find((g) => g.label === "Sin rubro asignado");
+
+  const excludedSet = new Set(excluded);
+  const topVisibles = (data.topProductos?.items ?? [])
+    .filter((it) => !excludedSet.has(it.producto))
+    .slice(0, 10)
+    .map((it, i) => ({ ...it, rank: i + 1 }));
 
   return (
     <div className="space-y-4">
@@ -1082,7 +1113,7 @@ export function StatementTab({
       </div>
 
       {/* ── TOP 10 PRODUCTOS ── */}
-      {data.topProductos && data.topProductos.items.length > 0 && (
+      {data.topProductos && (topVisibles.length > 0 || excluded.length > 0) && (
         <Card>
           <CardContent className="pt-6">
             <div className="flex items-baseline justify-between gap-3 flex-wrap mb-3">
@@ -1105,10 +1136,11 @@ export function StatementTab({
                     <th className="text-right font-medium py-2">CMV %</th>
                     <th className="text-right font-medium py-2">Margen %</th>
                     <th className="text-right font-medium py-2">vs mes ant.</th>
+                    <th className="w-8" />
                   </tr>
                 </thead>
                 <tbody>
-                  {data.topProductos.items.map((it) => (
+                  {topVisibles.map((it) => (
                     <tr key={it.producto} className="border-b last:border-0">
                       <td className="py-2 text-xs text-muted-foreground">{it.rank}</td>
                       <td className="py-2">{it.producto}</td>
@@ -1130,11 +1162,30 @@ export function StatementTab({
                           </span>
                         )}
                       </td>
+                      <td className="py-2 text-right">
+                        <button
+                          type="button"
+                          onClick={() => excluir(it.producto)}
+                          className="text-xs text-muted-foreground hover:text-destructive"
+                          title="Sacar del ranking"
+                          data-testid={`button-excluir-top-${it.rank}`}
+                        >
+                          ✕
+                        </button>
+                      </td>
                     </tr>
                   ))}
                 </tbody>
               </table>
             </div>
+            {excluded.length > 0 && (
+              <p className="mt-3 text-[11px] text-muted-foreground">
+                Fuera del ranking: {excluded.join(", ")}.{" "}
+                <button type="button" onClick={restablecer} className={`${ECON.text} hover:underline`} data-testid="button-restablecer-top">
+                  Restablecer
+                </button>
+              </p>
+            )}
             {data.topProductos.coberturaPct != null && data.topProductos.coberturaPct < 95 && (
               <p className="mt-3 text-[11px] text-amber-700 dark:text-amber-400">
                 Los productos con "—" no tienen costo cargado todavía. Se les asigna en CMV Productos o en Productos

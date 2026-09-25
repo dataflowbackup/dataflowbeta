@@ -1642,6 +1642,11 @@ export const clientPreferences = pgTable(
     salesSourceFudo: boolean("sales_source_fudo").default(true),
     salesSourceShares: boolean("sales_source_shares").default(true),
     salesSourceDatalive: boolean("sales_source_datalive").default(true),
+    /**
+     * Productos que la empresa sacó del top de más vendidos del Estado de Resultado Económico
+     * (ej. "Servicio de mesa"), como JSON array de nombres. NULL = ninguno. Sep-2026.
+     */
+    economicTopExcluded: text("economic_top_excluded"),
     createdAt: timestamp("created_at").defaultNow(),
     updatedAt: timestamp("updated_at").defaultNow(),
   },

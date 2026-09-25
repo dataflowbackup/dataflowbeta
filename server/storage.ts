@@ -4876,6 +4876,10 @@ export class DatabaseStorage implements IStorage {
       .where(eq(rubros.clientId, clientId));
     const rubroNameById = new Map(rubroRows.map((r) => [r.id, r.name]));
 
+    /** Orden del último nivel del árbol (facturas y movimientos): cronológico. */
+    const byDateThenAmount = (a: { date: string; amount: number }, b: { date: string; amount: number }) =>
+      a.date.localeCompare(b.date) || b.amount - a.amount;
+
     const SIN_RUBRO = "Sin rubro asignado";
     const SIN_SUB = "Sin sub-rubro";
     interface ComprasNode {
@@ -4916,7 +4920,8 @@ export class DatabaseStorage implements IStorage {
         const fecha = String(inv.invoiceDate).slice(0, 10);
         hijo.items.set(inv.id, {
           invoiceId: inv.id,
-          label: `${inv.supplierName ?? "Sin proveedor"} (${fecha.slice(8, 10)}/${fecha.slice(5, 7)})`,
+          // La fecha va en su propia columna: repetirla en el nombre la mostraba dos veces.
+          label: String(inv.supplierName ?? "Sin proveedor"),
           amount,
           date: fecha,
           source: String(inv.expenseType) === "admin" ? "Factura — Administración" : "Factura (IVA) — Compras",
@@ -4935,7 +4940,8 @@ export class DatabaseStorage implements IStorage {
             label: c.label,
             amount: c.amount,
             pct: pct(c.amount),
-            items: Array.from(c.items.values()).sort((a, b) => b.amount - a.amount)
+            // Por fecha, la primera arriba; a igual fecha, el mayor importe primero.
+            items: Array.from(c.items.values()).sort(byDateThenAmount)
               .map((i) => ({ ...i, pct: pct(i.amount) })),
           }))
           .sort((a, b) => b.amount - a.amount),
@@ -5041,7 +5047,7 @@ export class DatabaseStorage implements IStorage {
             label: c.label,
             amount: c.amount,
             pct: pct(c.amount),
-            items: c.items.sort((a, b) => b.amount - a.amount).map((i) => ({ ...i, pct: pct(i.amount) })),
+            items: c.items.sort(byDateThenAmount).map((i) => ({ ...i, pct: pct(i.amount) })),
           }))
           .sort((a, b) => b.amount - a.amount),
       }))
@@ -5228,7 +5234,9 @@ export class DatabaseStorage implements IStorage {
         dateFrom: from,
         dateTo: to,
         localIds,
-        topN: 10,
+        // Se traen 30 aunque se muestren 10: la pantalla deja sacar productos del ranking
+        // (ej. "Servicio de mesa") y tiene que haber con qué completar el top.
+        topN: 30,
         ivaIncluded: true, // El informe trabaja en bruto: el margen se mide contra el precio con IVA.
       });
       extras.topProductos = {
@@ -9741,6 +9749,41 @@ export class DatabaseStorage implements IStorage {
     }
 
     return normalized;
+  }
+
+  /** Productos que la empresa sacó del top del Estado de Resultado Económico. */
+  async getEconomicTopExcluded(clientId: number): Promise<string[]> {
+    const [row] = await db
+      .select({ v: clientPreferences.economicTopExcluded })
+      .from(clientPreferences)
+      .where(eq(clientPreferences.clientId, clientId))
+      .limit(1);
+    try {
+      const parsed = JSON.parse(String(row?.v ?? "[]"));
+      return Array.isArray(parsed) ? parsed.filter((x): x is string => typeof x === "string") : [];
+    } catch {
+      return [];
+    }
+  }
+
+  async setEconomicTopExcluded(clientId: number, productos: string[]): Promise<string[]> {
+    const limpios = Array.from(new Set(productos.map((p) => p.trim()).filter(Boolean)));
+    const value = limpios.length > 0 ? JSON.stringify(limpios) : null;
+    const [existing] = await db
+      .select({ id: clientPreferences.id })
+      .from(clientPreferences)
+      .where(eq(clientPreferences.clientId, clientId))
+      .limit(1);
+    if (existing) {
+      await db
+        .update(clientPreferences)
+        .set({ economicTopExcluded: value, updatedAt: new Date() })
+        .where(eq(clientPreferences.clientId, clientId));
+    } else {
+      // Sin fila todavía: se crea con los defaults de sistemas de venta (los tres habilitados).
+      await db.insert(clientPreferences).values({ clientId, economicTopExcluded: value });
+    }
+    return limpios;
   }
 }
 

@@ -5939,6 +5939,28 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
   });
 
+  // Productos que la empresa sacó del top de más vendidos del Estado de Resultado Económico.
+  // Solo cambia qué se muestra, no ningún número, así que puede tocarlo cualquier usuario.
+  app.get("/api/preferences/economic-top-excluded", isAuthenticated, async (req, res) => {
+    try {
+      const clientId = await getClientId(req);
+      res.json(await storage.getEconomicTopExcluded(clientId));
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
+  app.put("/api/preferences/economic-top-excluded", isAuthenticated, async (req, res) => {
+    try {
+      const clientId = await getClientId(req);
+      const parsed = z.array(z.string().max(300)).max(500).safeParse(req.body?.productos);
+      if (!parsed.success) return res.status(400).json({ message: "Datos invalidos" });
+      res.json(await storage.setEconomicTopExcluded(clientId, parsed.data));
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
   // Permisos efectivos del usuario actual, para gating de la UI (sidebar/botones).
   // socio => isSocio:true (allow-all en el front). El resto: mapa code -> flags.
   app.get("/api/me/permissions", isAuthenticated, async (req, res) => {
