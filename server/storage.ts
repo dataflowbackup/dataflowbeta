@@ -7651,6 +7651,33 @@ export class DatabaseStorage implements IStorage {
     return db.select().from(dataliveProductos).where(and(...conds)).orderBy(desc(dataliveProductos.fechaDesde), asc(dataliveProductos.producto));
   }
 
+  /**
+   * Períodos de productos de Datalive ya cargados en el local que se PISAN con [desde, hasta]
+   * (comparten al menos un día), sin contar el mismo período exacto, que tiene su propio manejo
+   * (omitir o reemplazar). Productos Vendidos suma todos los períodos dentro del rango, así que dos
+   * que se pisan cuentan esos días dos veces (caso sep-2026: un 04/09→17/09 sobre los diarios).
+   */
+  async findOverlappingDatalivePeriods(
+    clientId: number,
+    localId: number,
+    fechaDesde: string,
+    fechaHasta: string,
+  ): Promise<Array<{ fechaDesde: string; fechaHasta: string }>> {
+    const rows = await db
+      .selectDistinct({ fechaDesde: dataliveProductos.fechaDesde, fechaHasta: dataliveProductos.fechaHasta })
+      .from(dataliveProductos)
+      .where(and(
+        eq(dataliveProductos.clientId, clientId),
+        eq(dataliveProductos.localId, localId),
+        lte(dataliveProductos.fechaDesde, fechaHasta),
+        gte(dataliveProductos.fechaHasta, fechaDesde),
+      ));
+    return rows
+      .map((r) => ({ fechaDesde: String(r.fechaDesde).slice(0, 10), fechaHasta: String(r.fechaHasta).slice(0, 10) }))
+      .filter((r) => !(r.fechaDesde === fechaDesde && r.fechaHasta === fechaHasta))
+      .sort((a, b) => a.fechaDesde.localeCompare(b.fechaDesde));
+  }
+
   async importDataliveProductos(
     clientId: number,
     localId: number,

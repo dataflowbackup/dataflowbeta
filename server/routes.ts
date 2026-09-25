@@ -5271,6 +5271,28 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         return res.status(400).json({ message: "Local inválido para esta empresa." });
       }
 
+      if (parsed.data.fechaDesde > parsed.data.fechaHasta) {
+        return res.status(400).json({ message: "La fecha desde es posterior a la fecha hasta." });
+      }
+
+      // Un período que se pisa con otro ya cargado contaría esos días dos veces en Productos
+      // Vendidos. Se rechaza y se dice cuál es, para que lo borren o importen el mismo período.
+      const pisados = await storage.findOverlappingDatalivePeriods(
+        clientId, parsed.data.localId, parsed.data.fechaDesde, parsed.data.fechaHasta,
+      );
+      if (pisados.length > 0) {
+        const fmt = (iso: string) => `${iso.slice(8, 10)}/${iso.slice(5, 7)}/${iso.slice(0, 4)}`;
+        const lista = pisados.slice(0, 5)
+          .map((p) => (p.fechaDesde === p.fechaHasta ? fmt(p.fechaDesde) : `${fmt(p.fechaDesde)} al ${fmt(p.fechaHasta)}`))
+          .join(", ");
+        return res.status(409).json({
+          message:
+            `Ese período se pisa con ${pisados.length} ya cargado(s) en este local (${lista}${pisados.length > 5 ? ", …" : ""}). ` +
+            "Si se importa, esos días se contarían dos veces. Borrá los períodos que se pisan en \"Períodos cargados\" o importá solo los días que faltan.",
+          pisados,
+        });
+      }
+
       const result = await storage.importDataliveProductos(
         clientId,
         parsed.data.localId,

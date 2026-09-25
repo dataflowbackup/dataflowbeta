@@ -182,6 +182,23 @@ export default function DataliveVentasPage() {
     onError: (e: Error) => toast({ title: "No se pudo importar", description: e.message, variant: "destructive" }),
   });
 
+  /** Períodos ya cargados de ese local que se pisan con el que se va a importar (no el mismo exacto). */
+  const overlappingPeriods = useMemo(() => {
+    if (!prodLocalId || !prodFechaDesde || !prodFechaHasta) return [] as Array<{ fechaDesde: string; fechaHasta: string }>;
+    const seen = new Set<string>();
+    const out: Array<{ fechaDesde: string; fechaHasta: string }> = [];
+    for (const p of productos) {
+      if (String(p.localId) !== prodLocalId) continue;
+      const d = String(p.fechaDesde);
+      const h = String(p.fechaHasta);
+      if (d === prodFechaDesde && h === prodFechaHasta) continue;
+      if (d > prodFechaHasta || h < prodFechaDesde) continue;
+      const k = `${d}|${h}`;
+      if (!seen.has(k)) { seen.add(k); out.push({ fechaDesde: d, fechaHasta: h }); }
+    }
+    return out.sort((a, b) => a.fechaDesde.localeCompare(b.fechaDesde));
+  }, [productos, prodLocalId, prodFechaDesde, prodFechaHasta]);
+
   const importProdMutation = useMutation({
     mutationFn: async () => {
       if (!prodLocalId) throw new Error("Elegí el local");
@@ -250,8 +267,18 @@ export default function DataliveVentasPage() {
       if (!map.has(key)) map.set(key, { localId: p.localId, fechaDesde: String(p.fechaDesde), fechaHasta: String(p.fechaHasta), count: 0 });
       map.get(key)!.count++;
     }
-    return Array.from(map.values()).sort((a, b) => b.fechaDesde.localeCompare(a.fechaDesde));
+    const list = Array.from(map.values()).sort((a, b) => b.fechaDesde.localeCompare(a.fechaDesde));
+    // Marca los que se pisan con otro período del mismo local: esos días se cuentan dos veces.
+    return list.map((p) => ({
+      ...p,
+      sePisa: list.some(
+        (o) => o !== p && o.localId === p.localId && o.fechaDesde <= p.fechaHasta && o.fechaHasta >= p.fechaDesde,
+      ),
+    }));
   }, [productos]);
+  const [soloPisados, setSoloPisados] = useState(false);
+  const periodosVisibles = soloPisados ? periodosDistintos.filter((p) => p.sePisa) : periodosDistintos;
+  const cantPisados = periodosDistintos.filter((p) => p.sePisa).length;
 
   const deletePeriodoMutation = useMutation({
     mutationFn: async (p: { localId: number; fechaDesde: string; fechaHasta: string }) => {
@@ -529,6 +556,17 @@ export default function DataliveVentasPage() {
 
               {parsedProductos.length > 0 && (
                 <>
+                  {overlappingPeriods.length > 0 && (
+                    <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive" data-testid="alert-periodo-pisado">
+                      Este período se pisa con {overlappingPeriods.length} ya cargado(s) en el local (
+                      {overlappingPeriods
+                        .slice(0, 5)
+                        .map((p) => (p.fechaDesde === p.fechaHasta ? p.fechaDesde : `${p.fechaDesde} al ${p.fechaHasta}`))
+                        .join(", ")}
+                      {overlappingPeriods.length > 5 ? ", …" : ""}). Si se importa, esos días se contarían dos veces en
+                      Productos Vendidos. Borrá los que se pisan en "Períodos cargados" o importá solo los días que faltan.
+                    </div>
+                  )}
                   {existingPeriod && (
                     <div className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-400 flex items-center gap-3">
                       <span>Ya existen productos para este local y período.</span>
@@ -566,7 +604,7 @@ export default function DataliveVentasPage() {
                     </div>
                     <Button
                       onClick={() => importProdMutation.mutate()}
-                      disabled={importProdMutation.isPending || (existingPeriod && !prodReplace)}
+                      disabled={importProdMutation.isPending || (existingPeriod && !prodReplace) || overlappingPeriods.length > 0}
                     >
                       <Save className="h-4 w-4 mr-2" /> {importProdMutation.isPending ? "Importando..." : "Confirmar importación"}
                     </Button>
@@ -579,7 +617,21 @@ export default function DataliveVentasPage() {
           {/* Períodos cargados con botón de borrar */}
           {periodosDistintos.length > 0 && (
             <Card>
-              <CardHeader className="pb-3"><CardTitle className="text-base">Períodos cargados</CardTitle></CardHeader>
+              <CardHeader className="pb-3">
+                <CardTitle className="text-base">Períodos cargados</CardTitle>
+                {cantPisados > 0 && (
+                  <div className="flex flex-wrap items-center gap-3 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-400">
+                    <span>
+                      {cantPisados} período(s) se pisan con otro del mismo local: esos días se cuentan dos veces en Productos
+                      Vendidos. Borrá el que sobra (normalmente el de varios días, si ya están los diarios).
+                    </span>
+                    <label className="flex items-center gap-1.5 cursor-pointer">
+                      <Checkbox checked={soloPisados} onCheckedChange={(c) => setSoloPisados(!!c)} data-testid="checkbox-solo-pisados" />
+                      Ver solo esos
+                    </label>
+                  </div>
+                )}
+              </CardHeader>
               <CardContent>
                 <div className="overflow-x-auto">
                   <table className="w-full text-sm">
@@ -593,9 +645,12 @@ export default function DataliveVentasPage() {
                       </tr>
                     </thead>
                     <tbody>
-                      {periodosDistintos.map((p, i) => (
-                        <tr key={i} className="border-b">
-                          <td className="px-3 py-2">{localNameById.get(p.localId) ?? `Local ${p.localId}`}</td>
+                      {periodosVisibles.map((p, i) => (
+                        <tr key={i} className={`border-b ${p.sePisa ? "bg-amber-500/10" : ""}`}>
+                          <td className="px-3 py-2">
+                            {localNameById.get(p.localId) ?? `Local ${p.localId}`}
+                            {p.sePisa && <span className="ml-2 text-[10px] font-medium text-amber-700 dark:text-amber-400">se pisa</span>}
+                          </td>
                           <td className="px-3 py-2 font-mono">{p.fechaDesde}</td>
                           <td className="px-3 py-2 font-mono">{p.fechaHasta}</td>
                           <td className="px-3 py-2 text-right font-mono">{p.count}</td>
