@@ -22,7 +22,7 @@ import { formatCurrency } from "@/lib/formatters";
 import { ChevronRight, ChevronDown, AlertTriangle, ExternalLink, FileDown, ChevronsDownUp, ChevronsUpDown } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { buildEconomicStatementPdf, type StatementPdfRow } from "@/lib/economic-statement-pdf";
-import { commissionLabel, TAX_KIND_BY_KEY, type TaxKind } from "@shared/economicStatement";
+import { commissionLabel, TAX_KIND_BY_KEY, TAX_MODE_LABELS, type TaxKind, type TaxMode } from "@shared/economicStatement";
 import { ECON } from "./econ-shared";
 
 interface Leaf {
@@ -957,7 +957,7 @@ export function StatementTab({
                 amount={t.amount}
                 pctValue={t.pct}
                 level={0}
-                meta={t.byLocal.length > 1 ? `${t.byLocal.length} locales` : t.byLocal[0]?.mode === "calculado" ? "calculado" : "a mano"}
+                meta={t.byLocal.length > 1 ? `${t.byLocal.length} locales` : (TAX_MODE_LABELS[t.byLocal[0]?.mode as TaxMode] ?? "a mano").toLowerCase()}
               />
             ))
           )}

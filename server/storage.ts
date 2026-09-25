@@ -1,5 +1,6 @@
 import { formatInvoiceVoucherDisplay } from "@shared/invoiceDisplay";
 import { resolveEconomicMonth } from "@shared/economicMonth";
+import { netOfIva } from "@shared/economicStatement";
 import { isCreditNote as isCreditNoteCode } from "@shared/afipComprobantesParser";
 import {
   normalizeSalesSourcePreferences,
@@ -4514,6 +4515,110 @@ export class DatabaseStorage implements IStorage {
     return Array.from(map.values()).filter((x) => x.amount !== 0).sort((a, b) => b.amount - a.amount);
   }
 
+  /**
+   * Movimientos de extractos de UN local en UN mes económico, sumados por categoría, de las
+   * categorías que en el informe caen en Gastos Operativos (grupo de gasto, sin Movimientos
+   * Financieros ni Otros Movimientos). Neto en la dirección del gasto: un reintegro resta.
+   * Es la lista que se ofrece para armar el Impuesto al Crédito y al Débito, y la misma cuenta
+   * que después hace el informe, así lo que se ve al elegir es lo que resta.
+   */
+  async getEconomicCategoryTotals(
+    clientId: number,
+    opts: { localId: number; economicMonth: string },
+  ): Promise<Array<{ categoryId: number; name: string; groupName: string; amount: number }>> {
+    const [y, m] = opts.economicMonth.split("-").map((n) => parseInt(n, 10));
+    if (!Number.isFinite(y) || !Number.isFinite(m)) return [];
+    // El mes económico puede caer en otro mes de acreditación: mismo margen que el informe.
+    const scanFrom = new Date(Date.UTC(y, m - 3, 1)).toISOString().slice(0, 10);
+    const scanTo = new Date(Date.UTC(y, m + 2, 0)).toISOString().slice(0, 10);
+
+    const allGroups = await db.select().from(financialGroups).where(eq(financialGroups.clientId, clientId));
+    const allCats = await db.select().from(transactionCategories).where(eq(transactionCategories.clientId, clientId));
+    const groupById = new Map(allGroups.map((g) => [g.id, g]));
+    const catById = new Map(allCats.map((c) => [c.id, c]));
+
+    const rows = await db.select({
+      id: transactions.id,
+      categoryId: transactions.categoryId,
+      type: transactions.type,
+      amount: transactions.amount,
+      transactionDate: transactions.transactionDate,
+      economicMonth: transactions.economicMonth,
+      parentTransactionId: transactions.parentTransactionId,
+    }).from(transactions).where(and(
+      eq(transactions.clientId, clientId),
+      eq(transactions.localId, opts.localId),
+      gte(transactions.transactionDate, scanFrom),
+      lte(transactions.transactionDate, scanTo),
+      isNotNull(transactions.categoryId),
+    ));
+    const splitParentIds = new Set(rows.filter((t) => t.parentTransactionId != null).map((t) => t.parentTransactionId as number));
+
+    const totals = new Map<number, number>();
+    for (const tx of rows) {
+      if (splitParentIds.has(tx.id)) continue;
+      if (resolveEconomicMonth(tx as any) !== opts.economicMonth) continue;
+      const cat = catById.get(tx.categoryId as number);
+      if (!cat) continue;
+      if (typeof cat.specialType === "string" && OTROS_MOVIMIENTOS_SPECIAL_TYPES.has(cat.specialType)) continue;
+      const group = cat.financialGroupId != null ? groupById.get(cat.financialGroupId) : undefined;
+      if (!group || String(group.type) !== "expense") continue;
+      const amount = parseFloat(String(tx.amount ?? 0)) || 0;
+      const net = tx.type === "expense" ? amount : -amount;
+      totals.set(cat.id, (totals.get(cat.id) ?? 0) + net);
+    }
+    return Array.from(totals.entries())
+      .map(([categoryId, amount]) => {
+        const cat = catById.get(categoryId)!;
+        const group = cat.financialGroupId != null ? groupById.get(cat.financialGroupId) : undefined;
+        return { categoryId, name: String(cat.name), groupName: String(group?.name ?? ""), amount };
+      })
+      .filter((c) => Math.abs(c.amount) >= 0.005)
+      .sort((a, b) => a.groupName.localeCompare(b.groupName) || b.amount - a.amount);
+  }
+
+  /**
+   * Ventas FACTURADAS de un mes económico: la marca SI de la columna N de FUDO más las ventas
+   * manuales marcadas como facturadas. Las empresas sin FUDO no tienen ese dato y todo cuenta como
+   * no facturado (decisión del usuario, 25-sep-2026). `neto` es sin IVA (÷1,21).
+   */
+  async getEconomicInvoicedSales(
+    clientId: number,
+    opts: { localIds: number[]; economicMonth: string; includeFudo: boolean },
+  ): Promise<{ bruto: number; neto: number; fudo: number; manual: number; fudoDiasSinDato: number }> {
+    const [y, m] = opts.economicMonth.split("-").map((n) => parseInt(n, 10));
+    const empty = { bruto: 0, neto: 0, fudo: 0, manual: 0, fudoDiasSinDato: 0 };
+    if (!Number.isFinite(y) || !Number.isFinite(m) || opts.localIds.length === 0) return empty;
+    const from = `${opts.economicMonth}-01`;
+    const to = `${opts.economicMonth}-${String(new Date(Date.UTC(y, m, 0)).getUTCDate()).padStart(2, "0")}`;
+
+    let fudo = 0;
+    let fudoDiasSinDato = 0;
+    if (opts.includeFudo) {
+      const rows = await db.select({ fact: fudoVentas.ventaFiscalizada, total: fudoVentas.ventaTotal })
+        .from(fudoVentas).where(and(
+          eq(fudoVentas.clientId, clientId),
+          inArray(fudoVentas.localId, opts.localIds),
+          gte(fudoVentas.fecha, from),
+          lte(fudoVentas.fecha, to),
+        ));
+      for (const r of rows) {
+        // NULL = día importado antes de que se leyera la columna N: no se sabe, no suma.
+        if (r.fact == null) { fudoDiasSinDato++; continue; }
+        fudo += parseFloat(String(r.fact)) || 0;
+      }
+    }
+    const manualRows = await db.select({ amount: economicManualSales.amount }).from(economicManualSales).where(and(
+      eq(economicManualSales.clientId, clientId),
+      inArray(economicManualSales.localId, opts.localIds),
+      eq(economicManualSales.economicMonth, opts.economicMonth),
+      eq(economicManualSales.invoiced, true),
+    ));
+    const manual = manualRows.reduce((a, r) => a + (parseFloat(String(r.amount ?? 0)) || 0), 0);
+    const bruto = fudo + manual;
+    return { bruto, neto: netOfIva(bruto), fudo, manual, fudoDiasSinDato };
+  }
+
   /** Solo las del sistema de gestión (FUDO, Shares o Datalive), por medio de pago. */
   private async getSystemSalesByPaymentMethod(
     clientId: number,
@@ -4601,6 +4706,7 @@ export class DatabaseStorage implements IStorage {
       mode: string;
       ratePct: number;
       excludedPaymentMethods: string[];
+      categoryIds?: number[];
       manualAmount: number;
       calcBase: number;
       amount: number;
@@ -4616,6 +4722,7 @@ export class DatabaseStorage implements IStorage {
       mode: data.mode,
       ratePct: String(data.ratePct ?? 0),
       excludedPaymentMethods: JSON.stringify(data.excludedPaymentMethods ?? []),
+      categoryIds: JSON.stringify(data.categoryIds ?? []),
       manualAmount: String(data.manualAmount ?? 0),
       calcBase: String(data.calcBase ?? 0),
       amount: String(data.amount ?? 0),
@@ -5018,6 +5125,25 @@ export class DatabaseStorage implements IStorage {
     }
     const gastosTree = new Map<number, GastoNode>();
 
+    // Impuestos del mes. Se leen ANTES de los gastos: los que se arman "desde categorías" se
+    // llevan esos movimientos, que dejan de restar en Gastos Operativos (si no, doble conteo).
+    const taxRows = localIds.length === 0 ? [] : await db.select().from(economicTaxes).where(and(
+      eq(economicTaxes.clientId, clientId),
+      inArray(economicTaxes.localId, localIds),
+      eq(economicTaxes.economicMonth, economicMonth),
+    ));
+    /** "local:categoría" → id de la fila de impuesto que se queda con esos movimientos. */
+    const taxRowByLocalCat = new Map<string, number>();
+    /** Importe en vivo de cada fila "desde categorías", sumado mientras se recorren los gastos. */
+    const liveTaxAmount = new Map<number, number>();
+    for (const r of taxRows) {
+      if (r.mode !== "categorias") continue;
+      liveTaxAmount.set(r.id, 0);
+      let ids: number[] = [];
+      try { ids = JSON.parse(String(r.categoryIds ?? "[]")); } catch { ids = []; }
+      for (const cid of Array.isArray(ids) ? ids : []) taxRowByLocalCat.set(`${r.localId}:${cid}`, r.id);
+    }
+
     for (const tx of txRows) {
       if (!tx.categoryId) continue;
       if (splitParentIds.has(tx.id)) continue;
@@ -5040,6 +5166,13 @@ export class DatabaseStorage implements IStorage {
       // Neto en la dirección del grupo: un reintegro (ingreso en un grupo de gasto) resta.
       const net = tx.type === "expense" ? amount : -amount;
       if (!net) continue;
+
+      // Categoría que forma un impuesto de este local: resta en Impuestos, no en Gastos.
+      const taxRowId = taxRowByLocalCat.get(`${tx.localId}:${cat.id}`);
+      if (taxRowId != null) {
+        liveTaxAmount.set(taxRowId, (liveTaxAmount.get(taxRowId) ?? 0) + net);
+        continue;
+      }
 
       if (!gastosTree.has(group.id)) {
         gastosTree.set(group.id, {
@@ -5115,14 +5248,24 @@ export class DatabaseStorage implements IStorage {
     const comisionesTotal = comisiones.reduce((a, c) => a + c.amount, 0);
 
     // ── IMPUESTOS ─────────────────────────────────────────────────────────────
-    const taxRows = localIds.length === 0 ? [] : await db.select().from(economicTaxes).where(and(
-      eq(economicTaxes.clientId, clientId),
-      inArray(economicTaxes.localId, localIds),
-      eq(economicTaxes.economicMonth, economicMonth),
-    ));
+    // "Desde categorías" y "sobre facturado" se recalculan en vivo: los movimientos se siguen
+    // categorizando y las ventas manuales se siguen cargando después de guardar el impuesto.
+    // "Sobre medios de pago" y "a mano" usan el importe guardado.
+    const facturadoRows = taxRows.filter((r) => r.mode === "facturado");
+    const invoicedNetByLocal = new Map<number, number>();
+    for (const lid of Array.from(new Set(facturadoRows.map((r) => r.localId)))) {
+      const inv = await this.getEconomicInvoicedSales(clientId, {
+        localIds: [lid], economicMonth, includeFudo: opts.salesSources.includes("fudo"),
+      });
+      invoicedNetByLocal.set(lid, inv.neto);
+    }
     const taxByKind = new Map<string, { kind: string; amount: number; byLocal: Array<{ local: string; amount: number; mode: string }> }>();
     for (const r of taxRows) {
-      const amount = num(r.amount);
+      const amount = r.mode === "categorias"
+        ? (liveTaxAmount.get(r.id) ?? 0)
+        : r.mode === "facturado"
+          ? ((invoicedNetByLocal.get(r.localId) ?? 0) * num(r.ratePct)) / 100
+          : num(r.amount);
       if (!taxByKind.has(r.taxKind)) taxByKind.set(r.taxKind, { kind: r.taxKind, amount: 0, byLocal: [] });
       const node = taxByKind.get(r.taxKind)!;
       node.amount += amount;

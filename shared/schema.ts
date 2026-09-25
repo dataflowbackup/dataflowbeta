@@ -1975,11 +1975,16 @@ export const economicTaxes = pgTable(
     economicMonth: varchar("economic_month", { length: 7 }).notNull(),
     /** iva | iibb | ganancias | credito | debito | cheque — ver shared/economicStatement.ts. */
     taxKind: varchar("tax_kind", { length: 30 }).notNull(),
-    /** "manual" = importe a mano. "calculado" = alícuota × ventas de los medios NO excluidos. */
+    /** manual | calculado | facturado | categorias — ver TaxMode en shared/economicStatement.ts. */
     mode: varchar("mode", { length: 12 }).notNull().default("manual"),
     ratePct: decimal("rate_pct", { precision: 7, scale: 4 }).default("0"),
     /** Medios de pago EXCLUIDOS del cálculo, como JSON array. Vacío = todas las ventas. */
     excludedPaymentMethods: text("excluded_payment_methods"),
+    /**
+     * Modo "categorias" (sep-2026): ids de las categorías de extractos que forman este impuesto,
+     * como JSON array. Esas categorías salen de Gastos Operativos en el informe.
+     */
+    categoryIds: text("category_ids"),
     manualAmount: decimal("manual_amount", { precision: 14, scale: 2 }).default("0"),
     /** Base sobre la que se calculó (ventas de los medios incluidos). Foto, para poder auditarlo. */
     calcBase: decimal("calc_base", { precision: 14, scale: 2 }).default("0"),

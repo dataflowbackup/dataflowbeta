@@ -39,7 +39,7 @@ import type {
 } from "@shared/schema";
 import { computeInvoiceTaxes } from "@shared/invoiceTaxComputation";
 import { isEconomicMonth } from "@shared/economicMonth";
-import { isTaxKind, TAX_KIND_BY_KEY, computeTaxAmount } from "@shared/economicStatement";
+import { isTaxKind, isTaxMode, TAX_KIND_BY_KEY, computeTaxAmount } from "@shared/economicStatement";
 import { computeBreakeven } from "@shared/breakeven";
 import { registerBulkInvoiceImportRoutes } from "./routesBulkInvoiceImport";
 import { db } from "./db";
@@ -3993,6 +3993,40 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
   });
 
+  /** Categorías de gasto con movimientos en el mes, para armar Crédito y Débito desde extractos. */
+  app.get("/api/economic/category-totals", isAuthenticated, async (req, res) => {
+    try {
+      const clientId = await getClientId(req);
+      const localId = parseInt(String(req.query.localId ?? ""), 10);
+      const economicMonth = String(req.query.economicMonth ?? "");
+      if (!Number.isFinite(localId) || !isEconomicMonth(economicMonth)) {
+        return res.status(400).json({ message: "Falta el local o el mes (YYYY-MM)" });
+      }
+      res.json(await storage.getEconomicCategoryTotals(clientId, { localId, economicMonth }));
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
+  /** Ventas facturadas del mes (FUDO col N + manuales facturadas), base de IIBB sobre facturado. */
+  app.get("/api/economic/invoiced-sales", isAuthenticated, async (req, res) => {
+    try {
+      const clientId = await getClientId(req);
+      const localId = parseInt(String(req.query.localId ?? ""), 10);
+      const economicMonth = String(req.query.economicMonth ?? "");
+      if (!Number.isFinite(localId) || !isEconomicMonth(economicMonth)) {
+        return res.status(400).json({ message: "Falta el local o el mes (YYYY-MM)" });
+      }
+      res.json(await storage.getEconomicInvoicedSales(clientId, {
+        localIds: [localId],
+        economicMonth,
+        includeFudo: parseProductSource(req.query.source) === "fudo",
+      }));
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
   /** Estado de Resultado Económico de UN mes, con el árbol de 3 niveles del informe. */
   app.get("/api/economic/statement", isAuthenticated, async (req, res) => {
     try {
@@ -4046,9 +4080,10 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         localId: z.coerce.number().int().positive(),
         economicMonth: z.string().refine(isEconomicMonth, "Mes inválido (YYYY-MM)"),
         taxKind: z.string().refine(isTaxKind, "Impuesto desconocido"),
-        mode: z.enum(["manual", "calculado"]).default("manual"),
+        mode: z.string().refine(isTaxMode, "Modo desconocido").default("manual"),
         ratePct: z.coerce.number().min(0).max(100).default(0),
         excludedPaymentMethods: z.array(z.string()).default([]),
+        categoryIds: z.array(z.coerce.number().int().positive()).default([]),
         manualAmount: z.coerce.number().default(0),
         salesSource: z.enum(["fudo", "datalive", "shares"]).default("fudo"),
         notes: z.string().nullable().optional(),
@@ -4058,8 +4093,23 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const d = parsed.data;
 
       const def = TAX_KIND_BY_KEY[d.taxKind];
-      // Un impuesto que no admite cálculo se guarda siempre a mano, aunque llegue "calculado".
-      const mode = def.calculable ? d.mode : "manual";
+      // Un modo que el impuesto no admite se guarda a mano, aunque llegue otro.
+      const mode = def.modes.includes(d.mode) ? d.mode : "manual";
+      const categoryIds = mode === "categorias" ? Array.from(new Set(d.categoryIds)) : [];
+
+      // Una categoría no puede formar dos impuestos del mismo local y mes: restaría dos veces.
+      if (categoryIds.length > 0) {
+        const otros = (await storage.listEconomicTaxes(clientId, { localId: d.localId, economicMonth: d.economicMonth }))
+          .filter((t) => t.taxKind !== d.taxKind && t.mode === "categorias");
+        for (const t of otros) {
+          let ids: number[] = [];
+          try { ids = JSON.parse(String(t.categoryIds ?? "[]")); } catch { ids = []; }
+          if (ids.some((id) => categoryIds.includes(id))) {
+            const otro = TAX_KIND_BY_KEY[t.taxKind as keyof typeof TAX_KIND_BY_KEY]?.label ?? t.taxKind;
+            return res.status(400).json({ message: `Una de las categorías ya forma el ${otro} de este mes. Sacala de ahí primero.` });
+          }
+        }
+      }
 
       // El importe se calcula SIEMPRE en el servidor: el cliente manda los parámetros, no el total.
       const salesByPaymentMethod = mode === "calculado"
@@ -4067,12 +4117,24 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
             localId: d.localId, economicMonth: d.economicMonth, source: d.salesSource,
           })
         : [];
+      const invoicedNet = mode === "facturado"
+        ? (await storage.getEconomicInvoicedSales(clientId, {
+            localIds: [d.localId], economicMonth: d.economicMonth, includeFudo: d.salesSource === "fudo",
+          })).neto
+        : 0;
+      const categoriesTotal = mode === "categorias"
+        ? (await storage.getEconomicCategoryTotals(clientId, { localId: d.localId, economicMonth: d.economicMonth }))
+            .filter((c) => categoryIds.includes(c.categoryId))
+            .reduce((a, c) => a + c.amount, 0)
+        : 0;
       const { amount, base } = computeTaxAmount({
         mode,
         ratePct: d.ratePct,
         manualAmount: d.manualAmount,
         salesByPaymentMethod,
         excludedPaymentMethods: d.excludedPaymentMethods,
+        invoicedNet,
+        categoriesTotal,
       });
 
       res.json(await storage.upsertEconomicTax(clientId, {
@@ -4082,6 +4144,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         mode,
         ratePct: d.ratePct,
         excludedPaymentMethods: d.excludedPaymentMethods,
+        categoryIds,
         manualAmount: d.manualAmount,
         calcBase: base,
         amount,

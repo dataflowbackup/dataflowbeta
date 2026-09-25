@@ -10,13 +10,32 @@
 // ── Impuestos ────────────────────────────────────────────────────────────────
 
 export type TaxKind = "iva" | "iibb" | "ganancias" | "credito" | "debito" | "cheque";
-export type TaxMode = "manual" | "calculado";
+/**
+ * Cómo se determina el importe de un impuesto:
+ *  - manual:     se escribe a mano (sale de la liquidación).
+ *  - calculado:  alícuota × ventas del mes por medio de pago, pudiendo excluir medios.
+ *  - facturado:  alícuota × ventas FACTURADAS netas de IVA (como lo liquida AFIP).
+ *  - categorias: la suma de los movimientos de extractos de las categorías elegidas. Esas
+ *                categorías dejan de restar en Gastos Operativos y pasan a restar acá.
+ */
+export type TaxMode = "manual" | "calculado" | "facturado" | "categorias";
+
+export const TAX_MODE_LABELS: Record<TaxMode, string> = {
+  calculado: "Sobre medios de pago",
+  facturado: "Sobre ventas facturadas netas",
+  categorias: "Desde categorías de extractos",
+  manual: "A mano",
+};
+
+export function isTaxMode(v: unknown): v is TaxMode {
+  return v === "manual" || v === "calculado" || v === "facturado" || v === "categorias";
+}
 
 export interface TaxKindDef {
   kind: TaxKind;
   label: string;
-  /** Si admite el modo "calculado" sobre las ventas. Los demás son siempre a mano. */
-  calculable: boolean;
+  /** Modos que admite, el primero es el sugerido al crear la fila. */
+  modes: TaxMode[];
   /** Alícuota sugerida al crear la fila, en %. */
   defaultRatePct: number;
   /**
@@ -32,7 +51,7 @@ export const TAX_KINDS: TaxKindDef[] = [
   {
     kind: "iva",
     label: "IVA",
-    calculable: false,
+    modes: ["manual"],
     defaultRatePct: 21,
     placement: "operativo",
     help: "El saldo que efectivamente se paga a la AFIP en el mes. Se carga a mano porque sale de la liquidación, no de las ventas.",
@@ -40,31 +59,31 @@ export const TAX_KINDS: TaxKindDef[] = [
   {
     kind: "iibb",
     label: "Ingresos Brutos",
-    calculable: true,
+    modes: ["facturado", "calculado", "manual"],
     defaultRatePct: 3,
     placement: "operativo",
-    help: "Se calcula sobre las ventas. Podés dejar medios de pago afuera del cálculo, o cargar el importe a mano.",
+    help: "Sobre las ventas facturadas netas de IVA (como lo liquida AFIP), sobre los medios de pago que elijas (ventas del sistema + manuales), o a mano.",
   },
   {
     kind: "credito",
     label: "Impuesto al Crédito",
-    calculable: true,
-    defaultRatePct: 0.6,
+    modes: ["categorias", "manual"],
+    defaultRatePct: 0,
     placement: "operativo",
-    help: "Se calcula sobre las acreditaciones. Podés dejar medios de pago afuera (el efectivo no acredita en cuenta), o cargarlo a mano.",
+    help: "Sale de las categorías de los extractos donde se registra (o se carga a mano). Esas categorías dejan de restar en Gastos Operativos para no contarlas dos veces.",
   },
   {
     kind: "debito",
     label: "Impuesto al Débito",
-    calculable: false,
-    defaultRatePct: 0.6,
+    modes: ["categorias", "manual"],
+    defaultRatePct: 0,
     placement: "operativo",
-    help: "Se carga a mano: depende de los débitos de la cuenta, no de las ventas.",
+    help: "Sale de las categorías de los extractos donde se registra (o se carga a mano). Esas categorías dejan de restar en Gastos Operativos para no contarlas dos veces.",
   },
   {
     kind: "cheque",
     label: "Impuesto al Cheque",
-    calculable: false,
+    modes: ["manual"],
     defaultRatePct: 0,
     placement: "operativo",
     help: "Se carga a mano.",
@@ -72,7 +91,7 @@ export const TAX_KINDS: TaxKindDef[] = [
   {
     kind: "ganancias",
     label: "Impuesto a las Ganancias",
-    calculable: false,
+    modes: ["manual"],
     defaultRatePct: 0,
     placement: "sobre_resultado",
     help: "Se carga a mano y resta DESPUÉS del resultado antes de impuestos, porque se calcula sobre él.",
@@ -87,6 +106,12 @@ export function isTaxKind(v: unknown): v is TaxKind {
   return typeof v === "string" && TAX_KINDS.some((t) => t.kind === v);
 }
 
+/** Base imponible de IIBB "sobre ventas facturadas": las facturadas del mes sin el IVA (÷1,21). */
+export const IVA_FACTOR = 1.21;
+export function netOfIva(bruto: number): number {
+  return bruto / IVA_FACTOR;
+}
+
 /**
  * Importe de un impuesto calculado: alícuota sobre las ventas de los medios de pago que NO están
  * excluidos. Devuelve también la base, para poder mostrar sobre qué se calculó.
@@ -95,11 +120,20 @@ export function computeTaxAmount(input: {
   mode: TaxMode;
   ratePct: number;
   manualAmount: number;
-  /** Ventas del mes desagregadas por medio de pago. */
+  /** Ventas del mes desagregadas por medio de pago. Base del modo "calculado". */
   salesByPaymentMethod: Array<{ method: string; amount: number }>;
   excludedPaymentMethods: string[];
+  /** Ventas facturadas netas de IVA. Base del modo "facturado". */
+  invoicedNet?: number;
+  /** Suma de los movimientos de las categorías elegidas. Importe del modo "categorias". */
+  categoriesTotal?: number;
 }): { amount: number; base: number } {
   if (input.mode === "manual") return { amount: input.manualAmount || 0, base: 0 };
+  if (input.mode === "categorias") return { amount: input.categoriesTotal || 0, base: 0 };
+  if (input.mode === "facturado") {
+    const base = input.invoicedNet || 0;
+    return { amount: (base * (input.ratePct || 0)) / 100, base };
+  }
   const excluidos = new Set(input.excludedPaymentMethods.map((m) => m.trim().toLowerCase()));
   const base = input.salesByPaymentMethod
     .filter((s) => !excluidos.has(s.method.trim().toLowerCase()))
