@@ -646,6 +646,11 @@ export const financialGroups = pgTable("financial_groups", {
    * grupo nuevo computa salvo que se lo saque expresamente.
    */
   economicComputes: boolean("economic_computes").default(true),
+  /**
+   * Grupo de INVERSIÓN (sep-2026): en el Estado de Resultado Económico no resta en Gastos
+   * Operativos; se muestra debajo del Resultado Neto → "Resultado después de inversiones".
+   */
+  isInvestment: boolean("is_investment").default(false),
   active: boolean("active").default(true),
   createdAt: timestamp("created_at").defaultNow(),
 });

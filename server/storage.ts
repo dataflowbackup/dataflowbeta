@@ -5121,6 +5121,7 @@ export class DatabaseStorage implements IStorage {
       amount: number;
       computes: boolean;
       isMerchandise: boolean;
+      isInvestment: boolean;
       children: Map<number, { id: number; label: string; amount: number; items: Array<{ label: string; amount: number; date: string; source: string; ref: string; pct: number }> }>;
     }
     const gastosTree = new Map<number, GastoNode>();
@@ -5181,6 +5182,7 @@ export class DatabaseStorage implements IStorage {
           amount: 0,
           computes: group.economicComputes ?? true,
           isMerchandise: !!group.isMerchandise,
+          isInvestment: !!(group as any).isInvestment,
           children: new Map(),
         });
       }
@@ -5200,7 +5202,7 @@ export class DatabaseStorage implements IStorage {
       });
     }
 
-    const gastosGroups = Array.from(gastosTree.values())
+    const todosLosGrupos = Array.from(gastosTree.values())
       .map((g) => ({
         id: g.id,
         label: g.label,
@@ -5208,6 +5210,7 @@ export class DatabaseStorage implements IStorage {
         pct: pct(g.amount),
         computes: g.computes,
         isMerchandise: g.isMerchandise,
+        isInvestment: g.isInvestment,
         children: Array.from(g.children.values())
           .map((c) => ({
             id: c.id,
@@ -5219,6 +5222,11 @@ export class DatabaseStorage implements IStorage {
           .sort((a, b) => b.amount - a.amount),
       }))
       .sort((a, b) => b.amount - a.amount);
+
+    // Los grupos de inversión no son gasto del período: van debajo del Resultado Neto.
+    const gastosGroups = todosLosGrupos.filter((g) => !g.isInvestment);
+    const inversionesGroups = todosLosGrupos.filter((g) => g.isInvestment);
+    const inversionesTotal = inversionesGroups.reduce((a, g) => a + g.amount, 0);
 
     const gastosComputan = gastosGroups.filter((g) => g.computes);
     const gastosTotal = gastosComputan.reduce((a, g) => a + g.amount, 0);
@@ -5397,6 +5405,7 @@ export class DatabaseStorage implements IStorage {
     const resultadoOperativo = utilidadBruta - gastosTotal - comisionesTotal;
     const resultadoAntesImpuestos = resultadoOperativo - impuestosOperativosTotal;
     const resultadoNeto = resultadoAntesImpuestos - gananciasTotal;
+    const resultadoDespuesInversiones = resultadoNeto - inversionesTotal;
 
     // ── EXTRAS del informe ───────────────────────────────────────────────────
     // Se calculan solo en la vista completa: cuando este mismo método se llama para traer el mes
@@ -5535,6 +5544,8 @@ export class DatabaseStorage implements IStorage {
         })(),
       },
       gastos: { total: gastosTotal, pct: pct(gastosTotal), groups: gastosGroups, merchandiseComputing },
+      /** Grupos marcados como inversión: fuera del resultado operativo, debajo del neto. */
+      inversiones: { total: inversionesTotal, pct: pct(inversionesTotal), groups: inversionesGroups },
       comisiones: { total: comisionesTotal, pct: pct(comisionesTotal), lines: comisiones },
       impuestos: {
         operativos: impuestosOperativos,
@@ -5553,6 +5564,8 @@ export class DatabaseStorage implements IStorage {
         resultadoAntesImpuestos,
         ganancias: gananciasTotal,
         resultadoNeto,
+        inversiones: inversionesTotal,
+        resultadoDespuesInversiones,
       },
       indicadores: {
         foodCostPct: pct(cmvElegido.total),

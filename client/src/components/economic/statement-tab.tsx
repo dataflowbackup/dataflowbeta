@@ -90,6 +90,7 @@ interface Statement {
     desvioMerma: { monto: number; puntos: number; locales: string[]; ventasComparadas: number } | null;
   };
   gastos: { total: number; pct: number; groups: Node[]; merchandiseComputing: Array<{ id: number; label: string; amount: number }> };
+  inversiones?: { total: number; pct: number; groups: Node[] };
   comisiones: { total: number; pct: number; lines: Array<{ concept: string; amount: number; pct: number; byLocal: Array<{ local: string; amount: number }> }> };
   impuestos: {
     operativos: Array<{ kind: string; amount: number; pct: number; byLocal: Array<{ local: string; amount: number; mode: string }> }>;
@@ -536,7 +537,7 @@ export function StatementTab({
    * Todo el plegado vive acá y no adentro de cada sección: el PDF exporta exactamente lo que se
    * ve en pantalla, así que necesita leer este estado.
    */
-  const [openSections, setOpenSections] = useState<string[]>(["ventas", "costo", "gastos", "comisiones", "impuestos"]);
+  const [openSections, setOpenSections] = useState<string[]>(["ventas", "costo", "gastos", "comisiones", "impuestos", "inversiones"]);
   const [openGroups, setOpenGroups] = useState<string[]>([]);
   const [openBranches, setOpenBranches] = useState<string[]>([]);
   const [openVentas, setOpenVentas] = useState(true);
@@ -634,6 +635,18 @@ export function StatementTab({
     );
     push("Resultado neto", d.resumen.resultadoNeto, d.indicadores.resultadoNetoPct, 0, "grand");
 
+    if (d.inversiones && d.inversiones.groups.length > 0) {
+      push("Inversiones", d.inversiones.total, d.inversiones.pct, 0, "section");
+      if (isSectionOpen("inversiones")) tree(d.inversiones.groups, "inversiones");
+      push(
+        "Resultado después de inversiones",
+        d.resumen.resultadoDespuesInversiones,
+        d.ventas.total ? (d.resumen.resultadoDespuesInversiones / d.ventas.total) * 100 : 0,
+        0,
+        "subtotal",
+      );
+    }
+
     return out;
   };
 
@@ -659,7 +672,8 @@ export function StatementTab({
     };
     walk(data.compras.groups, "costo");
     walk(data.gastos.groups.filter((g) => g.computes !== false), "gastos");
-    setOpenSections(["ventas", "costo", "gastos", "comisiones", "impuestos"]);
+    walk(data.inversiones?.groups ?? [], "inversiones");
+    setOpenSections(["ventas", "costo", "gastos", "comisiones", "impuestos", "inversiones"]);
     setOpenGroups(gs);
     setOpenBranches(bs);
     setOpenVentas(true);
@@ -983,6 +997,29 @@ export function StatementTab({
               {pct(I.resultadoNetoPct)}
             </span>
           </div>
+
+          {/* ── INVERSIONES: fuera del resultado operativo, debajo del neto ── */}
+          {data.inversiones && data.inversiones.groups.length > 0 && (
+            <>
+              <TreeSection
+                title="Inversiones"
+                total={data.inversiones.total}
+                totalPct={data.inversiones.pct}
+                groups={data.inversiones.groups}
+                keyPrefix="inversiones"
+                emptyText=""
+                {...treeProps("inversiones")}
+              />
+              <Row
+                label="RESULTADO DESPUÉS DE INVERSIONES"
+                amount={R.resultadoDespuesInversiones}
+                pctValue={data.ventas.total ? (R.resultadoDespuesInversiones / data.ventas.total) * 100 : 0}
+                level={0}
+                bold
+                tone={R.resultadoDespuesInversiones >= 0 ? "total" : "negative"}
+              />
+            </>
+          )}
         </CardContent>
       </Card>
 

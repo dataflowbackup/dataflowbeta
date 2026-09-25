@@ -182,6 +182,19 @@ export default function EconomicBalancePage() {
       toast({ title: "No se pudo cambiar el grupo", description: e.message, variant: "destructive" }),
   });
 
+  /** Marca un grupo como inversión: sale de Gastos Operativos y va debajo del Resultado Neto. */
+  const investmentMut = useMutation({
+    mutationFn: async ({ id, isInvestment }: { id: number; isInvestment: boolean }) => {
+      await apiRequest("PATCH", `/api/financial-groups/${id}`, { isInvestment });
+    },
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["/api/financial-groups"] });
+      await queryClient.invalidateQueries({ queryKey: ["/api/economic/statement"] });
+    },
+    onError: (e: Error) =>
+      toast({ title: "No se pudo cambiar el grupo", description: e.message, variant: "destructive" }),
+  });
+
   const month = parseInt(selectedMonth, 10);
   const year = parseInt(selectedYear, 10);
   /** Mes económico "YYYY-MM": la clave con la que se guardan impuestos, comisiones y ventas. */
@@ -589,6 +602,10 @@ export default function EconomicBalancePage() {
                 compra de bienes, que es inversión, o la mercadería si ya la estás midiendo por CMV). Se guarda
                 para este cliente y vale para todos los meses.
               </p>
+              <p className="mt-1 text-xs text-muted-foreground">
+                <span className="font-medium text-foreground">Inversión:</span> el grupo sale de Gastos Operativos y
+                se muestra debajo del Resultado Neto, como "Resultado después de inversiones".
+              </p>
             </div>
             <div className="max-h-72 space-y-1 overflow-y-auto">
               {expenseGroupsForConfig.map((g) => {
@@ -604,6 +621,23 @@ export default function EconomicBalancePage() {
                       onCheckedChange={(v) => computesMut.mutate({ id: g.id, computes: v === true })}
                     />
                     <span className="flex-1 truncate text-sm">{g.name}</span>
+                    <button
+                      type="button"
+                      disabled={investmentMut.isPending}
+                      onClick={(e) => {
+                        e.preventDefault();
+                        investmentMut.mutate({ id: g.id, isInvestment: !(g as any).isInvestment });
+                      }}
+                      className={`shrink-0 rounded-full border px-2 py-0.5 text-[10px] font-medium transition-colors ${
+                        (g as any).isInvestment
+                          ? "border-emerald-600 bg-emerald-600 text-white"
+                          : "text-muted-foreground hover:bg-muted"
+                      }`}
+                      title={(g as any).isInvestment ? "Es inversión — tocá para volverlo gasto" : "Marcar como inversión"}
+                      data-testid={`button-investment-${g.id}`}
+                    >
+                      Inversión
+                    </button>
                   </label>
                 );
               })}
