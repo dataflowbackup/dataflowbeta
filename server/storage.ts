@@ -3851,31 +3851,41 @@ export class DatabaseStorage implements IStorage {
       if (match) legacyToFinancialId.set(lg.id, match.id);
     }
     
-    let transactionsQuery = db.select().from(transactions)
-      .where(and(
-        eq(transactions.clientId, clientId),
-        sql`${transactions.transactionDate} >= ${startDate}`,
-        sql`${transactions.transactionDate} <= ${endDate}`
-      ));
-    
-    const allTransactions = await transactionsQuery;
-
-    // Movimientos "originales" que fueron divididos: quedan asentados pero NO deben incidir
-    // (sus partes hijas ya suman). Se excluyen del balance para no duplicar.
-    const splitParentIds = new Set(
-      allTransactions
-        .filter((t) => t.parentTransactionId != null)
-        .map((t) => t.parentTransactionId as number),
-    );
-
     // Punto 19: localId puede ser un id, una lista de ids, o nada (todos).
     const localIdSet =
       localId == null
         ? null
         : new Set(Array.isArray(localId) ? localId : [localId]);
-    const filteredTransactions = localIdSet
-      ? allTransactions.filter(t => t.localId != null && localIdSet.has(t.localId))
-      : allTransactions;
+
+    // Los movimientos del año llegan YA SUMADOS por categoría + local + tipo + mes. Traerlos fila por
+    // fila (160k en Quadrifoglio) tardaba ~16s y la función de Netlify se cortaba: la pantalla quedaba
+    // en "No hay datos". Todo lo que sigue es lineal en el importe, así que sumar antes da lo mismo.
+    // Se excluyen los "originales" divididos (sus partes hijas ya suman) con el mismo criterio de
+    // antes: padres referenciados por algún hijo del año, de cualquier local.
+    const monthExpr = sql<number>`CAST(substr(${transactions.transactionDate}, 6, 2) AS INTEGER)`;
+    const filteredTransactions = await db
+      .select({
+        categoryId: transactions.categoryId,
+        localId: transactions.localId,
+        type: transactions.type,
+        month: monthExpr,
+        amount: sql<number>`SUM(${transactions.amount})`,
+      })
+      .from(transactions)
+      .where(and(
+        eq(transactions.clientId, clientId),
+        sql`${transactions.transactionDate} >= ${startDate}`,
+        sql`${transactions.transactionDate} <= ${endDate}`,
+        isNotNull(transactions.categoryId),
+        localIdSet ? inArray(transactions.localId, Array.from(localIdSet)) : undefined,
+        sql`${transactions.id} NOT IN (
+          SELECT parent_transaction_id FROM transactions
+          WHERE client_id = ${clientId}
+            AND transaction_date >= ${startDate} AND transaction_date <= ${endDate}
+            AND parent_transaction_id IS NOT NULL
+        )`,
+      ))
+      .groupBy(transactions.categoryId, transactions.localId, transactions.type, monthExpr);
     
     // Categorías "Otros Movimientos": quedan asentadas y se muestran, pero NO afectan
     // el resultado neto (income - expense).
@@ -3946,11 +3956,9 @@ export class DatabaseStorage implements IStorage {
 
     for (const tx of filteredTransactions) {
       if (!tx.categoryId) continue;
-      if (splitParentIds.has(tx.id)) continue; // original dividido: no computa
-
-      const txDate = new Date(tx.transactionDate);
-      const month = txDate.getMonth() + 1;
-      const amount = parseFloat(String(tx.amount) || "0");
+      const month = tx.month;
+      if (!(month >= 1 && month <= 12)) continue;
+      const amount = Number(tx.amount) || 0;
 
       if (!categoryMonthlyTotals[tx.categoryId]) {
         categoryMonthlyTotals[tx.categoryId] = {};
