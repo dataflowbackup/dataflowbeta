@@ -4,8 +4,11 @@
  * Ventas que no pasan por FUDO, Datalive ni Shares: eventos, catering, alquiler del salón, lo que
  * sea. Se suman a las ventas del mes en el informe.
  *
- * El medio de pago es opcional pero importa: define si esa venta entra en la base de IIBB y del
- * impuesto al crédito cuando esos impuestos se calculan por medio de pago.
+ * El medio de pago es opcional pero importa: define si esa venta entra en la base de IIBB cuando se
+ * calcula por medio de pago. Sale de un desplegable con los mismos nombres que usa FUDO.
+ *
+ * "Facturada" define si se le quita el IVA en el informe (÷1,21) y si entra en la base de IIBB
+ * sobre ventas facturadas.
  */
 import { useEffect, useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
@@ -18,7 +21,10 @@ import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { formatCurrency } from "@/lib/formatters";
 import { Plus, Trash2, Pencil, X, Check, Receipt } from "lucide-react";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Badge } from "@/components/ui/badge";
 import type { Local } from "@shared/schema";
+import { MANUAL_SALE_PAYMENT_METHODS, paymentMethodLabel } from "@shared/economicStatement";
 import { ECON, MoneyInput, LocalPicker, EmptyHint } from "./econ-shared";
 
 interface ManualSaleRow {
@@ -27,11 +33,48 @@ interface ManualSaleRow {
   economicMonth: string;
   concept: string;
   paymentMethod: string | null;
+  invoiced: boolean | null;
   amount: string | number | null;
   notes: string | null;
 }
 
 const num = (v: string | number | null | undefined) => parseFloat(String(v ?? "0")) || 0;
+
+/** El Select no admite value="": "sin medio" se representa con esta clave. */
+const SIN_MEDIO = "__none__";
+
+function PaymentMethodSelect({ value, onChange, testId }: { value: string; onChange: (v: string) => void; testId?: string }) {
+  // Una venta vieja cargada con texto libre ("transferencia bna") sigue apareciendo tal cual.
+  const legacy = value && !MANUAL_SALE_PAYMENT_METHODS.some((m) => m.value === value) ? value : null;
+  return (
+    <Select value={value || SIN_MEDIO} onValueChange={(v) => onChange(v === SIN_MEDIO ? "" : v)}>
+      <SelectTrigger className={ECON.ring} data-testid={testId}>
+        <SelectValue placeholder="Elegí el medio" />
+      </SelectTrigger>
+      <SelectContent>
+        <SelectItem value={SIN_MEDIO}>Sin especificar</SelectItem>
+        {MANUAL_SALE_PAYMENT_METHODS.map((m) => (
+          <SelectItem key={m.value} value={m.value}>{m.label}</SelectItem>
+        ))}
+        {legacy && <SelectItem value={legacy}>{legacy}</SelectItem>}
+      </SelectContent>
+    </Select>
+  );
+}
+
+function InvoicedSelect({ value, onChange, testId }: { value: boolean; onChange: (v: boolean) => void; testId?: string }) {
+  return (
+    <Select value={value ? "si" : "no"} onValueChange={(v) => onChange(v === "si")}>
+      <SelectTrigger className={ECON.ring} data-testid={testId}>
+        <SelectValue />
+      </SelectTrigger>
+      <SelectContent>
+        <SelectItem value="si">Sí, facturada</SelectItem>
+        <SelectItem value="no">No facturada</SelectItem>
+      </SelectContent>
+    </Select>
+  );
+}
 
 export function ManualSalesTab({
   locals,
@@ -50,17 +93,20 @@ export function ManualSalesTab({
 
   const [concept, setConcept] = useState("");
   const [paymentMethod, setPaymentMethod] = useState("");
+  const [invoiced, setInvoiced] = useState(false);
   const [amount, setAmount] = useState(0);
 
   const [editingId, setEditingId] = useState<number | null>(null);
   const [editConcept, setEditConcept] = useState("");
   const [editMethod, setEditMethod] = useState("");
+  const [editInvoiced, setEditInvoiced] = useState(false);
   const [editAmount, setEditAmount] = useState(0);
 
   useEffect(() => {
     setEditingId(null);
     setConcept("");
     setPaymentMethod("");
+    setInvoiced(false);
     setAmount(0);
   }, [localId, economicMonth]);
 
@@ -83,12 +129,14 @@ export function ManualSalesTab({
         economicMonth,
         concept: concept.trim(),
         paymentMethod: paymentMethod.trim() || null,
+        invoiced,
         amount,
       })).json(),
     onSuccess: () => {
       invalidate();
       setConcept("");
       setPaymentMethod("");
+      setInvoiced(false);
       setAmount(0);
       toast({ title: "Venta agregada" });
     },
@@ -100,6 +148,7 @@ export function ManualSalesTab({
       (await apiRequest("PUT", `/api/economic/manual-sales/${id}`, {
         concept: editConcept.trim(),
         paymentMethod: editMethod.trim() || null,
+        invoiced: editInvoiced,
         amount: editAmount,
       })).json(),
     onSuccess: () => {
@@ -123,6 +172,7 @@ export function ManualSalesTab({
     setEditingId(r.id);
     setEditConcept(r.concept);
     setEditMethod(r.paymentMethod ?? "");
+    setEditInvoiced(!!r.invoiced);
     setEditAmount(num(r.amount));
   };
 
@@ -157,7 +207,7 @@ export function ManualSalesTab({
 
       <Card>
         <CardContent className="pt-6 space-y-3">
-          <div className="grid gap-2 sm:grid-cols-[1fr_180px_160px_auto] items-end">
+          <div className="grid gap-2 sm:grid-cols-[1fr_180px_150px_160px_auto] items-end">
             <div className="space-y-1">
               <Label className="text-xs">Concepto</Label>
               <Input
@@ -169,13 +219,12 @@ export function ManualSalesTab({
               />
             </div>
             <div className="space-y-1">
-              <Label className="text-xs">Medio de pago (opcional)</Label>
-              <Input
-                value={paymentMethod}
-                onChange={(e) => setPaymentMethod(e.target.value)}
-                placeholder="Efectivo, Transferencia…"
-                className={ECON.ring}
-              />
+              <Label className="text-xs">Medio de pago</Label>
+              <PaymentMethodSelect value={paymentMethod} onChange={setPaymentMethod} testId="select-manual-sale-method" />
+            </div>
+            <div className="space-y-1">
+              <Label className="text-xs">¿Facturada?</Label>
+              <InvoicedSelect value={invoiced} onChange={setInvoiced} testId="select-manual-sale-invoiced" />
             </div>
             <div className="space-y-1">
               <Label className="text-xs">Importe</Label>
@@ -199,9 +248,10 @@ export function ManualSalesTab({
             <div className="space-y-1">
               {rows.map((r) =>
                 editingId === r.id ? (
-                  <div key={r.id} className="grid gap-2 sm:grid-cols-[1fr_180px_160px_auto] items-end py-1 border-b last:border-0">
+                  <div key={r.id} className="grid gap-2 sm:grid-cols-[1fr_180px_150px_160px_auto] items-end py-1 border-b last:border-0">
                     <Input value={editConcept} onChange={(e) => setEditConcept(e.target.value)} className={ECON.ring} />
-                    <Input value={editMethod} onChange={(e) => setEditMethod(e.target.value)} className={ECON.ring} />
+                    <PaymentMethodSelect value={editMethod} onChange={setEditMethod} />
+                    <InvoicedSelect value={editInvoiced} onChange={setEditInvoiced} />
                     <MoneyInput value={editAmount} onChange={setEditAmount} />
                     <div className="flex gap-1">
                       <Button size="sm" className={ECON.bgSolid} onClick={() => updateMut.mutate(r.id)} disabled={updateMut.isPending}>
@@ -216,7 +266,12 @@ export function ManualSalesTab({
                   <div key={r.id} className="flex items-center gap-2 py-2 border-b last:border-0">
                     <div className="flex-1 min-w-0">
                       <p className="text-sm truncate">{r.concept}</p>
-                      {r.paymentMethod && <p className="text-[11px] text-muted-foreground">{r.paymentMethod}</p>}
+                      <p className="text-[11px] text-muted-foreground flex items-center gap-1.5">
+                        {paymentMethodLabel(r.paymentMethod)}
+                        <Badge variant={r.invoiced ? "secondary" : "outline"} className="text-[10px]">
+                          {r.invoiced ? "Facturada" : "No facturada"}
+                        </Badge>
+                      </p>
                     </div>
                     <span className="font-mono text-sm shrink-0">{formatCurrency(num(r.amount))}</span>
                     <Button size="sm" variant="ghost" onClick={() => startEdit(r)}>

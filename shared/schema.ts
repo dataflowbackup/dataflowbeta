@@ -2041,6 +2041,11 @@ export const economicManualSales = pgTable(
     concept: varchar("concept", { length: 160 }).notNull(),
     /** Opcional. Define si la venta entra o no en el cálculo de IIBB y del impuesto al crédito. */
     paymentMethod: varchar("payment_method", { length: 80 }),
+    /**
+     * Si se emitió factura (sep-2026). Las facturadas pierden el IVA en el informe (÷1,21) y entran
+     * en la base de IIBB "sobre ventas facturadas". Default false: las que ya existían no la tenían.
+     */
+    invoiced: boolean("invoiced").default(false),
     amount: decimal("amount", { precision: 14, scale: 2 }).default("0"),
     notes: text("notes"),
     createdBy: varchar("created_by").references(() => users.id),

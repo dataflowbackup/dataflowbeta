@@ -4173,6 +4173,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         economicMonth: z.string().refine(isEconomicMonth, "Mes inválido (YYYY-MM)"),
         concept: z.string().trim().min(1, "Falta el concepto").max(160),
         paymentMethod: z.string().trim().max(80).nullable().optional(),
+        invoiced: z.boolean().default(false),
         amount: z.coerce.number().default(0),
         notes: z.string().nullable().optional(),
       });
@@ -4192,6 +4193,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const schema = z.object({
         concept: z.string().trim().min(1).max(160).optional(),
         paymentMethod: z.string().trim().max(80).nullable().optional(),
+        invoiced: z.boolean().optional(),
         amount: z.coerce.number().optional(),
         notes: z.string().nullable().optional(),
       });

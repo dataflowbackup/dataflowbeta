@@ -107,6 +107,29 @@ export function computeTaxAmount(input: {
   return { amount: (base * (input.ratePct || 0)) / 100, base };
 }
 
+// ── Ventas manuales ──────────────────────────────────────────────────────────
+
+/**
+ * Medios de pago genéricos para las ventas manuales. El `value` es EXACTAMENTE el nombre con que
+ * FUDO los informa: así, cuando un impuesto deja "Efectivo" afuera, quedan afuera juntos el
+ * efectivo de FUDO y el de las ventas manuales.
+ */
+export const MANUAL_SALE_PAYMENT_METHODS: Array<{ value: string; label: string }> = [
+  { value: "Efectivo", label: "Efectivo" },
+  { value: "Tarj. Débito", label: "Tarjeta de Débito" },
+  { value: "Tarj. Crédito", label: "Tarjeta de Crédito" },
+  { value: "Transferencia", label: "Transferencia" },
+  { value: "Qr", label: "QR / Mercado Pago" },
+  { value: "Cta. Cte.", label: "Cuenta Corriente" },
+  { value: "Otro", label: "Otro" },
+];
+
+/** Nombre a mostrar de un medio de pago guardado (los viejos, de texto libre, se muestran tal cual). */
+export function paymentMethodLabel(value: string | null | undefined): string {
+  if (!value) return "Sin especificar";
+  return MANUAL_SALE_PAYMENT_METHODS.find((m) => m.value === value)?.label ?? value;
+}
+
 // ── Comisiones ───────────────────────────────────────────────────────────────
 
 /**

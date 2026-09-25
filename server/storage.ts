@@ -4482,8 +4482,40 @@ export class DatabaseStorage implements IStorage {
   // Impuestos, comisiones y ventas que no salen de los extractos ni de los sistemas de gestión.
   // ==========================================
 
-  /** Ventas del mes económico desagregadas por medio de pago, para calcular IIBB y crédito. */
+  /**
+   * Ventas del mes económico desagregadas por medio de pago, para calcular IIBB: las del sistema
+   * de gestión MÁS las ventas manuales, cada una con su medio. Los medios de las manuales usan los
+   * mismos nombres que FUDO, así que se suman en la misma línea (ej. "Efectivo").
+   */
   async getEconomicSalesByPaymentMethod(
+    clientId: number,
+    opts: { localId: number; economicMonth: string; source: "fudo" | "datalive" | "shares" },
+  ): Promise<Array<{ method: string; amount: number }>> {
+    const sistema = await this.getSystemSalesByPaymentMethod(clientId, opts);
+    const manuales = await db.select({ medio: economicManualSales.paymentMethod, importe: economicManualSales.amount })
+      .from(economicManualSales)
+      .where(and(
+        eq(economicManualSales.clientId, clientId),
+        eq(economicManualSales.localId, opts.localId),
+        eq(economicManualSales.economicMonth, opts.economicMonth),
+      ));
+    if (manuales.length === 0) return sistema;
+
+    // Se agrupa sin distinguir mayúsculas, pero se muestra el nombre como vino primero.
+    const map = new Map<string, { method: string; amount: number }>();
+    const add = (method: string, amount: number) => {
+      const key = method.trim().toLowerCase();
+      const prev = map.get(key);
+      if (prev) prev.amount += amount;
+      else map.set(key, { method: method.trim(), amount });
+    };
+    for (const s of sistema) add(s.method, s.amount);
+    for (const m of manuales) add(String(m.medio ?? "").trim() || "Sin especificar", parseFloat(String(m.importe ?? 0)) || 0);
+    return Array.from(map.values()).filter((x) => x.amount !== 0).sort((a, b) => b.amount - a.amount);
+  }
+
+  /** Solo las del sistema de gestión (FUDO, Shares o Datalive), por medio de pago. */
+  private async getSystemSalesByPaymentMethod(
     clientId: number,
     opts: { localId: number; economicMonth: string; source: "fudo" | "datalive" | "shares" },
   ): Promise<Array<{ method: string; amount: number }>> {
@@ -4666,7 +4698,7 @@ export class DatabaseStorage implements IStorage {
   /** Las ventas manuales son una lista suelta: se crean, se editan por id y se borran. */
   async createEconomicManualSale(
     clientId: number,
-    data: { localId: number; economicMonth: string; concept: string; paymentMethod?: string | null; amount: number; notes?: string | null; createdBy?: string | null },
+    data: { localId: number; economicMonth: string; concept: string; paymentMethod?: string | null; invoiced?: boolean; amount: number; notes?: string | null; createdBy?: string | null },
   ): Promise<EconomicManualSale> {
     const [created] = await db.insert(economicManualSales).values({
       clientId,
@@ -4674,6 +4706,7 @@ export class DatabaseStorage implements IStorage {
       economicMonth: data.economicMonth,
       concept: data.concept,
       paymentMethod: data.paymentMethod ?? null,
+      invoiced: !!data.invoiced,
       amount: String(data.amount ?? 0),
       notes: data.notes ?? null,
       createdBy: data.createdBy ?? null,
@@ -4685,11 +4718,12 @@ export class DatabaseStorage implements IStorage {
   async updateEconomicManualSale(
     clientId: number,
     id: number,
-    data: { concept?: string; paymentMethod?: string | null; amount?: number; notes?: string | null },
+    data: { concept?: string; paymentMethod?: string | null; invoiced?: boolean; amount?: number; notes?: string | null },
   ): Promise<EconomicManualSale | undefined> {
     const patch: Record<string, any> = { updatedAt: new Date() };
     if (data.concept !== undefined) patch.concept = data.concept;
     if (data.paymentMethod !== undefined) patch.paymentMethod = data.paymentMethod;
+    if (data.invoiced !== undefined) patch.invoiced = data.invoiced;
     if (data.amount !== undefined) patch.amount = String(data.amount);
     if (data.notes !== undefined) patch.notes = data.notes;
     const [updated] = await db.update(economicManualSales).set(patch)
