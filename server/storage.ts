@@ -4856,7 +4856,8 @@ export class DatabaseStorage implements IStorage {
    *  - GASTOS: de los movimientos de extractos por MES ECONÓMICO, solo de los grupos tildados.
    *  - COMISIONES e IMPUESTOS: de lo cargado a mano en sus solapas.
    *
-   * Todo EN BRUTO, con IVA (decisión del usuario del 21-sep-2026).
+   * Ventas NETAS: a las facturadas se les quita el IVA (÷1,21); las no facturadas van completas.
+   * Las compras siguen con IVA (decisiones del usuario del 21-sep y del 25-sep-2026).
    */
   async computeEconomicStatement(
     clientId: number,
@@ -4899,7 +4900,20 @@ export class DatabaseStorage implements IStorage {
     const localNameById = new Map(allLocals.map((l) => [l.id, l.name]));
 
     // ── VENTAS ────────────────────────────────────────────────────────────────
-    const ventasLines: Array<{ label: string; amount: number; kind: "sistema" | "manual" }> = [];
+    const ventasLines: Array<{ label: string; amount: number; kind: "sistema" | "manual"; invoiced?: boolean }> = [];
+    /**
+     * Cobros por medio que NO es efectivo, y los que no tienen medio: base de "ventas electrónicas
+     * no facturadas" (punto 7). FUDO trae el medio exacto; Datalive y Shares, sus columnas fijas.
+     */
+    let ventasNoEfectivo = 0;
+    let ventasSinMedio = 0;
+    /** Días con medios de pago de FUDO, para avisar si no coinciden con los del archivo de ventas. */
+    const fudoPagosDias = new Set<string>();
+    const esEfectivo = (label: string) => /efectivo/i.test(label);
+    const sumarMedio = (label: string | null | undefined, amount: number) => {
+      if (!label || !label.trim() || /sin especificar/i.test(label)) ventasSinMedio += amount;
+      else if (!esEfectivo(label)) ventasNoEfectivo += amount;
+    };
     /** Ventas por local: el CMV por inventario y el teórico se aplican local por local. */
     const ventasByLocal: Record<number, number> = {};
     const addVentaLocal = (lid: number, amount: number) => {
@@ -4922,7 +4936,7 @@ export class DatabaseStorage implements IStorage {
     for (const source of opts.salesSources) {
       if (localIds.length === 0) break;
       if (source === "fudo") {
-        const rows = await db.select({ localId: fudoPagos.localId, medio: fudoPagos.medioPago, importe: fudoPagos.importe })
+        const rows = await db.select({ localId: fudoPagos.localId, fecha: fudoPagos.fecha, medio: fudoPagos.medioPago, importe: fudoPagos.importe })
           .from(fudoPagos).where(and(
             eq(fudoPagos.clientId, clientId),
             inArray(fudoPagos.localId, localIds),
@@ -4932,6 +4946,8 @@ export class DatabaseStorage implements IStorage {
         for (const r of rows) {
           addVenta(withSrc(String(r.medio ?? "Sin especificar"), source), num(r.importe), "sistema");
           addVentaLocal(Number(r.localId), num(r.importe));
+          sumarMedio(r.medio, num(r.importe));
+          fudoPagosDias.add(`${r.localId}:${String(r.fecha).slice(0, 10)}`);
         }
       } else if (source === "shares") {
         const rows = await db.select().from(sharesVentas).where(and(
@@ -4947,6 +4963,7 @@ export class DatabaseStorage implements IStorage {
           addVenta(withSrc("Operaciones online", source), num(r.ventaOperOnline), "sistema");
           addVenta(withSrc("Mercado Pago", source), num(r.ventaMercadopago), "sistema");
           addVentaLocal(Number(r.localId), num(r.ventaTotal));
+          ventasNoEfectivo += num(r.ventaTarjeta) + num(r.ventaOperOnline) + num(r.ventaMercadopago);
         }
       } else {
         const rows = await db.select().from(dataliveVentas).where(and(
@@ -4962,6 +4979,7 @@ export class DatabaseStorage implements IStorage {
           const resto = num(r.ventaTotal) - num(r.ventaEfectivo) - num(r.ventaOnline);
           addVenta(withSrc("Otros medios", source), resto, "sistema");
           addVentaLocal(Number(r.localId), num(r.ventaTotal));
+          ventasNoEfectivo += num(r.ventaTotal) - num(r.ventaEfectivo);
         }
       }
     }
@@ -4972,12 +4990,49 @@ export class DatabaseStorage implements IStorage {
       eq(economicManualSales.economicMonth, economicMonth),
     ));
     for (const s of manualSales) {
-      addVenta(s.concept, num(s.amount), "manual");
+      if (Math.abs(num(s.amount)) >= 0.005) {
+        // Cada venta manual es su propia línea: dos con el mismo concepto pueden diferir en factura.
+        ventasLines.push({ label: s.concept, amount: num(s.amount), kind: "manual", invoiced: !!s.invoiced });
+      }
       addVentaLocal(Number(s.localId), num(s.amount));
+      sumarMedio(s.paymentMethod, num(s.amount));
     }
 
-    const ventasTotal = ventasLines.reduce((a, l) => a + l.amount, 0);
-    /** % sobre ventas: el denominador de TODO el informe (common size income statement). */
+    /**
+     * VENTAS NETAS (decisión del usuario, 25-sep-2026): a las ventas FACTURADAS se les quita el IVA
+     * (÷1,21), porque ese 21% se le debe a AFIP y no es ingreso del negocio. Las no facturadas se
+     * toman completas. Facturado = marca SI de FUDO (col N) + manuales facturadas; sin FUDO, todo
+     * cuenta como no facturado. `ventasByLocal` queda en bruto a propósito: es la base con la que
+     * se pasa el CMV% de cada local a pesos, y ese importe no depende de cómo se trate el IVA.
+     */
+    const ventasBrutas = ventasLines.reduce((a, l) => a + l.amount, 0);
+    const facturado = await this.getEconomicInvoicedSales(clientId, {
+      localIds, economicMonth, includeFudo: opts.salesSources.includes("fudo"),
+    });
+    const ivaVentas = facturado.bruto - facturado.neto;
+    const ventasTotal = ventasBrutas - ivaVentas;
+
+    /**
+     * FUDO se importa en dos archivos: el de ventas (con la marca de facturado) y el de medios de
+     * pago (las ventas del informe). Si un día está en uno y no en el otro, el IVA se resta sobre un
+     * facturado que no corresponde a las ventas mostradas. Se compara por DÍAS cargados, no por
+     * importes: con los mismos días los dos difieren apenas (propinas) y eso no es un error.
+     */
+    let desfaseFudo: { diasSoloVentas: number; diasSoloMedios: number } | null = null;
+    if (opts.salesSources.includes("fudo") && localIds.length > 0) {
+      const ventasDias = new Set(
+        (await db.select({ localId: fudoVentas.localId, fecha: fudoVentas.fecha }).from(fudoVentas).where(and(
+          eq(fudoVentas.clientId, clientId),
+          inArray(fudoVentas.localId, localIds),
+          gte(fudoVentas.fecha, from),
+          lte(fudoVentas.fecha, to),
+        ))).map((r) => `${r.localId}:${String(r.fecha).slice(0, 10)}`),
+      );
+      const diasSoloVentas = Array.from(ventasDias).filter((d) => !fudoPagosDias.has(d)).length;
+      const diasSoloMedios = Array.from(fudoPagosDias).filter((d) => !ventasDias.has(d)).length;
+      if (diasSoloVentas > 0 || diasSoloMedios > 0) desfaseFudo = { diasSoloVentas, diasSoloMedios };
+    }
+    /** % sobre ventas NETAS: el denominador de TODO el informe (common size income statement). */
     const pct = (v: number) => (ventasTotal !== 0 ? (v / ventasTotal) * 100 : 0);
 
     // ── COMPRAS (costo de insumos, de las facturas del mes) ───────────────────
@@ -5281,9 +5336,12 @@ export class DatabaseStorage implements IStorage {
     }
     const impuestos = Array.from(taxByKind.values()).map((t) => ({ ...t, pct: pct(t.amount) }));
     // Ganancias resta al final: se calcula SOBRE el resultado, así que no puede estar arriba.
-    const impuestosOperativos = impuestos.filter((t) => t.kind !== "ganancias");
+    // El IVA ya se descontó de las ventas facturadas: la línea se muestra pero NO resta, si no se
+    // descontaría dos veces.
+    const impuestosOperativos = impuestos.filter((t) => t.kind !== "ganancias")
+      .map((t) => ({ ...t, informativo: t.kind === "iva" }));
     const ganancias = impuestos.find((t) => t.kind === "ganancias") ?? null;
-    const impuestosOperativosTotal = impuestosOperativos.reduce((a, t) => a + t.amount, 0);
+    const impuestosOperativosTotal = impuestosOperativos.filter((t) => !t.informativo).reduce((a, t) => a + t.amount, 0);
     const gananciasTotal = ganancias?.amount ?? 0;
 
     // ── PRESUPUESTO (Objetivos Mensuales) ─────────────────────────────────────
@@ -5423,7 +5481,7 @@ export class DatabaseStorage implements IStorage {
         // Se traen 30 aunque se muestren 10: la pantalla deja sacar productos del ranking
         // (ej. "Servicio de mesa") y tiene que haber con qué completar el top.
         topN: 30,
-        ivaIncluded: true, // El informe trabaja en bruto: el margen se mide contra el precio con IVA.
+        ivaIncluded: false, // Las ventas van netas de IVA: el margen se mide contra el precio sin IVA.
       });
       extras.topProductos = {
         source: topSource,
@@ -5441,33 +5499,24 @@ export class DatabaseStorage implements IStorage {
         })),
       };
 
-      // 2. Ventas no facturadas. El flag de fiscalización SOLO existe en FUDO: en Datalive y
-      //    Shares no hay forma de saberlo, así que se devuelve null en vez de un cero engañoso.
-      if (opts.salesSources.includes("fudo")) {
-        const fisc = await this.getDashboardVentasFiscalizadas(clientId, year, month, localIds);
-        // El corte sale de `fudo_ventas` (la venta del día) y el informe suma `fudo_pagos` (los
-        // medios de pago). Los dos archivos se importan por separado y no siempre cierran entre
-        // sí, así que el % se mide contra el total de FUDO y se avisa cuando difieren: sin eso,
-        // "no facturada $27,8M" al lado de "ventas $50,2M" se lee como un 55% que no es.
-        const brecha = fisc.ventaTotal - ventasTotal;
-        extras.ventasNoFacturadas = {
-          disponible: true,
-          ventaTotal: fisc.ventaTotal,
-          facturada: fisc.fiscalizada,
-          noFacturada: fisc.noFiscalizada,
-          sinDato: fisc.sinDato,
-          noFacturadaPct: fisc.ventaTotal > 0 ? (fisc.noFiscalizada / fisc.ventaTotal) * 100 : 0,
-          diasSinDato: fisc.diasSinDato,
-          ventasDelInforme: ventasTotal,
-          brechaConInforme: brecha,
-          coincideConInforme: fisc.ventaTotal > 0 && Math.abs(brecha) / fisc.ventaTotal < 0.01,
-        };
-      } else {
-        extras.ventasNoFacturadas = {
-          disponible: false,
-          motivo: "El corte de ventas facturadas solo existe en FUDO; las otras fuentes no traen el dato.",
-        };
-      }
+      // 2. Ventas electrónicas no facturadas (punto 7): lo cobrado por medios que NO son efectivo
+      //    (tarjeta, QR, transferencia, cuenta corriente) menos lo facturado. Es la venta que dejó
+      //    rastro bancario sin factura. Por diferencia de totales: la marca de facturado de FUDO es
+      //    por ticket y no dice con qué medio se pagó. Sin FUDO, lo facturado es cero.
+      const noFacturadaElectronica = Math.max(0, ventasNoEfectivo - facturado.bruto);
+      extras.ventasNoFacturadas = {
+        disponible: true,
+        ventasNoEfectivo,
+        facturado: facturado.bruto,
+        noFacturada: noFacturadaElectronica,
+        noFacturadaPct: ventasNoEfectivo > 0 ? (noFacturadaElectronica / ventasNoEfectivo) * 100 : 0,
+        /** El facturado supera a lo electrónico: se facturaron también ventas en efectivo. */
+        facturadoSuperaElectronico: facturado.bruto > ventasNoEfectivo,
+        ventasSinMedio,
+        diasSinDato: facturado.fudoDiasSinDato,
+        sinFudo: !opts.salesSources.includes("fudo"),
+        desfaseFudo,
+      };
 
       // 3. Punto de equilibrio del mes: cuánto había que vender para dar cero.
       //    Costos fijos = gastos + comisiones + impuestos operativos. El margen de contribución es
@@ -5513,6 +5562,14 @@ export class DatabaseStorage implements IStorage {
       salesSources: opts.salesSources,
       ventas: {
         total: ventasTotal,
+        brutas: ventasBrutas,
+        /** IVA contenido en las ventas facturadas (facturado × 21/121), que se resta. */
+        ivaFacturadas: ivaVentas,
+        facturado: facturado.bruto,
+        facturadoFudo: facturado.fudo,
+        facturadoManual: facturado.manual,
+        /** Días de FUDO cargados en un archivo y no en el otro: el IVA restado no es confiable. */
+        desfaseFudo,
         objetivo: ventasObjetivo,
         lines: ventasLines.map((l) => ({ ...l, pct: pct(l.amount) })).sort((a, b) => b.amount - a.amount),
       },
@@ -5555,6 +5612,8 @@ export class DatabaseStorage implements IStorage {
       },
       resumen: {
         ventas: ventasTotal,
+        ventasBrutas,
+        ivaVentas,
         costoMercaderia: cmvElegido.total,
         utilidadBruta,
         gastos: gastosTotal,

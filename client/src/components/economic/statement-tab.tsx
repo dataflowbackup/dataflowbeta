@@ -8,8 +8,9 @@
  *
  * De las compras se puede clickear cada factura y va a la factura.
  *
- * Todo EN BRUTO, con IVA: las ventas entran con IVA y el IVA a pagar es una línea más de
- * impuestos que resta (decisión del usuario del 21-sep-2026).
+ * Ventas NETAS (decisión del usuario del 25-sep-2026): a las facturadas se les quita el IVA
+ * (÷1,21) y las no facturadas van completas; todos los % se miden sobre las ventas netas. Las
+ * compras siguen con IVA. La línea de IVA de impuestos se muestra pero no resta.
  */
 import { useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
@@ -80,7 +81,17 @@ interface Statement {
   allLocalsCount: number;
   isAllLocals: boolean;
   salesSources: string[];
-  ventas: { total: number; objetivo: number; lines: Array<{ label: string; amount: number; pct: number; kind: "sistema" | "manual" }> };
+  ventas: {
+    total: number;
+    brutas: number;
+    ivaFacturadas: number;
+    facturado: number;
+    facturadoFudo: number;
+    facturadoManual: number;
+    desfaseFudo: { diasSoloVentas: number; diasSoloMedios: number } | null;
+    objetivo: number;
+    lines: Array<{ label: string; amount: number; pct: number; kind: "sistema" | "manual"; invoiced?: boolean }>;
+  };
   compras: { total: number; pct: number; groups: Node[] };
   cmv: {
     mode: CmvMode;
@@ -93,7 +104,7 @@ interface Statement {
   inversiones?: { total: number; pct: number; groups: Node[] };
   comisiones: { total: number; pct: number; lines: Array<{ concept: string; amount: number; pct: number; byLocal: Array<{ local: string; amount: number }> }> };
   impuestos: {
-    operativos: Array<{ kind: string; amount: number; pct: number; byLocal: Array<{ local: string; amount: number; mode: string }> }>;
+    operativos: Array<{ kind: string; amount: number; pct: number; informativo?: boolean; byLocal: Array<{ local: string; amount: number; mode: string }> }>;
     operativosTotal: number;
     ganancias: { kind: string; amount: number; pct: number } | null;
     gananciasTotal: number;
@@ -115,20 +126,18 @@ interface Statement {
       esNuevo: boolean;
     }>;
   };
-  ventasNoFacturadas?:
-    | {
-        disponible: true;
-        ventaTotal: number;
-        facturada: number;
-        noFacturada: number;
-        sinDato: number;
-        noFacturadaPct: number;
-        diasSinDato: number;
-        ventasDelInforme: number;
-        brechaConInforme: number;
-        coincideConInforme: boolean;
-      }
-    | { disponible: false; motivo: string };
+  ventasNoFacturadas?: {
+    disponible: true;
+    ventasNoEfectivo: number;
+    facturado: number;
+    noFacturada: number;
+    noFacturadaPct: number;
+    facturadoSuperaElectronico: boolean;
+    ventasSinMedio: number;
+    diasSinDato: number;
+    sinFudo: boolean;
+    desfaseFudo: { diasSoloVentas: number; diasSoloMedios: number } | null;
+  };
   puntoEquilibrio?: {
     alcanzable: boolean;
     costosFijos: number;
@@ -152,6 +161,10 @@ const COL_IMPORTE = "w-40";
 const COL_PCT = "w-20";
 
 const pct = (v: number) => `${v.toFixed(1)}%`;
+
+/** La explicación que pidió el usuario, en la pantalla y en el PDF. */
+const NOTA_IVA =
+  "A las ventas facturadas se les quita el IVA (÷1,21) porque ese 21% se le debe a AFIP, no es ingreso del negocio. Las ventas no facturadas se toman completas. Los % del informe se miden sobre las ventas netas.";
 const fmtDate = (iso?: string) => {
   if (!iso) return "";
   const [y, m, d] = iso.slice(0, 10).split("-");
@@ -580,10 +593,20 @@ export function StatementTab({
     };
 
     // Ventas
-    push("Ventas", d.ventas.total, 100, 0, "section");
+    push("Ventas netas", d.ventas.total, 100, 0, "section");
     if (isSectionOpen("ventas")) {
-      push("Detalle por medio de pago", d.ventas.total, 100, 0, "row");
-      if (openVentas) for (const l of d.ventas.lines) push(l.label, l.amount, l.pct, 1, "row", l.kind === "manual" ? "manual" : undefined);
+      push("Ventas brutas (por medio de pago)", d.ventas.brutas, d.ventas.total ? (d.ventas.brutas / d.ventas.total) * 100 : 0, 0, "row");
+      if (openVentas)
+        for (const l of d.ventas.lines)
+          push(l.label, l.amount, l.pct, 1, "row", l.kind === "manual" ? (l.invoiced ? "manual · facturada" : "manual · no facturada") : undefined);
+      push(
+        "IVA contenido en ventas facturadas",
+        -d.ventas.ivaFacturadas,
+        d.ventas.total ? (-d.ventas.ivaFacturadas / d.ventas.total) * 100 : 0,
+        0,
+        "row",
+        `facturado ${formatCurrency(d.ventas.facturado)} ÷ 1,21`,
+      );
       if (d.ventas.objetivo > 0) push("Objetivo del mes", d.ventas.objetivo, null, 0, "row");
     }
 
@@ -616,7 +639,15 @@ export function StatementTab({
     const impPct = d.ventas.total ? (d.impuestos.operativosTotal / d.ventas.total) * 100 : 0;
     push("Impuestos sobre ingresos y movimientos", d.impuestos.operativosTotal, impPct, 0, "section");
     if (isSectionOpen("impuestos")) {
-      for (const t of d.impuestos.operativos) push(TAX_KIND_BY_KEY[t.kind as TaxKind]?.label ?? t.kind, t.amount, t.pct, 0, "row");
+      for (const t of d.impuestos.operativos)
+        push(
+          TAX_KIND_BY_KEY[t.kind as TaxKind]?.label ?? t.kind,
+          t.amount,
+          t.pct,
+          0,
+          "row",
+          t.informativo ? "informativo: ya descontado de las ventas, no resta" : undefined,
+        );
     }
 
     push(
@@ -710,12 +741,13 @@ export function StatementTab({
             }
           : null,
       ventasNoFacturadas:
-        v && v.disponible ? { noFacturada: v.noFacturada, pct: v.noFacturadaPct, total: v.ventaTotal } : null,
+        v && v.disponible ? { noFacturada: v.noFacturada, pct: v.noFacturadaPct, total: v.ventasNoEfectivo } : null,
+      notaIva: NOTA_IVA,
       comparativo: data.anterior
         ? {
             mesAnterior: data.anterior.period.economicMonth,
             lineas: [
-              { label: "Ventas", hoy: data.resumen.ventas, antes: data.anterior.resumen.ventas },
+              { label: "Ventas netas", hoy: data.resumen.ventas, antes: data.anterior.resumen.ventas },
               { label: "Costo de mercadería", hoy: data.resumen.costoMercaderia, antes: data.anterior.resumen.costoMercaderia },
               { label: "Utilidad bruta", hoy: data.resumen.utilidadBruta, antes: data.anterior.resumen.utilidadBruta },
               { label: "Gastos operativos", hoy: data.resumen.gastos, antes: data.anterior.resumen.gastos },
@@ -778,7 +810,7 @@ export function StatementTab({
                 : `${data.locals.map((l) => l.name).join(" · ")} (${data.locals.length} de ${data.allLocalsCount})`}
             </span>
             <span>Ventas de: {data.salesSources.map((s) => (s === "fudo" ? "FUDO" : s === "shares" ? "Shares" : "Datalive")).join(" + ")}</span>
-            <span>Todos los importes en bruto, con IVA</span>
+            <span>Ventas netas de IVA en lo facturado · compras con IVA</span>
           </div>
           <div className="flex items-center gap-2">
             <Button variant="outline" size="sm" onClick={plegarTodo} data-testid="button-plegar-todo">
@@ -800,6 +832,21 @@ export function StatementTab({
           <p className="text-sm text-amber-700 dark:text-amber-400">
             <span className="font-semibold">{formatCurrency(sinRubro.amount)}</span> de compras ({pct(sinRubro.pct)} de las
             ventas) están en insumos sin rubro asignado. Cargales el rubro en Insumos para que se abran en el informe.
+          </p>
+        </div>
+      )}
+
+      {data.ventas.desfaseFudo && (
+        <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 flex gap-2 items-start" data-testid="alert-desfase-fudo">
+          <AlertTriangle className="h-4 w-4 text-amber-600 dark:text-amber-500 mt-0.5 shrink-0" />
+          <p className="text-sm text-amber-700 dark:text-amber-400">
+            Los dos archivos de FUDO de este mes no tienen los mismos días cargados
+            {data.ventas.desfaseFudo.diasSoloVentas > 0 &&
+              `: ${data.ventas.desfaseFudo.diasSoloVentas} día(s) están en el de ventas y faltan en el de medios de pago`}
+            {data.ventas.desfaseFudo.diasSoloMedios > 0 &&
+              `${data.ventas.desfaseFudo.diasSoloVentas > 0 ? " y" : ":"} ${data.ventas.desfaseFudo.diasSoloMedios} día(s) están en el de medios de pago y faltan en el de ventas`}
+            . Las ventas salen de los medios de pago y el IVA de lo facturado del archivo de ventas, así que el IVA
+            restado no corresponde a las ventas mostradas. Re-importá el mes completo de FUDO.
           </p>
         </div>
       )}
@@ -838,7 +885,7 @@ export function StatementTab({
 
           {/* ── VENTAS ── */}
           <SectionHeader
-            title="Ventas"
+            title="Ventas netas"
             amount={data.ventas.total}
             pctValue={100}
             open={isSectionOpen("ventas")}
@@ -848,9 +895,9 @@ export function StatementTab({
           {isSectionOpen("ventas") && (
           <>
           <Row
-            label="Detalle por medio de pago"
-            amount={data.ventas.total}
-            pctValue={100}
+            label="Ventas brutas (por medio de pago)"
+            amount={data.ventas.brutas}
+            pctValue={data.ventas.total ? (data.ventas.brutas / data.ventas.total) * 100 : 0}
             level={0}
             hasChildren={data.ventas.lines.length > 0}
             open={openVentas}
@@ -866,9 +913,37 @@ export function StatementTab({
                 pctValue={l.pct}
                 level={1}
                 tone="muted"
-                meta={l.kind === "manual" ? <Badge variant="secondary" className="text-[10px]">manual</Badge> : undefined}
+                meta={
+                  l.kind === "manual" ? (
+                    <Badge variant="secondary" className="text-[10px]">
+                      manual · {l.invoiced ? "facturada" : "no facturada"}
+                    </Badge>
+                  ) : undefined
+                }
               />
             ))}
+          <Row
+            label="− IVA contenido en ventas facturadas"
+            amount={-data.ventas.ivaFacturadas}
+            pctValue={data.ventas.total ? (-data.ventas.ivaFacturadas / data.ventas.total) * 100 : 0}
+            level={0}
+            tone={data.ventas.ivaFacturadas > 0 ? "negative" : "muted"}
+            meta={
+              data.ventas.facturado > 0
+                ? `facturado ${formatCurrency(data.ventas.facturado)} ÷ 1,21${
+                    data.ventas.facturadoManual > 0
+                      ? ` (FUDO ${formatCurrency(data.ventas.facturadoFudo)} + manuales ${formatCurrency(data.ventas.facturadoManual)})`
+                      : ""
+                  }`
+                : data.salesSources.includes("fudo")
+                  ? "no hay ventas facturadas en el mes"
+                  : "sin FUDO: todas las ventas cuentan como no facturadas"
+            }
+            testId="row-iva-ventas"
+          />
+          <p className="px-4 py-2 text-[11px] text-muted-foreground border-b bg-muted/20" data-testid="text-nota-iva">
+            {NOTA_IVA}
+          </p>
           {data.ventas.objetivo > 0 && (
             <Row
               label="Objetivo del mes"
@@ -971,7 +1046,14 @@ export function StatementTab({
                 amount={t.amount}
                 pctValue={t.pct}
                 level={0}
-                meta={t.byLocal.length > 1 ? `${t.byLocal.length} locales` : (TAX_MODE_LABELS[t.byLocal[0]?.mode as TaxMode] ?? "a mano").toLowerCase()}
+                tone={t.informativo ? "muted" : undefined}
+                meta={
+                  t.informativo
+                    ? "informativo: ya se descontó de las ventas, no resta"
+                    : t.byLocal.length > 1
+                      ? `${t.byLocal.length} locales`
+                      : (TAX_MODE_LABELS[t.byLocal[0]?.mode as TaxMode] ?? "a mano").toLowerCase()
+                }
               />
             ))
           )}
@@ -1116,34 +1198,52 @@ export function StatementTab({
         {data.ventasNoFacturadas && (
           <Card>
             <CardContent className="pt-6 space-y-2">
-              <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Ventas no facturadas</p>
-              {!data.ventasNoFacturadas.disponible ? (
-                <p className="text-sm text-muted-foreground">{data.ventasNoFacturadas.motivo}</p>
-              ) : (
-                <>
-                  <p className="text-2xl font-bold font-mono text-amber-600 dark:text-amber-500">
-                    {formatCurrency(data.ventasNoFacturadas.noFacturada)}
-                  </p>
-                  <p className="text-xs text-muted-foreground">
-                    {pct(data.ventasNoFacturadas.noFacturadaPct)} de {formatCurrency(data.ventasNoFacturadas.ventaTotal)} que
-                    FUDO registra como venta del mes. Facturado: {formatCurrency(data.ventasNoFacturadas.facturada)}.
-                  </p>
-                  {!data.ventasNoFacturadas.coincideConInforme && (
-                    <p className="text-[11px] text-amber-700 dark:text-amber-400">
-                      Ojo: FUDO registra {formatCurrency(data.ventasNoFacturadas.ventaTotal)} de venta y el informe suma{" "}
-                      {formatCurrency(data.ventasNoFacturadas.ventasDelInforme)} de medios de pago. Son dos archivos
-                      distintos de FUDO y no están cerrando entre sí, así que el porcentaje va medido contra el total
-                      de FUDO, no contra el del informe.
+              <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                Ventas con medio de pago no facturadas
+              </p>
+              {(() => {
+                const v = data.ventasNoFacturadas!;
+                return (
+                  <>
+                    <p className="text-2xl font-bold font-mono text-amber-600 dark:text-amber-500" data-testid="text-no-facturadas">
+                      {formatCurrency(v.noFacturada)}
                     </p>
-                  )}
-                  {data.ventasNoFacturadas.diasSinDato > 0 && (
+                    <p className="text-xs text-muted-foreground">
+                      Cobrado por tarjeta, QR, transferencia y cuenta corriente {formatCurrency(v.ventasNoEfectivo)} − facturado{" "}
+                      {formatCurrency(v.facturado)}. Es el {pct(v.noFacturadaPct)} de lo cobrado sin efectivo.
+                    </p>
+                    {v.sinFudo && (
+                      <p className="text-[11px] text-muted-foreground">
+                        Sin FUDO no hay dato de facturación: todas las ventas cuentan como no facturadas.
+                      </p>
+                    )}
+                    {v.facturadoSuperaElectronico && (
+                      <p className="text-[11px] text-muted-foreground">
+                        Lo facturado supera a lo cobrado sin efectivo: también se facturaron ventas en efectivo.
+                      </p>
+                    )}
+                    {v.ventasSinMedio > 0 && (
+                      <p className="text-[11px] text-muted-foreground">
+                        No incluye {formatCurrency(v.ventasSinMedio)} de ventas sin medio de pago especificado.
+                      </p>
+                    )}
+                    {v.desfaseFudo && (
+                      <p className="text-[11px] text-amber-700 dark:text-amber-400">
+                        Ojo: los dos archivos de FUDO no tienen los mismos días cargados, así que este número no es confiable
+                        hasta completarlos (ver el aviso de arriba).
+                      </p>
+                    )}
+                    {v.diasSinDato > 0 && (
+                      <p className="text-[11px] text-muted-foreground">
+                        {v.diasSinDato} día(s) de FUDO importados sin la columna de facturación: no suman como facturado.
+                      </p>
+                    )}
                     <p className="text-[11px] text-muted-foreground">
-                      {data.ventasNoFacturadas.diasSinDato} día(s) importados antes de que se leyera el corte: ahí no se
-                      sabe, no es "no facturado".
+                      Estimado por diferencia de totales: FUDO marca qué ticket se facturó, pero no con qué medio se pagó.
                     </p>
-                  )}
-                </>
-              )}
+                  </>
+                );
+              })()}
             </CardContent>
           </Card>
         )}

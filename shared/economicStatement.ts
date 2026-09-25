@@ -1,10 +1,10 @@
 /**
  * Estado de Resultado Económico — catálogos y fórmulas compartidas entre el browser y el servidor.
  *
- * Todo el módulo trabaja EN BRUTO (con IVA), decisión del usuario del 21-sep-2026: las ventas y
- * las compras entran con IVA incluido y el IVA a pagar figura como una línea más de impuestos que
- * resta. Es el mismo criterio con el que venía funcionando el módulo, así que no hay ninguna base
- * histórica que migrar.
+ * Criterio de IVA (usuario, 25-sep-2026, revisa el "todo en bruto" del 21-sep): las ventas
+ * FACTURADAS entran sin IVA (÷1,21) porque ese 21% es de AFIP; las no facturadas van completas.
+ * Las compras siguen con IVA. La línea "IVA" de impuestos se muestra pero no resta: ya se descontó
+ * de las ventas.
  */
 
 // ── Impuestos ────────────────────────────────────────────────────────────────

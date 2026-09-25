@@ -30,6 +30,8 @@ export interface StatementPdfInput {
   indicadores: Array<{ label: string; value: number }>;
   puntoEquilibrio?: { ventasNecesarias: number; costosFijos: number; margenPct: number; excedente: number } | null;
   ventasNoFacturadas?: { noFacturada: number; pct: number; total: number } | null;
+  /** Explicación de por qué a las ventas facturadas se les quita el IVA. */
+  notaIva?: string;
   comparativo?: {
     mesAnterior: string;
     lineas: Array<{ label: string; hoy: number; antes: number }>;
@@ -68,7 +70,7 @@ export function buildEconomicStatementPdf(input: StatementPdfInput): jsPDF {
     doc.setFont("helvetica", "normal");
     doc.setFontSize(7.5);
     doc.setTextColor(MUTED.r, MUTED.g, MUTED.b);
-    doc.text("DataFlow · Estado de Resultado Económico · importes en bruto, con IVA", M, pageH - 20);
+    doc.text("DataFlow · Estado de Resultado Económico · ventas netas de IVA en lo facturado, compras con IVA", M, pageH - 20);
     doc.text(
       new Date().toLocaleDateString("es-AR", { day: "2-digit", month: "long", year: "numeric" }),
       pageW - M,
@@ -208,7 +210,9 @@ export function buildEconomicStatementPdf(input: StatementPdfInput): jsPDF {
     doc.line(M, y + h, M + W, y + h);
     y += h;
   }
-  y += 18;
+  y += 10;
+  if (input.notaIva) paragraph(input.notaIva, 7);
+  y += 8;
 
   // ---------- Indicadores ----------
   if (input.indicadores.length > 0) {
@@ -251,8 +255,8 @@ export function buildEconomicStatementPdf(input: StatementPdfInput): jsPDF {
     if (input.ventasNoFacturadas) {
       const v = input.ventasNoFacturadas;
       paragraph(
-        `Ventas no facturadas: ${money(v.noFacturada)}, el ${pctTxt(v.pct)} de los ${money(v.total)} que el sistema ` +
-          `de gestión registra como venta del mes.`,
+        `Ventas con medio de pago no facturadas: ${money(v.noFacturada)}, el ${pctTxt(v.pct)} de los ${money(v.total)} ` +
+          `cobrados por tarjeta, QR, transferencia y cuenta corriente (estimado por diferencia contra lo facturado).`,
       );
     }
   }
