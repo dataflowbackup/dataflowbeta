@@ -4353,48 +4353,80 @@ export class DatabaseStorage implements IStorage {
     // cada lado y recién despues se filtra por el mes económico resuelto.
     const scanFrom = `${year - 1}-01-01`;
     const scanTo = `${year + 1}-12-31`;
-    const allTransactions = await db
-      .select()
+
+    const movFinGroupIds = new Set(
+      allFinancialGroups.filter((g) => String(g.type) === MOVIMIENTOS_FINANCIEROS_GROUP_TYPE).map((g) => g.id),
+    );
+    const categoryById = new Map(allCategories.map((c) => [c.id, c]));
+    const financialGroupById = new Map(allFinancialGroups.map((g) => [g.id, g]));
+    const isExcludedCategory = (catId: number): boolean => {
+      const cat = categoryById.get(catId);
+      if (!cat) return true;
+      if (typeof cat.specialType === "string" && OTROS_MOVIMIENTOS_SPECIAL_TYPES.has(cat.specialType)) return true;
+      const gid = resolvedGroupIdByCat.get(catId);
+      return gid != null && movFinGroupIds.has(gid);
+    };
+    // Solo gastos: las ventas ya vienen del sistema de gestión. Los huérfanos (sin grupo) no
+    // computan: sin grupo no hay forma de saber si son gasto económico.
+    const expenseCategoryIds = allCategories
+      .filter((c) => {
+        if (isExcludedCategory(c.id)) return false;
+        const gid = resolvedGroupIdByCat.get(c.id);
+        const group = gid != null ? financialGroupById.get(gid) : undefined;
+        return !!group && String(group.type) === "expense";
+      })
+      .map((c) => c.id);
+
+    // Se filtra en la base por local y por categoría de gasto, y se traen solo las columnas que se
+    // usan: traer los ~160 mil movimientos completos de una empresa pasaba el timeout de Netlify
+    // (28-sep-2026).
+    const allTransactions = expenseCategoryIds.length === 0 ? [] : await db
+      .select({
+        id: transactions.id,
+        localId: transactions.localId,
+        categoryId: transactions.categoryId,
+        transactionDate: transactions.transactionDate,
+        economicMonth: transactions.economicMonth,
+        amount: transactions.amount,
+        type: transactions.type,
+      })
       .from(transactions)
       .where(
         and(
           eq(transactions.clientId, clientId),
           sql`${transactions.transactionDate} >= ${scanFrom}`,
           sql`${transactions.transactionDate} <= ${scanTo}`,
+          inArray(transactions.categoryId, expenseCategoryIds),
+          ...(localIds ? [inArray(transactions.localId, localIds)] : []),
         ),
       );
 
+    // Los movimientos divididos se saltean porque ya cuentan sus partes. Se buscan en TODOS los
+    // locales y categorías: al dividir entre locales las partes quedan en otros locales que el
+    // original, y filtrarlas con el resto haría contar el original.
     const splitParentIds = new Set(
-      allTransactions.filter((t) => t.parentTransactionId != null).map((t) => t.parentTransactionId as number),
+      (await db
+        .selectDistinct({ parentId: transactions.parentTransactionId })
+        .from(transactions)
+        .where(
+          and(
+            eq(transactions.clientId, clientId),
+            sql`${transactions.transactionDate} >= ${scanFrom}`,
+            sql`${transactions.transactionDate} <= ${scanTo}`,
+            sql`${transactions.parentTransactionId} is not null`,
+          ),
+        )).map((r) => r.parentId as number),
     );
-    const movFinGroupIds = new Set(
-      allFinancialGroups.filter((g) => String(g.type) === MOVIMIENTOS_FINANCIEROS_GROUP_TYPE).map((g) => g.id),
-    );
-    const isExcludedCategory = (catId: number): boolean => {
-      const cat = allCategories.find((c) => c.id === catId);
-      if (!cat) return true;
-      if (typeof cat.specialType === "string" && OTROS_MOVIMIENTOS_SPECIAL_TYPES.has(cat.specialType)) return true;
-      const gid = resolvedGroupIdByCat.get(catId);
-      return gid != null && movFinGroupIds.has(gid);
-    };
 
     const categoryNetMonthly: Record<number, Record<number, number>> = {};
     for (const tx of allTransactions) {
       if (!tx.categoryId) continue;
       if (splitParentIds.has(tx.id)) continue;
-      if (localIdSet && (tx.localId == null || !localIdSet.has(tx.localId))) continue;
-      if (isExcludedCategory(tx.categoryId)) continue;
 
       const econ = resolveEconomicMonth(tx as any);
       if (!econ || econ.slice(0, 4) !== String(year)) continue;
       const month = parseInt(econ.slice(5, 7), 10);
       if (!Number.isFinite(month) || month < 1 || month > 12) continue;
-
-      const gid = resolvedGroupIdByCat.get(tx.categoryId);
-      const group = gid != null ? allFinancialGroups.find((g) => g.id === gid) : undefined;
-      // Solo gastos: las ventas ya vienen del sistema de gestión. Los huérfanos (sin grupo) no
-      // computan: sin grupo no hay forma de saber si son gasto económico.
-      if (!group || String(group.type) !== "expense") continue;
 
       const amount = parseFloat(String(tx.amount) || "0");
       // Neto en la dirección del grupo: un reintegro (ingreso en un grupo de gasto) resta.
@@ -4890,6 +4922,19 @@ export class DatabaseStorage implements IStorage {
       return Number.isFinite(n) ? n : 0;
     };
 
+    // El mes anterior (extra 4) arranca ya, en paralelo con este: en serie, las dos pasadas juntas
+    // se acercaban al timeout de Netlify con empresas grandes.
+    const anteriorPromise = opts.skipExtras ? null : this.computeEconomicStatement(clientId, {
+      year: month === 1 ? year - 1 : year,
+      month: month === 1 ? 12 : month - 1,
+      localIds: opts.localIds,
+      salesSources: opts.salesSources,
+      cmvMode: opts.cmvMode,
+      skipExtras: true,
+    });
+    // Si este mes falla antes de esperarla, que su rechazo no quede sin manejar.
+    anteriorPromise?.catch(() => {});
+
     const allLocals = (await db.select({ id: locals.id, name: locals.name }).from(locals)
       .where(eq(locals.clientId, clientId)))
       .map((l) => ({ id: Number(l.id), name: String(l.name) }));
@@ -5161,13 +5206,41 @@ export class DatabaseStorage implements IStorage {
     const scanToWide = new Date(Date.UTC(year, month + 2, 0)).toISOString().slice(0, 10);
     void scanFrom;
 
-    const txRows = await db.select().from(transactions).where(and(
+    // Solo las categorías que pueden sumar como gasto, filtradas en la base junto con el local: traer
+    // todos los movimientos completos de la empresa pasaba el timeout de Netlify (28-sep-2026).
+    const expenseCategoryIds = allCategories
+      .filter((cat) => {
+        if (typeof cat.specialType === "string" && OTROS_MOVIMIENTOS_SPECIAL_TYPES.has(cat.specialType)) return false;
+        const gid = (cat as any).financialGroupId as number | null | undefined;
+        if (gid == null || movFinGroupIds.has(gid)) return false;
+        return String(groupById.get(gid)?.type) === "expense";
+      })
+      .map((cat) => cat.id);
+    const txRows = localIds.length === 0 || expenseCategoryIds.length === 0 ? [] : await db.select({
+      id: transactions.id,
+      localId: transactions.localId,
+      categoryId: transactions.categoryId,
+      transactionDate: transactions.transactionDate,
+      economicMonth: transactions.economicMonth,
+      description: transactions.description,
+      amount: transactions.amount,
+      type: transactions.type,
+    }).from(transactions).where(and(
       eq(transactions.clientId, clientId),
       gte(transactions.transactionDate, scanFromWide),
       lte(transactions.transactionDate, scanToWide),
+      inArray(transactions.categoryId, expenseCategoryIds),
+      inArray(transactions.localId, localIds),
     ));
+    // Los divididos se buscan en todos los locales y categorías: al dividir entre locales, las
+    // partes quedan en otro local que el original.
     const splitParentIds = new Set(
-      txRows.filter((t) => t.parentTransactionId != null).map((t) => t.parentTransactionId as number),
+      (await db.selectDistinct({ parentId: transactions.parentTransactionId }).from(transactions).where(and(
+        eq(transactions.clientId, clientId),
+        gte(transactions.transactionDate, scanFromWide),
+        lte(transactions.transactionDate, scanToWide),
+        sql`${transactions.parentTransactionId} is not null`,
+      ))).map((r) => r.parentId as number),
     );
 
     interface GastoNode {
@@ -5536,17 +5609,8 @@ export class DatabaseStorage implements IStorage {
         : { alcanzable: false, costosFijos, margenContribucionPct, ventasNecesarias: null, excedente: null };
 
       // 4. El mes anterior, para comparar cada línea. Se resuelve llamando a este mismo método
-      //    con `skipExtras`, así la comparación usa exactamente el mismo criterio de cálculo.
-      const prevMonth = month === 1 ? 12 : month - 1;
-      const prevYear = month === 1 ? year - 1 : year;
-      const anterior = await this.computeEconomicStatement(clientId, {
-        year: prevYear,
-        month: prevMonth,
-        localIds: opts.localIds,
-        salesSources: opts.salesSources,
-        cmvMode: opts.cmvMode,
-        skipExtras: true,
-      });
+      //    con `skipExtras` (arrancado al principio), así la comparación usa el mismo criterio.
+      const anterior = await anteriorPromise!;
       extras.anterior = {
         period: anterior.period,
         resumen: anterior.resumen,
