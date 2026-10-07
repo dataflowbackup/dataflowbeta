@@ -159,7 +159,8 @@ export default function DecomisosPage() {
       for (const p of res.items) {
         if (p.sucursal && !lMap[p.sucursal]) {
           const saved = savedLocal.get(p.sucursal);
-          lMap[p.sucursal] = saved != null ? String(saved) : "";
+          // Empresa con un solo local: toda sucursal sin mapeo va a ese local.
+          lMap[p.sucursal] = saved != null ? String(saved) : locals.length === 1 ? String(locals[0].id) : "";
         }
       }
       const pMap: Record<string, string> = {};

@@ -25,6 +25,7 @@ import { formatCurrency } from "@/lib/formatters";
 import { Upload, Save, Trash2 } from "lucide-react";
 import { parseFudoReport, parseFudoAdiciones, parseFudoPagos, type ParsedFudoDay, type ParsedFudoAdicion, type ParsedFudoPago } from "@shared/fudoSalesParser";
 import type { Local } from "@shared/schema";
+import { useAutoSelectSingleLocal } from "@/hooks/useSingleLocal";
 
 const DELETE_KEYWORD = "BORRAR";
 
@@ -72,6 +73,7 @@ export default function FudoVentasPage() {
   const [deleteProdDiaKw, setDeleteProdDiaKw] = useState("");
 
   const { data: locals = [] } = useQuery<Local[]>({ queryKey: ["/api/locals"] });
+  useAutoSelectSingleLocal(locals, !localId, (id) => setLocalId(String(id)));
   const { data: existing = [] } = useQuery<FudoVentaRow[]>({
     queryKey: ["/api/fudo-ventas"],
     queryFn: async () => {

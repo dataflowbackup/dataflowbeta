@@ -34,6 +34,7 @@ import { apiRequest, queryClient } from "@/lib/queryClient";
 import { formatNumber, formatDate } from "@/lib/formatters";
 import { Package, ArrowUpDown, AlertTriangle, ClipboardCheck, AlertCircle } from "lucide-react";
 import type { StockLevel, StockAdjustment, StockMovement, Supply, Local } from "@shared/schema";
+import { useAutoSelectSingleLocal } from "@/hooks/useSingleLocal";
 
 const adjustmentSchema = z.object({
   localId: z.coerce.number().min(1, "Seleccione un local"),
@@ -110,6 +111,7 @@ export default function StockPage() {
       reason: "",
     },
   });
+  useAutoSelectSingleLocal(locals, !form.watch("localId"), (id) => form.setValue("localId", id), isDialogOpen);
 
   const watchedLocalId = useWatch({ control: form.control, name: "localId" });
   const watchedSupplyId = useWatch({ control: form.control, name: "supplyId" });

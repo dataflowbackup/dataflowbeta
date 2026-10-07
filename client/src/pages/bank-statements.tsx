@@ -102,6 +102,7 @@ import type {
   FinancialGroup,
 } from "@shared/schema";
 import type { BusinessName } from "@shared/schema";
+import { useAutoSelectSingleLocal } from "@/hooks/useSingleLocal";
 
 interface TransactionWithRelations extends Transaction {
   bankAccount?: BankAccount | null;
@@ -620,9 +621,14 @@ export default function BankStatementsPage() {
     queryKey: ["/api/business-names"],
   });
 
+  // Empresa con un solo local: subir, categorizar y crear cuentas ya imputan a ese local.
   const { data: locals = [] } = useQuery<Local[]>({
     queryKey: ["/api/locals"],
   });
+  useAutoSelectSingleLocal(locals, uploadDefaultLocalId === "none", (id) => setUploadDefaultLocalId(String(id)), isUploadOpen);
+  useAutoSelectSingleLocal(locals, !selectedLocalId || selectedLocalId === "none", (id) => setSelectedLocalId(String(id)), isCategorizeOpen);
+  useAutoSelectSingleLocal(locals, !batchLocalId || batchLocalId === "none", (id) => setBatchLocalId(String(id)), isBatchCategorizeOpen);
+  useAutoSelectSingleLocal(locals, newAccountLocalId === "none", (id) => setNewAccountLocalId(String(id)), isAccountsDialogOpen);
 
   const { data: localAliases = [] } = useQuery<LocalAlias[]>({
     queryKey: ["/api/local-aliases"],

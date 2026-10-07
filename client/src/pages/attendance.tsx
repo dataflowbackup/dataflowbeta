@@ -32,6 +32,7 @@ import {
   Coffee
 } from "lucide-react";
 import type { Attendance, Employee, Local } from "@shared/schema";
+import { useAutoSelectSingleLocal } from "@/hooks/useSingleLocal";
 
 type AttendanceWithRelations = Attendance & {
   employee?: Employee;
@@ -83,6 +84,8 @@ export default function AttendancePage() {
   const { data: locals = [], isError: isLocalsError } = useQuery<Local[]>({
     queryKey: ["/api/locals"],
   });
+  // Empresa con un solo local: la fichada ya viene con ese local.
+  useAutoSelectSingleLocal(locals, selectedLocalId == null, (id) => setSelectedLocalId(id), isClockDialogOpen);
 
   const hasError = isAttendanceError || isEmployeesError || isLocalsError || isTodayAttendanceError;
 

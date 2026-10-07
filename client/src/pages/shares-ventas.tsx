@@ -25,6 +25,7 @@ import { formatCurrency } from "@/lib/formatters";
 import { Upload, Save, Trash2 } from "lucide-react";
 import { parseSharesReport, parseSharesProductsReport, type ParsedSharesDay, type ParsedSharesProducto } from "@shared/sharesSalesParser";
 import type { Local } from "@shared/schema";
+import { useAutoSelectSingleLocal } from "@/hooks/useSingleLocal";
 
 const DELETE_KEYWORD = "BORRAR";
 
@@ -79,6 +80,8 @@ export default function SharesVentasPage() {
   const [deleteProdKw, setDeleteProdKw] = useState("");
 
   const { data: locals = [] } = useQuery<Local[]>({ queryKey: ["/api/locals"] });
+  useAutoSelectSingleLocal(locals, !localId, (id) => setLocalId(String(id)));
+  useAutoSelectSingleLocal(locals, !prodLocalId, (id) => setProdLocalId(String(id)));
   const { data: existing = [] } = useQuery<SharesVentaRow[]>({
     queryKey: ["/api/shares-ventas"],
     queryFn: async () => {

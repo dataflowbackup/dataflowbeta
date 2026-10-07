@@ -92,6 +92,7 @@ import {
 } from "lucide-react";
 import { Progress } from "@/components/ui/progress";
 import type { Transaction, BankAccount, TransactionCategory, Local, FinancialGroup, CashRegister } from "@shared/schema";
+import { useAutoSelectSingleLocal } from "@/hooks/useSingleLocal";
 
 interface TransactionWithRelations extends Transaction {
   bankAccount?: BankAccount | null;
@@ -221,13 +222,13 @@ function makeDraftKey(seqRef: { current: number }): string {
   return `cash-draft-${seqRef.current}-${rnd}`;
 }
 
-function makeDraftRow(seqRef: { current: number }): DraftRow {
+function makeDraftRow(seqRef: { current: number }, localId = "none"): DraftRow {
   return {
     key: makeDraftKey(seqRef),
     transactionDate: new Date().toISOString().slice(0, 10),
     description: "",
     categoryId: "",
-    localId: "none",
+    localId,
     type: "expense",
     amount: "",
   };
@@ -520,6 +521,13 @@ export default function CashPage() {
   const { data: locals = [] } = useQuery<Local[]>({
     queryKey: ["/api/locals"],
   });
+  // Empresa con un solo local: los movimientos nuevos ya vienen imputados a ese local.
+  const singleLocalId = locals.length === 1 ? String(locals[0].id) : null;
+  useAutoSelectSingleLocal(
+    locals,
+    draftRows.some((r) => r.localId === "none" && !r.description && !r.amount),
+    (id) => setDraftRows((rows) => rows.map((r) => (r.localId === "none" && !r.description && !r.amount ? { ...r, localId: String(id) } : r))),
+  );
   const { data: financialGroups = [] } = useQuery<FinancialGroup[]>({
     queryKey: ["/api/financial-groups"],
   });
@@ -577,6 +585,7 @@ export default function CashPage() {
   const [masivaCajaId, setMasivaCajaId] = useState("");
   /** Local a asignar en el modo "assign-local". Solo alcanza a movimientos SIN local y nunca toca la categoria. */
   const [masivaAssignLocalId, setMasivaAssignLocalId] = useState("");
+  useAutoSelectSingleLocal(locals, !masivaAssignLocalId, (id) => setMasivaAssignLocalId(String(id)), isMasivaOpen);
   /** Filtro de BUSQUEDA por categoria: "" = todas, "none" = sin categoria, o el id. No la modifica. */
   const [masivaFilterCategoryId, setMasivaFilterCategoryId] = useState("");
 
@@ -870,13 +879,13 @@ export default function CashPage() {
 
   const openBatch = () => {
     draftRowSeqRef.current = 0;
-    setDraftRows([makeDraftRow(draftRowSeqRef)]);
+    setDraftRows([makeDraftRow(draftRowSeqRef, singleLocalId ?? "none")]);
     setNetoRecibido("");
     setBatchCajaId(cashRegisters.length === 1 ? String(cashRegisters[0].id) : "");
     setBatchOpen(true);
   };
 
-  const addDraftRow = () => setDraftRows((r) => [...r, makeDraftRow(draftRowSeqRef)]);
+  const addDraftRow = () => setDraftRows((r) => [...r, makeDraftRow(draftRowSeqRef, singleLocalId ?? "none")]);
   const removeDraftRow = (key: string) =>
     setDraftRows((r) => (r.length <= 1 ? r : r.filter((x) => x.key !== key)));
 
@@ -1044,6 +1053,7 @@ export default function CashPage() {
   const importFileRef = useRef<HTMLInputElement>(null);
   const [importOpen, setImportOpen] = useState(false);
   const [importLocalId, setImportLocalId] = useState<string>("");
+  useAutoSelectSingleLocal(locals, !importLocalId, (id) => setImportLocalId(String(id)), importOpen);
   /** Caja por defecto: se aplica a las filas del Excel que vengan con la columna "Caja" vacía. */
   const [importCajaId, setImportCajaId] = useState<string>("");
   const [importFileName, setImportFileName] = useState("");

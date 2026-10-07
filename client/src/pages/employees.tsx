@@ -31,6 +31,7 @@ import { apiRequest, queryClient } from "@/lib/queryClient";
 import { formatCurrency, formatDate } from "@/lib/formatters";
 import { Edit, Trash2, UserPlus, AlertCircle } from "lucide-react";
 import type { Employee, Local } from "@shared/schema";
+import { useAutoSelectSingleLocal } from "@/hooks/useSingleLocal";
 
 const employeeDocTypeComboOptions = [
   { value: "DNI", label: "DNI" },
@@ -105,6 +106,7 @@ export default function EmployeesPage() {
       status: "active",
     },
   });
+  useAutoSelectSingleLocal(locals, !form.watch("localId"), (id) => form.setValue("localId", id), isDialogOpen);
 
   const createMutation = useMutation({
     mutationFn: async (data: FormData) => {

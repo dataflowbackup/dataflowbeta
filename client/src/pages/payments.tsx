@@ -43,6 +43,7 @@ import { formatCurrency, formatDate, formatDateInput } from "@/lib/formatters";
 import { CreditCard, Trash2, Plus, FileText, Pencil } from "lucide-react";
 import type { Payment, Supplier, Local, BankAccount, Invoice } from "@shared/schema";
 import { formatInvoiceVoucherDisplay } from "@shared/invoiceDisplay";
+import { useAutoSelectSingleLocal } from "@/hooks/useSingleLocal";
 
 interface PaymentWithRelations extends Payment {
   supplier?: Supplier | null;
@@ -152,6 +153,7 @@ export default function PaymentsPage() {
       notes: "",
     },
   });
+  useAutoSelectSingleLocal(locals, !form.watch("localId"), (id) => form.setValue("localId", id), isDialogOpen);
 
   const watchSupplierIdRaw = form.watch("supplierId");
   const watchSupplierId = typeof watchSupplierIdRaw === "string"

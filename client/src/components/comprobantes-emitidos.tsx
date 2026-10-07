@@ -483,9 +483,10 @@ function SalePointFormDialog({
     setBusinessNameId(salePoint ? String(salePoint.businessNameId) : "");
     setNumber(salePoint ? String(salePoint.number) : "");
     setFantasyName(salePoint?.fantasyName ?? "");
-    setLocalId(salePoint?.localId ? String(salePoint.localId) : "none");
+    // Empresa con un solo local: el punto de venta nuevo ya viene asignado a ese local.
+    setLocalId(salePoint?.localId ? String(salePoint.localId) : locals.length === 1 ? String(locals[0].id) : "none");
     setSalesSystem(salePoint?.salesSystem ?? "none");
-  }, [open, touched, salePoint?.id]);
+  }, [open, touched, salePoint?.id, locals.length]);
 
   const close = () => {
     setTouched(false);

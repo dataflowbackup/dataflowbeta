@@ -43,6 +43,7 @@ import { formatInvoiceVoucherDisplay } from "@shared/invoiceDisplay";
 import { cn } from "@/lib/utils";
 import { QuickCreateSupplierDialog } from "@/components/quick-create-supplier-dialog";
 import { QuickCreateSupplyDialog } from "@/components/quick-create-supply-dialog";
+import { useAutoSelectSingleLocal } from "@/hooks/useSingleLocal";
 
 interface SupplyWithDetails extends Supply {
   rubro?: Rubro | null;
@@ -128,6 +129,7 @@ export default function CreditNoteFormPage() {
       taxes: [],
     },
   });
+  useAutoSelectSingleLocal(locals, !form.watch("localId"), (id) => form.setValue("localId", id));
 
   const { fields: itemFields, prepend: prependItem, remove: removeItem } = useFieldArray({ control: form.control, name: "items" });
   const { fields: taxFields, append: appendTax, remove: removeTax } = useFieldArray({ control: form.control, name: "taxes" });

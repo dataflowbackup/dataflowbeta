@@ -33,6 +33,7 @@ import { apiRequest, queryClient } from "@/lib/queryClient";
 import { formatDate, formatNumber } from "@/lib/formatters";
 import { ClipboardList, FileCheck, Plus, Eye, AlertCircle } from "lucide-react";
 import type { OperationalAudit, AuditTemplate, Local } from "@shared/schema";
+import { useAutoSelectSingleLocal } from "@/hooks/useSingleLocal";
 
 const auditFormSchema = z.object({
   localId: z.coerce.number().min(1, "Seleccione un local"),
@@ -96,6 +97,7 @@ export default function AuditsPage() {
       notes: "",
     },
   });
+  useAutoSelectSingleLocal(locals, !auditForm.watch("localId"), (id) => auditForm.setValue("localId", id), isAuditDialogOpen);
 
   const templateForm = useForm<TemplateFormData>({
     resolver: zodResolver(templateFormSchema),
