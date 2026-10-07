@@ -35,6 +35,7 @@ import {
   Receipt,
   Store,
   Upload,
+  Wrench,
   XCircle,
 } from "lucide-react";
 import {
@@ -45,6 +46,7 @@ import {
   type ParseComprobantesResult,
 } from "@shared/afipComprobantesParser";
 import { ComprobantesEmitidos } from "@/components/comprobantes-emitidos";
+import { ConfirmDialog } from "@/components/confirm-dialog";
 import { AfipImportBatchesButton } from "@/components/afip-import-batches";
 import type { Local, Supplier } from "@shared/schema";
 
@@ -64,8 +66,11 @@ interface ReconRow {
   total: number;
   totalIva: number;
   status: "ok" | "importe" | "probable" | "faltante";
-  matchLevel: "exacta" | "probable" | null;
+  matchLevel: MatchLevel | null;
   invoiceId: number | null;
+  invoiceType: string | null;
+  invoiceSalePoint: string | null;
+  invoiceNumber: string | null;
   invoiceTotal: number | null;
   invoiceDate: string | null;
   amountDiff: number | null;
@@ -108,6 +113,26 @@ interface ReconResponse {
     sinLocal: number;
   };
 }
+
+type MatchLevel = "exacta" | "tipo_distinto" | "probable" | "punto_venta_distinto" | "numero_distinto";
+
+/** Por que cruzo como probable: es lo que el usuario tiene que revisar en la factura. */
+const MATCH_REASON: Partial<Record<MatchLevel, string>> = {
+  tipo_distinto: "Tipo distinto",
+  probable: "Sin punto de venta cargado",
+  punto_venta_distinto: "Punto de venta distinto",
+  numero_distinto: "Número distinto (mismo importe y fecha cercana)",
+};
+
+function invoiceTypeLabel(t: string | null): string {
+  if (!t) return "—";
+  if (t === "REM") return "Remito";
+  if (t.startsWith("NC-")) return `Nota de Crédito ${t.slice(3)}`;
+  if (t.startsWith("ND-")) return `Nota de Débito ${t.slice(3)}`;
+  return `Factura ${t}`;
+}
+
+const typeFamily = (t: string | null) => (!t ? "F" : t.startsWith("NC") ? "NC" : t.startsWith("ND") ? "ND" : "F");
 
 const STATUS_META: Record<ReconRow["status"], { label: string; className: string; icon: typeof CheckCircle2 }> = {
   ok: { label: "Cargada", className: "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/30", icon: CheckCircle2 },
@@ -177,9 +202,25 @@ function ComprobantesRecibidos() {
   const [supplierId, setSupplierId] = useState("all");
   const [statusFilter, setStatusFilter] = useState<"all" | ReconRow["status"]>("all");
   const [importOpen, setImportOpen] = useState(false);
+  const [toFix, setToFix] = useState<ReconRow | null>(null);
+  const { toast } = useToast();
 
   const { data: locals = [] } = useQuery<Local[]>({ queryKey: ["/api/locals"] });
   const { data: suppliers = [] } = useQuery<Supplier[]>({ queryKey: ["/api/suppliers"] });
+
+  const fixMutation = useMutation({
+    mutationFn: async (r: ReconRow) => {
+      const res = await apiRequest("POST", `/api/afip/received/${r.id}/fix-invoice`, { invoiceId: r.invoiceId });
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/afip/received/reconciliation"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/invoices"] });
+      toast({ title: "Factura corregida", description: "Ahora coincide con lo que informa AFIP." });
+      setToFix(null);
+    },
+    onError: (e: Error) => toast({ title: "No se pudo corregir", description: e.message, variant: "destructive" }),
+  });
 
   const params = new URLSearchParams({ dateFrom, dateTo });
   if (localId !== "all") params.set("localId", localId);
@@ -276,6 +317,14 @@ function ComprobantesRecibidos() {
                 sistema {formatCurrency(r.invoiceTotal ?? 0)} · dif {formatCurrency(r.amountDiff)}
               </p>
             )}
+            {r.matchLevel && MATCH_REASON[r.matchLevel] && (
+              <p className="text-xs text-amber-700 dark:text-amber-400">
+                {MATCH_REASON[r.matchLevel]} · sistema: {invoiceTypeLabel(r.invoiceType)}{" "}
+                <span className="font-mono">
+                  {r.invoiceSalePoint || "____"}-{r.invoiceNumber}
+                </span>
+              </p>
+            )}
             {r.dateDiff != null && r.dateDiff !== 0 && (
               <p className="text-xs text-muted-foreground">
                 {Math.abs(r.dateDiff)} día{Math.abs(r.dateDiff) === 1 ? "" : "s"} de diferencia en la fecha
@@ -290,6 +339,26 @@ function ComprobantesRecibidos() {
       header: "",
       cell: (r) =>
         r.invoiceId ? (
+          <div className="flex flex-col items-start gap-1">
+          {r.matchLevel && r.matchLevel !== "exacta" && (
+            typeFamily(r.invoiceType) === typeFamily(r.voucherSystemType ?? r.invoiceType) ? (
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-7 text-xs whitespace-nowrap"
+                disabled={fixMutation.isPending}
+                onClick={() => setToFix(r)}
+                data-testid={`button-fix-invoice-${r.id}`}
+              >
+                <Wrench className="h-3 w-3 mr-1" />
+                Corregir con AFIP
+              </Button>
+            ) : (
+              <span className="text-[11px] text-destructive max-w-[180px]">
+                En AFIP es {invoiceTypeLabel(r.voucherSystemType)}: corregila desde la factura (mueve costos y stock).
+              </span>
+            )
+          )}
           <Link
             href={`/facturas/${r.invoiceId}`}
             className="inline-flex items-center gap-1 text-xs text-primary hover:underline whitespace-nowrap"
@@ -298,6 +367,7 @@ function ComprobantesRecibidos() {
             Ver factura
             <ArrowUpRight className="h-3 w-3" />
           </Link>
+          </div>
         ) : (
           <Link
             href="/facturas/nueva"
@@ -316,7 +386,7 @@ function ComprobantesRecibidos() {
     { key: "ok", label: "Cargados y coinciden", count: resumen?.ok ?? 0, amount: resumen?.okTotal ?? 0, tone: "text-emerald-600 dark:text-emerald-400" },
     { key: "faltante", label: "Faltan cargar", count: resumen?.faltante ?? 0, amount: resumen?.faltanteTotal ?? 0, tone: "text-destructive" },
     { key: "importe", label: "Difieren en importe", count: resumen?.importe ?? 0, amount: resumen?.importeDiff ?? 0, hint: "diferencia", tone: "text-orange-600 dark:text-orange-400" },
-    { key: "probable", label: "Coincidencia probable", count: resumen?.probable ?? 0, amount: resumen?.probableTotal ?? 0, hint: "sin punto de venta cargado", tone: "text-amber-600 dark:text-amber-400" },
+    { key: "probable", label: "Coincidencia probable", count: resumen?.probable ?? 0, amount: resumen?.probableTotal ?? 0, hint: "algún dato mal cargado", tone: "text-amber-600 dark:text-amber-400" },
     { key: "sobrante", label: "En el sistema, no en AFIP", count: resumen?.sobrante ?? 0, amount: resumen?.sobranteTotal ?? 0, tone: "text-muted-foreground" },
   ];
 
@@ -470,6 +540,19 @@ function ComprobantesRecibidos() {
       )}
 
       <ImportRecibidosDialog open={importOpen} onOpenChange={setImportOpen} />
+      <ConfirmDialog
+        open={toFix != null}
+        onOpenChange={(v) => !v && setToFix(null)}
+        title="Corregir la factura con los datos de AFIP"
+        description={
+          toFix
+            ? `La factura de ${toFix.supplierName ?? toFix.issuerName} pasa de ${invoiceTypeLabel(toFix.invoiceType)} ${toFix.invoiceSalePoint || "____"}-${toFix.invoiceNumber} a ${invoiceTypeLabel(toFix.voucherSystemType ?? toFix.invoiceType)} ${String(toFix.salePoint).padStart(4, "0")}-${String(toFix.numberFrom).padStart(8, "0")}. Solo cambian el tipo, el punto de venta y el número: importes, ítems, costos y pagos quedan igual. El cambio queda registrado en la auditoría.`
+            : ""
+        }
+        confirmLabel="Corregir"
+        isLoading={fixMutation.isPending}
+        onConfirm={() => toFix && fixMutation.mutate(toFix)}
+      />
     </div>
   );
 }

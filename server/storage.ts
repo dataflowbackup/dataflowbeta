@@ -9589,17 +9589,21 @@ export class DatabaseStorage implements IStorage {
    * Se calcula AL VUELO, no se persiste: asi, a medida que se cargan las facturas que faltaban,
    * la diferencia baja sola sin tener que volver a importar ni recalcular nada.
    *
-   * Dos niveles de coincidencia, como se acordo el 26-ago:
+   * Niveles de coincidencia (26-ago, ampliado el 07-oct):
    *  - EXACTA:  CUIT emisor + tipo + punto de venta + numero.
-   *  - PROBABLE: CUIT emisor + numero, ignorando el punto de venta. Existe porque hay facturas
-   *    cargadas antes de que el sistema pidiera punto de venta, que lo tienen vacio.
+   *  - Y cuatro niveles PROBABLES, para el mismo comprobante con un dato mal cargado. La
+   *    pantalla ofrece corregir la factura con los datos de AFIP:
+   *    - tipo_distinto: CUIT + PV + numero (caso Burning: Remito en el sistema, Factura C en AFIP).
+   *    - probable: CUIT + numero con el PV vacio (facturas de antes de que se pidiera el PV).
+   *    - punto_venta_distinto: CUIT + numero + importe, con otro PV cargado.
+   *    - numero_distinto: CUIT + importe + fecha a menos de 7 dias, solo si la pareja es unica.
    * La FECHA no se exige para dar por encontrada una factura (el cuarteto ya es unico); la
    * diferencia de dias se informa como observacion.
    *
    * Estados de cada comprobante de AFIP:
    *  - "ok"        esta cargado y el importe coincide.
    *  - "importe"   esta cargado pero el total no coincide.
-   *  - "probable"  aparecio por numero + CUIT, sin poder confirmar el punto de venta.
+   *  - "probable"  cruzo por alguno de los niveles probables.
    *  - "faltante"  AFIP lo tiene y el sistema no.
    * Y aparte, las facturas del sistema que AFIP no informa quedan como "sobrante".
    */
@@ -9654,7 +9658,10 @@ export class DatabaseStorage implements IStorage {
     const exactKey = (cuit: string, type: string, sp: number, num: number) => `${cuit}|${type}|${sp}|${num}`;
     const loseKey = (cuit: string, num: number) => `${cuit}|${num}`;
 
+    const noTypeKey = (cuit: string, sp: number, num: number) => `${cuit}|${sp}|${num}`;
+
     const byExact = new Map<string, any>();
+    const byNoType = new Map<string, any[]>();
     const byLoose = new Map<string, any[]>();
     const usedInvoiceIds = new Set<number>();
 
@@ -9665,7 +9672,12 @@ export class DatabaseStorage implements IStorage {
       const num = numOf(inv.number);
       if (!cuit || num == null) continue;
       const sp = numOf(inv.salePoint);
-      if (sp != null) byExact.set(exactKey(cuit, String(inv.type ?? ""), sp, num), inv);
+      if (sp != null) {
+        byExact.set(exactKey(cuit, String(inv.type ?? ""), sp, num), inv);
+        const nk = noTypeKey(cuit, sp, num);
+        if (!byNoType.has(nk)) byNoType.set(nk, []);
+        byNoType.get(nk)!.push(inv);
+      }
       const lk = loseKey(cuit, num);
       if (!byLoose.has(lk)) byLoose.set(lk, []);
       byLoose.get(lk)!.push(inv);
@@ -9675,34 +9687,90 @@ export class DatabaseStorage implements IStorage {
     const daysBetween = (a: string, b: string) =>
       Math.round((new Date(`${a}T00:00:00`).getTime() - new Date(`${b}T00:00:00`).getTime()) / 86400000);
 
-    const rows = vouchers.map((v: any) => {
+    // Familia del comprobante: una nota de credito o debito no es "la misma" que una factura,
+    // salvo que coincidan tambien importe y fecha (una NC cargada como Factura, que suma en vez
+    // de restar).
+    const family = (t: string) => (t.startsWith("NC") ? "NC" : t.startsWith("ND") ? "ND" : "F");
+    const totalOf = (x: any) => parseFloat(String(x.total ?? 0)) || 0;
+    const sameAmount = (v: any, inv: any) => Math.abs(totalOf(v) - totalOf(inv)) <= AMOUNT_TOLERANCE;
+    const nearDate = (v: any, inv: any, days: number) =>
+      Math.abs(daysBetween(v.voucherDate, String(inv.date))) <= days;
+
+    type MatchLevel = "exacta" | "tipo_distinto" | "probable" | "punto_venta_distinto" | "numero_distinto";
+    const matches = new Map<number, { inv: any; level: MatchLevel }>();
+    const take = (v: any, inv: any, level: MatchLevel) => {
+      matches.set(v.id, { inv, level });
+      usedInvoiceIds.add(inv.id);
+    };
+
+    // 1) EXACTAS, todas primero: asi ningun nivel probable se queda con una factura que otro
+    //    comprobante cruza exacto (una Factura C y una NC C pueden compartir PV y numero).
+    for (const v of vouchers as any[]) {
       const cuit = digits(v.issuerCuit);
-      const total = parseFloat(String(v.total ?? 0)) || 0;
+      const systemType = v.voucherSystemType ?? "";
+      if (!cuit || !systemType) continue;
+      const hit = byExact.get(exactKey(cuit, systemType, v.salePoint, v.numberFrom));
+      if (hit) take(v, hit, "exacta");
+    }
+
+    // 2) Mismo comprobante con UN dato mal cargado, identificado por el resto.
+    for (const v of vouchers as any[]) {
+      if (matches.has(v.id)) continue;
+      const cuit = digits(v.issuerCuit);
+      if (!cuit) continue;
       const num = v.numberFrom;
       const systemType = v.voucherSystemType ?? "";
+      const free = (c: any) => !usedInvoiceIds.has(c.id);
 
-      let match: any = null;
-      let matchLevel: "exacta" | "probable" | null = null;
-
-      if (cuit && systemType) {
-        const hit = byExact.get(exactKey(cuit, systemType, v.salePoint, num));
-        if (hit) {
-          match = hit;
-          matchLevel = "exacta";
-        }
-      }
-      if (!match && cuit) {
-        // Nivel probable: mismo CUIT y mismo numero, con el punto de venta sin cargar.
-        const candidates = (byLoose.get(loseKey(cuit, num)) ?? []).filter(
-          (c) => numOf(c.salePoint) == null && !usedInvoiceIds.has(c.id),
+      // Tipo distinto: CUIT + PV + numero (caso Burning, Remito contra Factura C).
+      if (v.salePoint != null) {
+        const c = (byNoType.get(noTypeKey(cuit, v.salePoint, num)) ?? []).find(
+          (c) =>
+            free(c) &&
+            String(c.type ?? "") !== systemType &&
+            (family(String(c.type ?? "")) === family(systemType) || (sameAmount(v, c) && nearDate(v, c, 3))),
         );
-        if (candidates.length > 0) {
-          match = candidates[0];
-          matchLevel = "probable";
-        }
+        if (c) { take(v, c, "tipo_distinto"); continue; }
       }
+      const sameNumber = byLoose.get(loseKey(cuit, num)) ?? [];
+      // Sin punto de venta: facturas viejas, de antes de que el sistema lo pidiera.
+      const sinPv = sameNumber.find((c) => free(c) && numOf(c.salePoint) == null);
+      if (sinPv) { take(v, sinPv, "probable"); continue; }
+      // Punto de venta distinto: mismo CUIT y numero, y el importe tiene que coincidir (con el
+      // numero solo no alcanza: proveedores distintos de un mismo CUIT reusan numeracion por PV).
+      const otroPv = sameNumber.find((c) => free(c) && sameAmount(v, c));
+      if (otroPv) { take(v, otroPv, "punto_venta_distinto"); continue; }
+    }
 
-      if (match) usedInvoiceIds.add(match.id);
+    // 3) Numero distinto: mismo CUIT, mismo importe y fecha a menos de 7 dias. Es el nivel mas
+    //    flojo, asi que solo se acepta cuando la pareja es UNICA de los dos lados: un proveedor
+    //    que factura siempre lo mismo (abono semanal) no puede emparejarse a ciegas.
+    const pendientes = (vouchers as any[]).filter((v) => !matches.has(v.id) && digits(v.issuerCuit));
+    const candidatosPorVoucher = new Map<number, any[]>();
+    const vouchersPorFactura = new Map<number, number>();
+    for (const v of pendientes) {
+      const cuit = digits(v.issuerCuit);
+      const cands = invoiceRows.filter(
+        (inv) =>
+          (!inv.status || inv.status === "active") &&
+          !usedInvoiceIds.has(inv.id) &&
+          digits(inv.supplierCuit) === cuit &&
+          sameAmount(v, inv) &&
+          nearDate(v, inv, 7),
+      );
+      candidatosPorVoucher.set(v.id, cands);
+      for (const c of cands) vouchersPorFactura.set(c.id, (vouchersPorFactura.get(c.id) ?? 0) + 1);
+    }
+    for (const v of pendientes) {
+      const cands = candidatosPorVoucher.get(v.id) ?? [];
+      if (cands.length === 1 && vouchersPorFactura.get(cands[0].id) === 1) take(v, cands[0], "numero_distinto");
+    }
+
+    const rows = vouchers.map((v: any) => {
+      const total = parseFloat(String(v.total ?? 0)) || 0;
+      const m = matches.get(v.id);
+      const match: any = m?.inv ?? null;
+      const matchLevel: MatchLevel | null = m?.level ?? null;
 
       const invoiceTotal = match ? parseFloat(String(match.total ?? 0)) || 0 : null;
       const amountDiff = invoiceTotal != null ? Math.round((total - invoiceTotal) * 100) / 100 : null;
@@ -9711,7 +9779,7 @@ export class DatabaseStorage implements IStorage {
       let status: "ok" | "importe" | "probable" | "faltante";
       if (!match) status = "faltante";
       else if (amountDiff != null && Math.abs(amountDiff) > AMOUNT_TOLERANCE) status = "importe";
-      else if (matchLevel === "probable") status = "probable";
+      else if (matchLevel !== "exacta") status = "probable";
       else status = "ok";
 
       return {
@@ -9734,6 +9802,9 @@ export class DatabaseStorage implements IStorage {
         invoiceId: match?.id ?? null,
         invoiceTotal,
         invoiceDate: match ? String(match.date) : null,
+        invoiceType: match ? String(match.type ?? "") : null,
+        invoiceSalePoint: match?.salePoint ?? null,
+        invoiceNumber: match?.number ?? null,
         amountDiff,
         dateDiff,
         localId: match?.localId ?? null,
@@ -9801,6 +9872,82 @@ export class DatabaseStorage implements IStorage {
         sinLocal: filteredRows.filter((r) => r.localId == null).length,
       },
     };
+  }
+
+  /**
+   * Corrige la identificacion de una factura (tipo, punto de venta, numero) con los datos del
+   * comprobante de AFIP con el que cruzo como probable. Solo toca esos tres campos: no mueven
+   * costos ni stock, asi que no hace falta el circuito de reversar y recrear de /correct (que
+   * ademas liberaria los pagos). El cambio de FAMILIA (Factura <-> Nota de Credito) si mueve
+   * costos y stock, y por eso se rechaza: va por la correccion normal de la factura.
+   */
+  async fixInvoiceFromAfipVoucher(
+    clientId: number,
+    voucherId: number,
+    invoiceId: number,
+    userId: string | null,
+  ): Promise<{ invoiceType: string; invoiceSalePoint: string; invoiceNumber: string }> {
+    const [voucher] = await db
+      .select()
+      .from(afipReceivedVouchers)
+      .where(and(eq(afipReceivedVouchers.id, voucherId), eq(afipReceivedVouchers.clientId, clientId)))
+      .limit(1);
+    if (!voucher) throw Object.assign(new Error("Comprobante de AFIP no encontrado"), { statusCode: 404 });
+    const [row] = await db
+      .select({ invoice: invoices, supplierCuit: suppliers.cuit })
+      .from(invoices)
+      .leftJoin(suppliers, eq(invoices.supplierId, suppliers.id))
+      .where(and(eq(invoices.id, invoiceId), eq(invoices.clientId, clientId)))
+      .limit(1);
+    if (!row) throw Object.assign(new Error("Factura no encontrada"), { statusCode: 404 });
+    const inv = row.invoice;
+
+    const digits = (v: unknown) => String(v ?? "").replace(/\D/g, "");
+    if (!digits(row.supplierCuit) || digits(row.supplierCuit) !== digits(voucher.issuerCuit)) {
+      throw Object.assign(new Error("El proveedor de la factura no es el emisor del comprobante"), { statusCode: 400 });
+    }
+    if (inv.status && inv.status !== "active") {
+      throw Object.assign(new Error("La factura no esta activa"), { statusCode: 400 });
+    }
+    if (voucher.salePoint > 9999) {
+      throw Object.assign(new Error("El punto de venta de AFIP tiene mas de 4 digitos y no entra en la factura"), { statusCode: 400 });
+    }
+    const family = (t: string) => (t.startsWith("NC") ? "NC" : t.startsWith("ND") ? "ND" : "F");
+    const newType = voucher.voucherSystemType || inv.invoiceType;
+    if (family(newType) !== family(inv.invoiceType)) {
+      throw Object.assign(
+        new Error("Pasar entre Factura y Nota de Credito cambia costos y stock: corregilo desde la factura."),
+        { statusCode: 400 },
+      );
+    }
+    const newSalePoint = String(voucher.salePoint).padStart(4, "0");
+    const newNumber = String(voucher.numberFrom).padStart(8, "0");
+
+    // Mismo control que el alta: no puede quedar otra factura del proveedor con ese PV y numero.
+    if (inv.supplierId) {
+      const existing = await this.getInvoiceByVoucherComposite(clientId, inv.supplierId, newSalePoint, newNumber);
+      if (existing && existing.id !== inv.id) {
+        throw Object.assign(
+          new Error("Ya existe otra factura de este proveedor con ese punto de venta y numero"),
+          { statusCode: 400 },
+        );
+      }
+    }
+
+    await db
+      .update(invoices)
+      .set({ invoiceType: newType, invoiceSalePoint: newSalePoint, invoiceNumber: newNumber, updatedAt: new Date() } as any)
+      .where(and(eq(invoices.id, inv.id), eq(invoices.clientId, clientId)));
+    await this.createAuditLog({
+      clientId,
+      userId,
+      action: "fix_invoice_from_afip",
+      tableName: "invoices",
+      recordId: inv.id,
+      oldData: { invoiceType: inv.invoiceType, invoiceSalePoint: inv.invoiceSalePoint, invoiceNumber: inv.invoiceNumber },
+      newData: { invoiceType: newType, invoiceSalePoint: newSalePoint, invoiceNumber: newNumber, afipVoucherId: voucher.id },
+    });
+    return { invoiceType: newType, invoiceSalePoint: newSalePoint, invoiceNumber: newNumber };
   }
 
   /**

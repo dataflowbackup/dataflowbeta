@@ -5895,6 +5895,18 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
   });
 
+  app.post("/api/afip/received/:id/fix-invoice", isAuthenticated, async (req, res) => {
+    try {
+      const clientId = await getClientId(req);
+      const userId = (await getAuthenticatedUserId(req)) ?? null;
+      const invoiceId = parseInt(String(req.body?.invoiceId ?? ""), 10);
+      if (!Number.isFinite(invoiceId)) return res.status(400).json({ message: "Falta la factura" });
+      res.json(await storage.fixInvoiceFromAfipVoucher(clientId, parseInt(req.params.id, 10), invoiceId, userId));
+    } catch (e: any) {
+      res.status(e.statusCode ?? 500).json({ message: e.message });
+    }
+  });
+
   app.get("/api/afip/issued", isAuthenticated, async (req, res) => {
     try {
       const clientId = await getClientId(req);
