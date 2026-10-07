@@ -41,6 +41,7 @@ import { CommissionsTab } from "@/components/economic/commissions-tab";
 import { ManualSalesTab } from "@/components/economic/manual-sales-tab";
 import { ECON } from "@/components/economic/econ-shared";
 import { StatementTab, type CmvMode } from "@/components/economic/statement-tab";
+import { CategoryDestinationsButton } from "@/components/economic/category-destinations-button";
 
 const SHORT_MONTHS = ["Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"];
 
@@ -177,18 +178,6 @@ export default function EconomicBalancePage() {
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ["/api/financial-groups"] });
       await queryClient.invalidateQueries({ queryKey: ["/api/economic-balance"] });
-    },
-    onError: (e: Error) =>
-      toast({ title: "No se pudo cambiar el grupo", description: e.message, variant: "destructive" }),
-  });
-
-  /** Marca un grupo como inversión: sale de Gastos Operativos y va debajo del Resultado Neto. */
-  const investmentMut = useMutation({
-    mutationFn: async ({ id, isInvestment }: { id: number; isInvestment: boolean }) => {
-      await apiRequest("PATCH", `/api/financial-groups/${id}`, { isInvestment });
-    },
-    onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: ["/api/financial-groups"] });
       await queryClient.invalidateQueries({ queryKey: ["/api/economic/statement"] });
     },
     onError: (e: Error) =>
@@ -603,8 +592,8 @@ export default function EconomicBalancePage() {
                 para este cliente y vale para todos los meses.
               </p>
               <p className="mt-1 text-xs text-muted-foreground">
-                <span className="font-medium text-foreground">Inversión:</span> el grupo sale de Gastos Operativos y
-                se muestra debajo del Resultado Neto, como "Resultado después de inversiones".
+                De un grupo destildado podés rescatar categorías sueltas (y mandarlas a Comisiones, Inversión o
+                un impuesto) en <span className="font-medium text-foreground">Categorías que SÍ computan</span>.
               </p>
             </div>
             <div className="max-h-72 space-y-1 overflow-y-auto">
@@ -621,23 +610,6 @@ export default function EconomicBalancePage() {
                       onCheckedChange={(v) => computesMut.mutate({ id: g.id, computes: v === true })}
                     />
                     <span className="flex-1 truncate text-sm">{g.name}</span>
-                    <button
-                      type="button"
-                      disabled={investmentMut.isPending}
-                      onClick={(e) => {
-                        e.preventDefault();
-                        investmentMut.mutate({ id: g.id, isInvestment: !(g as any).isInvestment });
-                      }}
-                      className={`shrink-0 rounded-full border px-2 py-0.5 text-[10px] font-medium transition-colors ${
-                        (g as any).isInvestment
-                          ? "border-emerald-600 bg-emerald-600 text-white"
-                          : "text-muted-foreground hover:bg-muted"
-                      }`}
-                      title={(g as any).isInvestment ? "Es inversión — tocá para volverlo gasto" : "Marcar como inversión"}
-                      data-testid={`button-investment-${g.id}`}
-                    >
-                      Inversión
-                    </button>
                   </label>
                 );
               })}
@@ -647,6 +619,7 @@ export default function EconomicBalancePage() {
             </div>
           </PopoverContent>
         </Popover>
+        <CategoryDestinationsButton groups={expenseGroupsForConfig} />
       </div>
 
       <Tabs value={mainTab} onValueChange={setMainTab}>

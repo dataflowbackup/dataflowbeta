@@ -84,6 +84,8 @@ import {
   cmvProductoCalculations,
   cmvProductoLines,
   economicTaxes,
+  economicCategoryDestinations,
+  type EconomicCategoryDestination,
   economicCommissions,
   economicManualSales,
   monthlyGoals,
@@ -4558,6 +4560,55 @@ export class DatabaseStorage implements IStorage {
     return Array.from(map.values()).filter((x) => x.amount !== 0).sort((a, b) => b.amount - a.amount);
   }
 
+  /** "Categorías que SÍ computan": destino de cada categoría de un grupo que no computa. */
+  async listEconomicCategoryDestinations(clientId: number): Promise<EconomicCategoryDestination[]> {
+    return db.select().from(economicCategoryDestinations).where(eq(economicCategoryDestinations.clientId, clientId));
+  }
+
+  /**
+   * Fija (o borra, con destination null) el destino de una categoría. La categoría tiene que ser
+   * de esta empresa y de un grupo de GASTO: es lo único que el Estado de Resultado lee de extractos.
+   */
+  async setEconomicCategoryDestination(
+    clientId: number,
+    data: { categoryId: number; destination: string | null; taxKind: string | null; updatedBy: string | null },
+  ): Promise<EconomicCategoryDestination | null> {
+    const [cat] = await db.select({ id: transactionCategories.id, groupId: transactionCategories.financialGroupId })
+      .from(transactionCategories)
+      .where(and(eq(transactionCategories.id, data.categoryId), eq(transactionCategories.clientId, clientId)))
+      .limit(1);
+    if (!cat) throw Object.assign(new Error("Categoría no encontrada"), { statusCode: 404 });
+    const [group] = cat.groupId == null ? [] : await db.select({ type: financialGroups.type }).from(financialGroups)
+      .where(and(eq(financialGroups.id, cat.groupId), eq(financialGroups.clientId, clientId))).limit(1);
+    if (!group || String(group.type) !== "expense") {
+      throw Object.assign(new Error("Solo las categorías de grupos de gasto pueden computar"), { statusCode: 400 });
+    }
+
+    const where = and(
+      eq(economicCategoryDestinations.clientId, clientId),
+      eq(economicCategoryDestinations.categoryId, data.categoryId),
+    );
+    if (!data.destination) {
+      await db.delete(economicCategoryDestinations).where(where);
+      return null;
+    }
+    const values = {
+      destination: data.destination,
+      taxKind: data.destination === "impuesto" ? data.taxKind : null,
+      updatedBy: data.updatedBy,
+      updatedAt: new Date(),
+    };
+    const [existing] = await db.select({ id: economicCategoryDestinations.id }).from(economicCategoryDestinations).where(where).limit(1);
+    if (existing) {
+      const [row] = await db.update(economicCategoryDestinations).set(values as any)
+        .where(eq(economicCategoryDestinations.id, existing.id)).returning();
+      return row;
+    }
+    const [row] = await db.insert(economicCategoryDestinations)
+      .values({ clientId, categoryId: data.categoryId, ...values } as any).returning();
+    return row;
+  }
+
   /**
    * Movimientos de extractos de UN local en UN mes económico, sumados por categoría, de las
    * categorías que en el informe caen en Gastos Operativos (grupo de gasto, sin Movimientos
@@ -5260,29 +5311,50 @@ export class DatabaseStorage implements IStorage {
       amount: number;
       computes: boolean;
       isMerchandise: boolean;
-      isInvestment: boolean;
       children: Map<number, { id: number; label: string; amount: number; items: Array<{ label: string; amount: number; date: string; source: string; ref: string; pct: number }> }>;
     }
-    const gastosTree = new Map<number, GastoNode>();
+    /**
+     * Árboles grupo → categoría → movimiento. La clave lleva si computa: un grupo que no computa
+     * puede tener categorías rescatadas a Gastos Operativos y el resto afuera, y son dos nodos.
+     */
+    const gastosTree = new Map<string, GastoNode>();
+    const inversionTree = new Map<string, GastoNode>();
+    /** Comisiones que vienen de extractos, por categoría (se suman a las cargadas a mano). */
+    const comisionesExtractos = new Map<number, { label: string; amount: number; byLocal: Map<number, number> }>();
+    /** Impuestos que vienen de extractos: "local:impuesto" → importe. */
+    const impuestoExtractos = new Map<string, number>();
 
-    // Impuestos del mes. Se leen ANTES de los gastos: los que se arman "desde categorías" se
-    // llevan esos movimientos, que dejan de restar en Gastos Operativos (si no, doble conteo).
-    const taxRows = localIds.length === 0 ? [] : await db.select().from(economicTaxes).where(and(
-      eq(economicTaxes.clientId, clientId),
-      inArray(economicTaxes.localId, localIds),
-      eq(economicTaxes.economicMonth, economicMonth),
-    ));
-    /** "local:categoría" → id de la fila de impuesto que se queda con esos movimientos. */
-    const taxRowByLocalCat = new Map<string, number>();
-    /** Importe en vivo de cada fila "desde categorías", sumado mientras se recorren los gastos. */
-    const liveTaxAmount = new Map<number, number>();
-    for (const r of taxRows) {
-      if (r.mode !== "categorias") continue;
-      liveTaxAmount.set(r.id, 0);
-      let ids: number[] = [];
-      try { ids = JSON.parse(String(r.categoryIds ?? "[]")); } catch { ids = []; }
-      for (const cid of Array.isArray(ids) ? ids : []) taxRowByLocalCat.set(`${r.localId}:${cid}`, r.id);
-    }
+    // "Categorías que SÍ computan": a dónde va cada categoría de un grupo que no computa.
+    const destinoByCat = new Map(
+      (await this.listEconomicCategoryDestinations(clientId)).map((d) => [d.categoryId, d]),
+    );
+
+    const addToTree = (tree: Map<string, GastoNode>, group: any, computes: boolean, cat: any, tx: any, net: number) => {
+      const key = `${group.id}:${computes ? 1 : 0}`;
+      if (!tree.has(key)) {
+        tree.set(key, {
+          id: group.id,
+          label: group.name,
+          amount: 0,
+          computes,
+          isMerchandise: !!group.isMerchandise,
+          children: new Map(),
+        });
+      }
+      const nodo = tree.get(key)!;
+      nodo.amount += net;
+      if (!nodo.children.has(cat.id)) nodo.children.set(cat.id, { id: cat.id, label: cat.name, amount: 0, items: [] });
+      const hijo = nodo.children.get(cat.id)!;
+      hijo.amount += net;
+      hijo.items.push({
+        label: String(tx.description ?? "").trim() || cat.name,
+        amount: net,
+        date: String(tx.transactionDate).slice(0, 10),
+        source: localNameById.get(tx.localId) ?? "—",
+        ref: String(tx.id),
+        pct: 0,
+      });
+    };
 
     for (const tx of txRows) {
       if (!tx.categoryId) continue;
@@ -5307,41 +5379,27 @@ export class DatabaseStorage implements IStorage {
       const net = tx.type === "expense" ? amount : -amount;
       if (!net) continue;
 
-      // Categoría que forma un impuesto de este local: resta en Impuestos, no en Gastos.
-      const taxRowId = taxRowByLocalCat.get(`${tx.localId}:${cat.id}`);
-      if (taxRowId != null) {
-        liveTaxAmount.set(taxRowId, (liveTaxAmount.get(taxRowId) ?? 0) + net);
-        continue;
+      const computes = group.economicComputes ?? true;
+      // El destino solo vale para grupos que NO computan: un grupo tildado va entero a Gastos.
+      const destino = computes ? undefined : destinoByCat.get(cat.id);
+      if (!destino) {
+        addToTree(gastosTree, group, computes, cat, tx, net);
+      } else if (destino.destination === "gastos") {
+        addToTree(gastosTree, group, true, cat, tx, net);
+      } else if (destino.destination === "inversion") {
+        addToTree(inversionTree, group, true, cat, tx, net);
+      } else if (destino.destination === "comisiones") {
+        if (!comisionesExtractos.has(cat.id)) comisionesExtractos.set(cat.id, { label: cat.name, amount: 0, byLocal: new Map() });
+        const c = comisionesExtractos.get(cat.id)!;
+        c.amount += net;
+        c.byLocal.set(tx.localId, (c.byLocal.get(tx.localId) ?? 0) + net);
+      } else if (destino.destination === "impuesto" && destino.taxKind) {
+        const k = `${tx.localId}:${destino.taxKind}`;
+        impuestoExtractos.set(k, (impuestoExtractos.get(k) ?? 0) + net);
       }
-
-      if (!gastosTree.has(group.id)) {
-        gastosTree.set(group.id, {
-          id: group.id,
-          label: group.name,
-          amount: 0,
-          computes: group.economicComputes ?? true,
-          isMerchandise: !!group.isMerchandise,
-          isInvestment: !!(group as any).isInvestment,
-          children: new Map(),
-        });
-      }
-      const nodo = gastosTree.get(group.id)!;
-      nodo.amount += net;
-      if (!nodo.children.has(cat.id)) nodo.children.set(cat.id, { id: cat.id, label: cat.name, amount: 0, items: [] });
-      const hijo = nodo.children.get(cat.id)!;
-      hijo.amount += net;
-      const fecha = String(tx.transactionDate).slice(0, 10);
-      hijo.items.push({
-        label: String(tx.description ?? "").trim() || cat.name,
-        amount: net,
-        date: fecha,
-        source: localNameById.get(tx.localId) ?? "—",
-        ref: String(tx.id),
-        pct: 0,
-      });
     }
 
-    const todosLosGrupos = Array.from(gastosTree.values())
+    const treeToGroups = (tree: Map<string, GastoNode>) => Array.from(tree.values())
       .map((g) => ({
         id: g.id,
         label: g.label,
@@ -5349,7 +5407,6 @@ export class DatabaseStorage implements IStorage {
         pct: pct(g.amount),
         computes: g.computes,
         isMerchandise: g.isMerchandise,
-        isInvestment: g.isInvestment,
         children: Array.from(g.children.values())
           .map((c) => ({
             id: c.id,
@@ -5362,9 +5419,9 @@ export class DatabaseStorage implements IStorage {
       }))
       .sort((a, b) => b.amount - a.amount);
 
-    // Los grupos de inversión no son gasto del período: van debajo del Resultado Neto.
-    const gastosGroups = todosLosGrupos.filter((g) => !g.isInvestment);
-    const inversionesGroups = todosLosGrupos.filter((g) => g.isInvestment);
+    const gastosGroups = treeToGroups(gastosTree);
+    // Inversión: categorías con ese destino. Va después del Resultado Operativo (usuario, 07-oct-2026).
+    const inversionesGroups = treeToGroups(inversionTree);
     const inversionesTotal = inversionesGroups.reduce((a, g) => a + g.amount, 0);
 
     const gastosComputan = gastosGroups.filter((g) => g.computes);
@@ -5374,6 +5431,8 @@ export class DatabaseStorage implements IStorage {
       .map((g) => ({ id: g.id, label: g.label, amount: g.amount }));
 
     // ── COMISIONES ────────────────────────────────────────────────────────────
+    // Se suman las cargadas a mano y las de extractos (decisión del usuario, 07-oct-2026); el
+    // desplegable las muestra separadas para que se vea de dónde sale cada una.
     const commissionRows = localIds.length === 0 ? [] : await db.select().from(economicCommissions).where(and(
       eq(economicCommissions.clientId, clientId),
       inArray(economicCommissions.localId, localIds),
@@ -5389,15 +5448,32 @@ export class DatabaseStorage implements IStorage {
       node.amount += amount;
       node.byLocal.push({ local: localNameById.get(r.localId) ?? `Local ${r.localId}`, amount });
     }
-    const comisiones = Array.from(commissionsByConcept.values())
+    const comisiones = [
+      ...Array.from(commissionsByConcept.values()).map((c) => ({ ...c, origen: "manual" as const })),
+      ...Array.from(comisionesExtractos.values())
+        .filter((c) => Math.abs(c.amount) >= 0.005)
+        .map((c) => ({
+          concept: c.label,
+          amount: c.amount,
+          origen: "extractos" as const,
+          byLocal: Array.from(c.byLocal.entries()).map(([lid, amount]) => ({ local: localNameById.get(lid) ?? `Local ${lid}`, amount })),
+        })),
+    ]
       .map((c) => ({ ...c, pct: pct(c.amount) }))
-      .sort((a, b) => b.amount - a.amount);
+      .sort((a, b) => (a.origen === b.origen ? b.amount - a.amount : a.origen === "manual" ? -1 : 1));
     const comisionesTotal = comisiones.reduce((a, c) => a + c.amount, 0);
 
     // ── IMPUESTOS ─────────────────────────────────────────────────────────────
-    // "Desde categorías" y "sobre facturado" se recalculan en vivo: los movimientos se siguen
-    // categorizando y las ventas manuales se siguen cargando después de guardar el impuesto.
-    // "Sobre medios de pago" y "a mano" usan el importe guardado.
+    // Una sola sección con todos (Ganancias incluido), después del Resultado Operativo con
+    // Inversión. Por local e impuesto:
+    //  - fila guardada "desde extractos" o SIN fila → lo que suman sus categorías de extractos;
+    //  - fila "a mano" / "sobre medios" → el importe guardado; "sobre facturado" → en vivo.
+    // Con "a mano" manda el manual y lo de extractos NO se suma (decisión del usuario, 07-oct).
+    const taxRows = localIds.length === 0 ? [] : await db.select().from(economicTaxes).where(and(
+      eq(economicTaxes.clientId, clientId),
+      inArray(economicTaxes.localId, localIds),
+      eq(economicTaxes.economicMonth, economicMonth),
+    ));
     const facturadoRows = taxRows.filter((r) => r.mode === "facturado");
     const invoicedNetByLocal = new Map<number, number>();
     for (const lid of Array.from(new Set(facturadoRows.map((r) => r.localId)))) {
@@ -5407,26 +5483,38 @@ export class DatabaseStorage implements IStorage {
       invoicedNetByLocal.set(lid, inv.neto);
     }
     const taxByKind = new Map<string, { kind: string; amount: number; byLocal: Array<{ local: string; amount: number; mode: string }> }>();
+    const addTax = (kind: string, localId: number, amount: number, mode: string) => {
+      if (!taxByKind.has(kind)) taxByKind.set(kind, { kind, amount: 0, byLocal: [] });
+      const node = taxByKind.get(kind)!;
+      node.amount += amount;
+      node.byLocal.push({ local: localNameById.get(localId) ?? `Local ${localId}`, amount, mode });
+    };
+    const rowByLocalKind = new Set<string>();
     for (const r of taxRows) {
+      rowByLocalKind.add(`${r.localId}:${r.taxKind}`);
       const amount = r.mode === "categorias"
-        ? (liveTaxAmount.get(r.id) ?? 0)
+        ? (impuestoExtractos.get(`${r.localId}:${r.taxKind}`) ?? 0)
         : r.mode === "facturado"
           ? ((invoicedNetByLocal.get(r.localId) ?? 0) * num(r.ratePct)) / 100
           : num(r.amount);
-      if (!taxByKind.has(r.taxKind)) taxByKind.set(r.taxKind, { kind: r.taxKind, amount: 0, byLocal: [] });
-      const node = taxByKind.get(r.taxKind)!;
-      node.amount += amount;
-      node.byLocal.push({ local: localNameById.get(r.localId) ?? `Local ${r.localId}`, amount, mode: String(r.mode) });
+      addTax(r.taxKind, r.localId, amount, String(r.mode));
     }
-    const impuestos = Array.from(taxByKind.values()).map((t) => ({ ...t, pct: pct(t.amount) }));
-    // Ganancias resta al final: se calcula SOBRE el resultado, así que no puede estar arriba.
+    for (const [k, amount] of Array.from(impuestoExtractos.entries())) {
+      if (rowByLocalKind.has(k) || Math.abs(amount) < 0.005) continue;
+      const [lid, kind] = k.split(":");
+      addTax(kind, Number(lid), amount, "categorias");
+    }
+    const TAX_ORDER = ["iibb", "debito", "credito", "ganancias", "iva"];
     // El IVA ya se descontó de las ventas facturadas: la línea se muestra pero NO resta, si no se
     // descontaría dos veces.
-    const impuestosOperativos = impuestos.filter((t) => t.kind !== "ganancias")
-      .map((t) => ({ ...t, informativo: t.kind === "iva" }));
-    const ganancias = impuestos.find((t) => t.kind === "ganancias") ?? null;
-    const impuestosOperativosTotal = impuestosOperativos.filter((t) => !t.informativo).reduce((a, t) => a + t.amount, 0);
-    const gananciasTotal = ganancias?.amount ?? 0;
+    const impuestos = Array.from(taxByKind.values())
+      .map((t) => ({ ...t, pct: pct(t.amount), informativo: t.kind === "iva" }))
+      .sort((a, b) => TAX_ORDER.indexOf(a.kind) - TAX_ORDER.indexOf(b.kind));
+    const impuestosTotal = impuestos.filter((t) => !t.informativo).reduce((a, t) => a + t.amount, 0);
+    /** Sin Ganancias: es la base de los costos fijos del punto de equilibrio. */
+    const impuestosSinGanancias = impuestos
+      .filter((t) => !t.informativo && t.kind !== "ganancias")
+      .reduce((a, t) => a + t.amount, 0);
 
     // ── PRESUPUESTO (Objetivos Mensuales) ─────────────────────────────────────
     const goalRows = localIds.length === 0 ? [] : await db.select().from(monthlyGoals).where(and(
@@ -5544,10 +5632,11 @@ export class DatabaseStorage implements IStorage {
 
     // ── RESUMEN ───────────────────────────────────────────────────────────────
     const utilidadBruta = ventasTotal - cmvElegido.total;
+    // Orden pedido por el usuario el 07-oct-2026: la inversión resta después del operativo y los
+    // impuestos (Ganancias incluido) al final, sobre el resultado operativo con inversión.
     const resultadoOperativo = utilidadBruta - gastosTotal - comisionesTotal;
-    const resultadoAntesImpuestos = resultadoOperativo - impuestosOperativosTotal;
-    const resultadoNeto = resultadoAntesImpuestos - gananciasTotal;
-    const resultadoDespuesInversiones = resultadoNeto - inversionesTotal;
+    const resultadoConInversion = resultadoOperativo - inversionesTotal;
+    const resultadoNeto = resultadoConInversion - impuestosTotal;
 
     // ── EXTRAS del informe ───────────────────────────────────────────────────
     // Se calculan solo en la vista completa: cuando este mismo método se llama para traer el mes
@@ -5604,10 +5693,11 @@ export class DatabaseStorage implements IStorage {
       };
 
       // 3. Punto de equilibrio del mes: cuánto había que vender para dar cero.
-      //    Costos fijos = gastos + comisiones + impuestos operativos. El margen de contribución es
+      //    Costos fijos = gastos + comisiones + impuestos (sin Ganancias, que depende del resultado,
+      //    ni la inversión, que no es costo del período). El margen de contribución es
       //    la utilidad bruta sobre ventas, o sea lo que queda de cada peso vendido después del
       //    costo de mercadería. Sin margen positivo no hay equilibrio posible.
-      const costosFijos = gastosTotal + comisionesTotal + impuestosOperativosTotal;
+      const costosFijos = gastosTotal + comisionesTotal + impuestosSinGanancias;
       const margenContribucionPct = ventasTotal > 0 ? (utilidadBruta / ventasTotal) * 100 : 0;
       extras.puntoEquilibrio = margenContribucionPct > 0
         ? {
@@ -5677,15 +5767,10 @@ export class DatabaseStorage implements IStorage {
         })(),
       },
       gastos: { total: gastosTotal, pct: pct(gastosTotal), groups: gastosGroups, merchandiseComputing },
-      /** Grupos marcados como inversión: fuera del resultado operativo, debajo del neto. */
+      /** Categorías con destino Inversión: restan después del Resultado Operativo. */
       inversiones: { total: inversionesTotal, pct: pct(inversionesTotal), groups: inversionesGroups },
       comisiones: { total: comisionesTotal, pct: pct(comisionesTotal), lines: comisiones },
-      impuestos: {
-        operativos: impuestosOperativos,
-        operativosTotal: impuestosOperativosTotal,
-        ganancias,
-        gananciasTotal,
-      },
+      impuestos: { total: impuestosTotal, pct: pct(impuestosTotal), lines: impuestos },
       resumen: {
         ventas: ventasTotal,
         ventasBrutas,
@@ -5695,18 +5780,17 @@ export class DatabaseStorage implements IStorage {
         gastos: gastosTotal,
         comisiones: comisionesTotal,
         resultadoOperativo,
-        impuestosOperativos: impuestosOperativosTotal,
-        resultadoAntesImpuestos,
-        ganancias: gananciasTotal,
-        resultadoNeto,
         inversiones: inversionesTotal,
-        resultadoDespuesInversiones,
+        resultadoConInversion,
+        impuestos: impuestosTotal,
+        resultadoNeto,
       },
       indicadores: {
         foodCostPct: pct(cmvElegido.total),
         utilidadBrutaPct: pct(utilidadBruta),
         gastosPct: pct(gastosTotal),
         resultadoOperativoPct: pct(resultadoOperativo),
+        resultadoConInversionPct: pct(resultadoConInversion),
         resultadoNetoPct: pct(resultadoNeto),
       },
       ...extras,

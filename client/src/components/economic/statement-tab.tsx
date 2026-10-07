@@ -101,13 +101,17 @@ interface Statement {
     desvioMerma: { monto: number; puntos: number; locales: string[]; ventasComparadas: number } | null;
   };
   gastos: { total: number; pct: number; groups: Node[]; merchandiseComputing: Array<{ id: number; label: string; amount: number }> };
-  inversiones?: { total: number; pct: number; groups: Node[] };
-  comisiones: { total: number; pct: number; lines: Array<{ concept: string; amount: number; pct: number; byLocal: Array<{ local: string; amount: number }> }> };
+  inversiones: { total: number; pct: number; groups: Node[] };
+  comisiones: {
+    total: number;
+    pct: number;
+    lines: Array<{ concept: string; amount: number; pct: number; origen: "manual" | "extractos"; byLocal: Array<{ local: string; amount: number }> }>;
+  };
+  /** Todos los impuestos en una sección (Ganancias incluido); el IVA es informativo y no resta. */
   impuestos: {
-    operativos: Array<{ kind: string; amount: number; pct: number; informativo?: boolean; byLocal: Array<{ local: string; amount: number; mode: string }> }>;
-    operativosTotal: number;
-    ganancias: { kind: string; amount: number; pct: number } | null;
-    gananciasTotal: number;
+    total: number;
+    pct: number;
+    lines: Array<{ kind: string; amount: number; pct: number; informativo: boolean; byLocal: Array<{ local: string; amount: number; mode: string }> }>;
   };
   resumen: Record<string, number>;
   indicadores: Record<string, number>;
@@ -631,15 +635,21 @@ export function StatementTab({
 
     // Comisiones
     push("Comisiones", d.comisiones.total, d.comisiones.pct, 0, "section");
-    if (isSectionOpen("comisiones")) for (const c of d.comisiones.lines) push(commissionLabel(c.concept), c.amount, c.pct, 0, "row");
+    if (isSectionOpen("comisiones"))
+      for (const c of d.comisiones.lines)
+        push(c.origen === "manual" ? commissionLabel(c.concept) : c.concept, c.amount, c.pct, 0, "row", c.origen === "manual" ? "cargada a mano" : "de extractos");
 
     push("Resultado operativo", d.resumen.resultadoOperativo, d.indicadores.resultadoOperativoPct, 0, "subtotal");
 
-    // Impuestos
-    const impPct = d.ventas.total ? (d.impuestos.operativosTotal / d.ventas.total) * 100 : 0;
-    push("Impuestos sobre ingresos y movimientos", d.impuestos.operativosTotal, impPct, 0, "section");
+    // Inversión
+    push("Inversión", d.inversiones.total, d.inversiones.pct, 0, "section");
+    if (isSectionOpen("inversiones")) tree(d.inversiones.groups, "inversiones");
+    push("Resultado operativo con inversión", d.resumen.resultadoConInversion, d.indicadores.resultadoConInversionPct, 0, "subtotal");
+
+    // Impuestos (Ganancias incluido)
+    push("Impuestos sobre ingresos y movimientos", d.impuestos.total, d.impuestos.pct, 0, "section");
     if (isSectionOpen("impuestos")) {
-      for (const t of d.impuestos.operativos)
+      for (const t of d.impuestos.lines)
         push(
           TAX_KIND_BY_KEY[t.kind as TaxKind]?.label ?? t.kind,
           t.amount,
@@ -650,33 +660,7 @@ export function StatementTab({
         );
     }
 
-    push(
-      "Resultado antes de impuestos",
-      d.resumen.resultadoAntesImpuestos,
-      d.ventas.total ? (d.resumen.resultadoAntesImpuestos / d.ventas.total) * 100 : 0,
-      0,
-      "subtotal",
-    );
-    push(
-      "Impuesto a las Ganancias",
-      d.impuestos.gananciasTotal,
-      d.ventas.total ? (d.impuestos.gananciasTotal / d.ventas.total) * 100 : 0,
-      0,
-      "row",
-    );
     push("Resultado neto", d.resumen.resultadoNeto, d.indicadores.resultadoNetoPct, 0, "grand");
-
-    if (d.inversiones && d.inversiones.groups.length > 0) {
-      push("Inversiones", d.inversiones.total, d.inversiones.pct, 0, "section");
-      if (isSectionOpen("inversiones")) tree(d.inversiones.groups, "inversiones");
-      push(
-        "Resultado después de inversiones",
-        d.resumen.resultadoDespuesInversiones,
-        d.ventas.total ? (d.resumen.resultadoDespuesInversiones / d.ventas.total) * 100 : 0,
-        0,
-        "subtotal",
-      );
-    }
 
     return out;
   };
@@ -752,6 +736,8 @@ export function StatementTab({
               { label: "Utilidad bruta", hoy: data.resumen.utilidadBruta, antes: data.anterior.resumen.utilidadBruta },
               { label: "Gastos operativos", hoy: data.resumen.gastos, antes: data.anterior.resumen.gastos },
               { label: "Comisiones", hoy: data.resumen.comisiones, antes: data.anterior.resumen.comisiones },
+              { label: "Inversión", hoy: data.resumen.inversiones ?? 0, antes: data.anterior.resumen.inversiones ?? 0 },
+              { label: "Impuestos", hoy: data.resumen.impuestos ?? 0, antes: data.anterior.resumen.impuestos ?? 0 },
               { label: "Resultado neto", hoy: data.resumen.resultadoNeto, antes: data.anterior.resumen.resultadoNeto },
             ],
           }
@@ -1015,31 +1001,60 @@ export function StatementTab({
           />
           {!isSectionOpen("comisiones") ? null : data.comisiones.lines.length === 0 ? (
             <p className="px-4 py-3 text-sm text-muted-foreground">
-              No hay comisiones cargadas en este mes. Cargalas en la solapa Comisiones.
+              No hay comisiones en este mes. Cargalas en la solapa Comisiones o asigná categorías de extractos en
+              "Categorías que SÍ computan".
             </p>
           ) : (
             data.comisiones.lines.map((c) => (
-              <Row key={c.concept} label={commissionLabel(c.concept)} amount={c.amount} pctValue={c.pct} level={0} />
+              <Row
+                key={`${c.origen}-${c.concept}`}
+                label={c.origen === "manual" ? commissionLabel(c.concept) : c.concept}
+                amount={c.amount}
+                pctValue={c.pct}
+                level={0}
+                meta={c.origen === "manual" ? "cargada a mano" : "de extractos"}
+              />
             ))
           )}
 
           <Row label="RESULTADO OPERATIVO" amount={R.resultadoOperativo} pctValue={I.resultadoOperativoPct} level={0} bold tone="total" />
 
-          {/* ── IMPUESTOS OPERATIVOS ── */}
+          {/* ── INVERSIÓN: las categorías con ese destino en "Categorías que SÍ computan" ── */}
+          <TreeSection
+            title="Inversión"
+            total={data.inversiones.total}
+            totalPct={data.inversiones.pct}
+            groups={data.inversiones.groups}
+            keyPrefix="inversiones"
+            emptyText='No hay inversión en este mes. Se arma con las categorías que mandes a "Inversión" en "Categorías que SÍ computan".'
+            {...treeProps("inversiones")}
+          />
+
+          <Row
+            label="RESULTADO OPERATIVO CON INVERSIÓN"
+            amount={R.resultadoConInversion}
+            pctValue={I.resultadoConInversionPct}
+            level={0}
+            bold
+            tone={R.resultadoConInversion >= 0 ? "total" : "negative"}
+          />
+
+          {/* ── IMPUESTOS (Ganancias incluido) ── */}
           <SectionHeader
             title="Impuestos sobre ingresos y movimientos"
-            amount={data.impuestos.operativosTotal}
-            pctValue={data.ventas.total ? (data.impuestos.operativosTotal / data.ventas.total) * 100 : 0}
+            amount={data.impuestos.total}
+            pctValue={data.impuestos.pct}
             open={isSectionOpen("impuestos")}
             onToggle={() => flip(openSections, setOpenSections, "impuestos")}
             testId="section-impuestos"
           />
-          {!isSectionOpen("impuestos") ? null : data.impuestos.operativos.length === 0 ? (
+          {!isSectionOpen("impuestos") ? null : data.impuestos.lines.length === 0 ? (
             <p className="px-4 py-3 text-sm text-muted-foreground">
-              No hay impuestos cargados en este mes. Cargalos en la solapa Impuestos.
+              No hay impuestos en este mes. Cargalos en la solapa Impuestos o asigná categorías de extractos en
+              "Categorías que SÍ computan".
             </p>
           ) : (
-            data.impuestos.operativos.map((t) => (
+            data.impuestos.lines.map((t) => (
               <Row
                 key={t.kind}
                 label={TAX_KIND_BY_KEY[t.kind as TaxKind]?.label ?? t.kind}
@@ -1058,17 +1073,6 @@ export function StatementTab({
             ))
           )}
 
-          <Row label="RESULTADO ANTES DE IMPUESTOS" amount={R.resultadoAntesImpuestos} pctValue={data.ventas.total ? (R.resultadoAntesImpuestos / data.ventas.total) * 100 : 0} level={0} bold tone="total" />
-
-          {/* ── GANANCIAS ── */}
-          <Row
-            label="Impuesto a las Ganancias"
-            amount={data.impuestos.gananciasTotal}
-            pctValue={data.ventas.total ? (data.impuestos.gananciasTotal / data.ventas.total) * 100 : 0}
-            level={0}
-            meta="se calcula sobre el resultado, por eso resta acá"
-          />
-
           <div className={`flex items-center gap-2 pl-2 pr-3 py-3 ${ECON.bg} border-t-2 ${ECON.border}`}>
             <span className="w-4 shrink-0" />
             <span className={`flex-1 text-sm font-bold uppercase tracking-wide ${ECON.text}`}>Resultado neto</span>
@@ -1079,29 +1083,6 @@ export function StatementTab({
               {pct(I.resultadoNetoPct)}
             </span>
           </div>
-
-          {/* ── INVERSIONES: fuera del resultado operativo, debajo del neto ── */}
-          {data.inversiones && data.inversiones.groups.length > 0 && (
-            <>
-              <TreeSection
-                title="Inversiones"
-                total={data.inversiones.total}
-                totalPct={data.inversiones.pct}
-                groups={data.inversiones.groups}
-                keyPrefix="inversiones"
-                emptyText=""
-                {...treeProps("inversiones")}
-              />
-              <Row
-                label="RESULTADO DESPUÉS DE INVERSIONES"
-                amount={R.resultadoDespuesInversiones}
-                pctValue={data.ventas.total ? (R.resultadoDespuesInversiones / data.ventas.total) * 100 : 0}
-                level={0}
-                bold
-                tone={R.resultadoDespuesInversiones >= 0 ? "total" : "negative"}
-              />
-            </>
-          )}
         </CardContent>
       </Card>
 
@@ -1130,6 +1111,9 @@ export function StatementTab({
                     { key: "utilidadBruta", label: "Utilidad bruta", bueno: "sube" as const },
                     { key: "gastos", label: "Gastos operativos", bueno: "baja" as const },
                     { key: "comisiones", label: "Comisiones", bueno: "baja" as const },
+                    { key: "resultadoOperativo", label: "Resultado operativo", bueno: "sube" as const },
+                    { key: "inversiones", label: "Inversión", bueno: "baja" as const },
+                    { key: "impuestos", label: "Impuestos", bueno: "baja" as const },
                     { key: "resultadoNeto", label: "Resultado neto", bueno: "sube" as const },
                   ].map(({ key, label, bueno }) => {
                     const hoy = R[key] ?? 0;
@@ -1347,7 +1331,7 @@ export function StatementTab({
               { label: "Food cost %", value: I.foodCostPct, hint: "Compras sobre ventas" },
               { label: "Utilidad bruta %", value: I.utilidadBrutaPct, hint: "Ventas − costo de insumos" },
               { label: "Gastos %", value: I.gastosPct, hint: "Gastos operativos sobre ventas" },
-              { label: "Resultado operativo %", value: I.resultadoOperativoPct, hint: "Antes de impuestos" },
+              { label: "Resultado operativo %", value: I.resultadoOperativoPct, hint: "Antes de inversión e impuestos" },
               { label: "Resultado neto %", value: I.resultadoNetoPct, hint: "Después de todo" },
             ].map((k) => (
               <div key={k.label} className="rounded-lg border p-3">

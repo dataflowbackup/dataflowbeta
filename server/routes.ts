@@ -39,7 +39,7 @@ import type {
 } from "@shared/schema";
 import { computeInvoiceTaxes } from "@shared/invoiceTaxComputation";
 import { isEconomicMonth } from "@shared/economicMonth";
-import { isTaxKind, isTaxMode, TAX_KIND_BY_KEY, computeTaxAmount } from "@shared/economicStatement";
+import { isTaxKind, isTaxMode, TAX_KIND_BY_KEY, computeTaxAmount, isCategoryDestination, DESTINATION_TAX_KINDS } from "@shared/economicStatement";
 import { computeBreakeven } from "@shared/breakeven";
 import { registerBulkInvoiceImportRoutes } from "./routesBulkInvoiceImport";
 import { db } from "./db";
@@ -4058,6 +4058,38 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
   });
 
+  // "Categorías que SÍ computan": destino de las categorías de los grupos que no computan.
+  app.get("/api/economic/category-destinations", isAuthenticated, async (req, res) => {
+    try {
+      const clientId = await getClientId(req);
+      res.json(await storage.listEconomicCategoryDestinations(clientId));
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
+  app.put("/api/economic/category-destinations/:categoryId", isAuthenticated, async (req, res) => {
+    try {
+      const clientId = await getClientId(req);
+      const actorId = await getAuthenticatedUserId(req);
+      const categoryId = parseInt(req.params.categoryId, 10);
+      const destination = req.body?.destination ?? null;
+      const taxKind = req.body?.taxKind ?? null;
+      if (!Number.isFinite(categoryId)) return res.status(400).json({ message: "Categoría inválida" });
+      if (destination !== null && !isCategoryDestination(destination)) {
+        return res.status(400).json({ message: "Destino desconocido" });
+      }
+      if (destination === "impuesto" && !DESTINATION_TAX_KINDS.includes(taxKind)) {
+        return res.status(400).json({ message: "Elegí a qué impuesto va" });
+      }
+      res.json(await storage.setEconomicCategoryDestination(clientId, {
+        categoryId, destination, taxKind, updatedBy: actorId ?? null,
+      }));
+    } catch (e: any) {
+      res.status(e.statusCode ?? 500).json({ message: e.message });
+    }
+  });
+
   app.get("/api/economic/taxes", isAuthenticated, async (req, res) => {
     try {
       const clientId = await getClientId(req);
@@ -4095,21 +4127,13 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const def = TAX_KIND_BY_KEY[d.taxKind];
       // Un modo que el impuesto no admite se guarda a mano, aunque llegue otro.
       const mode = def.modes.includes(d.mode) ? d.mode : "manual";
-      const categoryIds = mode === "categorias" ? Array.from(new Set(d.categoryIds)) : [];
-
-      // Una categoría no puede formar dos impuestos del mismo local y mes: restaría dos veces.
-      if (categoryIds.length > 0) {
-        const otros = (await storage.listEconomicTaxes(clientId, { localId: d.localId, economicMonth: d.economicMonth }))
-          .filter((t) => t.taxKind !== d.taxKind && t.mode === "categorias");
-        for (const t of otros) {
-          let ids: number[] = [];
-          try { ids = JSON.parse(String(t.categoryIds ?? "[]")); } catch { ids = []; }
-          if (ids.some((id) => categoryIds.includes(id))) {
-            const otro = TAX_KIND_BY_KEY[t.taxKind as keyof typeof TAX_KIND_BY_KEY]?.label ?? t.taxKind;
-            return res.status(400).json({ message: `Una de las categorías ya forma el ${otro} de este mes. Sacala de ahí primero.` });
-          }
-        }
-      }
+      // "Desde extractos": las categorías salen de "Categorías que SÍ computan" (una categoría
+      // tiene un solo destino, así que no puede formar dos impuestos). Se guarda la foto.
+      const categoryIds = mode === "categorias"
+        ? (await storage.listEconomicCategoryDestinations(clientId))
+            .filter((x) => x.destination === "impuesto" && x.taxKind === d.taxKind)
+            .map((x) => x.categoryId)
+        : [];
 
       // El importe se calcula SIEMPRE en el servidor: el cliente manda los parámetros, no el total.
       const salesByPaymentMethod = mode === "calculado"

@@ -15,15 +15,15 @@ export type TaxKind = "iva" | "iibb" | "ganancias" | "credito" | "debito";
  *  - manual:     se escribe a mano (sale de la liquidación).
  *  - calculado:  alícuota × ventas del mes por medio de pago, pudiendo excluir medios.
  *  - facturado:  alícuota × ventas FACTURADAS netas de IVA (como lo liquida AFIP).
- *  - categorias: la suma de los movimientos de extractos de las categorías elegidas. Esas
- *                categorías dejan de restar en Gastos Operativos y pasan a restar acá.
+ *  - categorias: la suma de los movimientos de extractos de las categorías que tienen a este
+ *                impuesto como destino en "Categorías que SÍ computan" (oct-2026).
  */
 export type TaxMode = "manual" | "calculado" | "facturado" | "categorias";
 
 export const TAX_MODE_LABELS: Record<TaxMode, string> = {
   calculado: "Sobre medios de pago",
   facturado: "Sobre ventas facturadas netas",
-  categorias: "Desde categorías de extractos",
+  categorias: "Desde extractos",
   manual: "A mano",
 };
 
@@ -39,9 +39,9 @@ export interface TaxKindDef {
   /** Alícuota sugerida al crear la fila, en %. */
   defaultRatePct: number;
   /**
-   * Dónde pega en el Estado de Resultado. Los impuestos sobre ingresos y movimientos son gasto
-   * operativo y restan ARRIBA; Ganancias se calcula sobre el resultado, así que resta al final.
-   * Mezclarlos haría que Ganancias se calcule sobre una base que ya lo incluye.
+   * Desde oct-2026 todos los impuestos van en una sola sección, después del Resultado Operativo
+   * con Inversión. "sobre_resultado" queda solo como marca de Ganancias: se excluye de los costos
+   * fijos del punto de equilibrio porque depende del resultado.
    */
   placement: "operativo" | "sobre_resultado";
   help: string;
@@ -59,10 +59,10 @@ export const TAX_KINDS: TaxKindDef[] = [
   {
     kind: "iibb",
     label: "Ingresos Brutos",
-    modes: ["facturado", "calculado", "manual"],
+    modes: ["facturado", "calculado", "categorias", "manual"],
     defaultRatePct: 3,
     placement: "operativo",
-    help: "Sobre las ventas facturadas netas de IVA (como lo liquida AFIP), sobre los medios de pago que elijas (ventas del sistema + manuales), o a mano.",
+    help: "Sobre las ventas facturadas netas de IVA (como lo liquida AFIP), sobre los medios de pago que elijas (ventas del sistema + manuales), desde los extractos, o a mano.",
   },
   {
     kind: "credito",
@@ -70,7 +70,7 @@ export const TAX_KINDS: TaxKindDef[] = [
     modes: ["categorias", "manual"],
     defaultRatePct: 0,
     placement: "operativo",
-    help: "Sale de las categorías de los extractos donde se registra (o se carga a mano). Esas categorías dejan de restar en Gastos Operativos para no contarlas dos veces.",
+    help: "Desde los extractos (las categorías que le asignaste en \"Categorías que SÍ computan\") o a mano.",
   },
   {
     kind: "debito",
@@ -78,15 +78,15 @@ export const TAX_KINDS: TaxKindDef[] = [
     modes: ["categorias", "manual"],
     defaultRatePct: 0,
     placement: "operativo",
-    help: "Sale de las categorías de los extractos donde se registra (o se carga a mano). Esas categorías dejan de restar en Gastos Operativos para no contarlas dos veces.",
+    help: "Desde los extractos (las categorías que le asignaste en \"Categorías que SÍ computan\") o a mano.",
   },
   {
     kind: "ganancias",
     label: "Impuesto a las Ganancias",
-    modes: ["manual"],
+    modes: ["categorias", "manual"],
     defaultRatePct: 0,
     placement: "sobre_resultado",
-    help: "Se carga a mano y resta DESPUÉS del resultado antes de impuestos, porque se calcula sobre él.",
+    help: "Desde los extractos (las categorías que le asignaste en \"Categorías que SÍ computan\") o a mano.",
   },
 ];
 
@@ -96,6 +96,28 @@ export const TAX_KIND_BY_KEY: Record<TaxKind, TaxKindDef> = Object.fromEntries(
 
 export function isTaxKind(v: unknown): v is TaxKind {
   return typeof v === "string" && TAX_KINDS.some((t) => t.kind === v);
+}
+
+// ── Categorías que SÍ computan ───────────────────────────────────────────────
+
+/**
+ * Destino de una categoría de un grupo que NO computa. Sin destino, la categoría queda afuera
+ * del Estado de Resultado (como el resto de su grupo).
+ */
+export type CategoryDestination = "gastos" | "comisiones" | "inversion" | "impuesto";
+
+export const CATEGORY_DESTINATION_LABELS: Record<CategoryDestination, string> = {
+  gastos: "Gastos operativos",
+  comisiones: "Comisiones",
+  inversion: "Inversión",
+  impuesto: "Impuesto",
+};
+
+/** Impuestos a los que se puede mandar una categoría. IVA no: no resta, la categoría desaparecería. */
+export const DESTINATION_TAX_KINDS: TaxKind[] = ["iibb", "debito", "credito", "ganancias"];
+
+export function isCategoryDestination(v: unknown): v is CategoryDestination {
+  return v === "gastos" || v === "comisiones" || v === "inversion" || v === "impuesto";
 }
 
 /** Base imponible de IIBB "sobre ventas facturadas": las facturadas del mes sin el IVA (÷1,21). */

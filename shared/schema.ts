@@ -1977,6 +1977,29 @@ export type CmvProductoLine = typeof cmvProductoLines.$inferSelect;
 // económico mide el mes en que el hecho ocurrió. Ver shared/economicMonth.ts.
 // ==========================================
 
+/**
+ * "Categorías que SÍ computan" (oct-2026): cuando un grupo de gasto NO computa en el Estado de
+ * Resultado Económico, sus categorías quedan afuera salvo las que tengan acá un destino. Por
+ * empresa y para todos los meses, igual que el tilde del grupo. Una categoría tiene un solo
+ * destino, así no puede restar dos veces.
+ */
+export const economicCategoryDestinations = pgTable(
+  "economic_category_destinations",
+  {
+    id: serial("id").primaryKey(),
+    clientId: integer("client_id").notNull().references(() => clients.id, { onDelete: "cascade" }),
+    categoryId: integer("category_id").notNull().references(() => transactionCategories.id, { onDelete: "cascade" }),
+    /** gastos | comisiones | inversion | impuesto — ver CATEGORY_DESTINATIONS en shared/economicStatement.ts. */
+    destination: varchar("destination", { length: 20 }).notNull(),
+    /** Solo con destino "impuesto": a cuál (iibb | debito | credito | ganancias). */
+    taxKind: varchar("tax_kind", { length: 30 }),
+    updatedBy: varchar("updated_by").references(() => users.id),
+    updatedAt: timestamp("updated_at").defaultNow(),
+  },
+  (table) => [uniqueIndex("economic_category_destinations_client_cat_uq").on(table.clientId, table.categoryId)],
+);
+export type EconomicCategoryDestination = typeof economicCategoryDestinations.$inferSelect;
+
 export const economicTaxes = pgTable(
   "economic_taxes",
   {
@@ -1993,8 +2016,8 @@ export const economicTaxes = pgTable(
     /** Medios de pago EXCLUIDOS del cálculo, como JSON array. Vacío = todas las ventas. */
     excludedPaymentMethods: text("excluded_payment_methods"),
     /**
-     * Modo "categorias" (sep-2026): ids de las categorías de extractos que forman este impuesto,
-     * como JSON array. Esas categorías salen de Gastos Operativos en el informe.
+     * Modo "categorias": foto de las categorías de extractos que formaban el impuesto al guardar,
+     * como JSON array. Desde oct-2026 las categorías se eligen en economic_category_destinations.
      */
     categoryIds: text("category_ids"),
     manualAmount: decimal("manual_amount", { precision: 14, scale: 2 }).default("0"),

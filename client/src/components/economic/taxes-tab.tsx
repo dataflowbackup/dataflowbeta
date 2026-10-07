@@ -3,7 +3,8 @@
  *
  * Se cargan por local y por mes económico, porque cada local liquida por separado. Cada impuesto
  * admite sus modos (ver TAX_KINDS): a mano, sobre medios de pago, sobre ventas facturadas netas o
- * desde categorías de extractos (Crédito y Débito).
+ * desde extractos. Las categorías de extractos de cada impuesto NO se eligen acá: salen de
+ * "Categorías que SÍ computan" (oct-2026), así una categoría tiene un solo destino.
  *
  * El importe lo calcula SIEMPRE el servidor: acá se mandan los parámetros, no el total. La vista
  * previa usa la misma fórmula para que lo que se ve antes de guardar sea lo que se guarda.
@@ -21,7 +22,7 @@ import { apiRequest, queryClient } from "@/lib/queryClient";
 import { formatCurrency } from "@/lib/formatters";
 import { Calculator, Pencil, Save, Percent } from "lucide-react";
 import { TAX_KINDS, TAX_MODE_LABELS, TAX_KIND_BY_KEY, type TaxKind, type TaxMode } from "@shared/economicStatement";
-import type { Local } from "@shared/schema";
+import type { Local, TransactionCategory } from "@shared/schema";
 import { ECON, MoneyInput, LocalPicker } from "./econ-shared";
 
 type SalesSource = "fudo" | "datalive" | "shares";
@@ -149,6 +150,14 @@ export function TaxesTab({
 
   const savedByKind = useMemo(() => new Map(saved.map((r) => [r.taxKind, r])), [saved]);
 
+  /** Categorías asignadas a cada impuesto en "Categorías que SÍ computan". */
+  const { data: destinations = [] } = useQuery<Array<{ categoryId: number; destination: string; taxKind: string | null }>>({
+    queryKey: ["/api/economic/category-destinations"],
+  });
+  const { data: allCategories = [] } = useQuery<TransactionCategory[]>({ queryKey: ["/api/transaction-categories"] });
+  const assignedIds = (kind: TaxKind) =>
+    destinations.filter((x) => x.destination === "impuesto" && x.taxKind === kind).map((x) => x.categoryId);
+
   const [drafts, setDrafts] = useState<Record<string, Draft>>({});
   // Al cambiar de local o de mes se descartan los borradores: son de esa combinación.
   useEffect(() => setDrafts({}), [localId, economicMonth]);
@@ -174,17 +183,9 @@ export function TaxesTab({
         manualAmount: num(row.manualAmount),
       };
     }
-    return { mode: def.modes[0], ratePct: def.defaultRatePct, excluded: [], categoryIds: [], manualAmount: 0 };
-  };
-
-  /** A qué OTRO impuesto de este mes pertenece ya una categoría (no puede formar dos). */
-  const categoryOwner = (kind: TaxKind, categoryId: number): string | null => {
-    for (const def of TAX_KINDS) {
-      if (def.kind === kind) continue;
-      const d = draftFor(def.kind);
-      if (d.mode === "categorias" && d.categoryIds.includes(categoryId)) return def.label;
-    }
-    return null;
+    // Sin nada guardado, el informe ya toma lo de extractos si el impuesto tiene categorías.
+    const mode: TaxMode = def.modes.includes("categorias") && assignedIds(kind).length > 0 ? "categorias" : def.modes[0];
+    return { mode, ratePct: def.defaultRatePct, excluded: [], categoryIds: [], manualAmount: 0 };
   };
 
   const setDraft = (kind: TaxKind, patch: Partial<Draft>) =>
@@ -224,7 +225,8 @@ export function TaxesTab({
     const d = draftFor(kind);
     if (d.mode === "manual") return { amount: d.manualAmount, base: 0 };
     if (d.mode === "categorias") {
-      const amount = categoryTotals.filter((c) => d.categoryIds.includes(c.categoryId)).reduce((s, c) => s + c.amount, 0);
+      const ids = assignedIds(kind);
+      const amount = categoryTotals.filter((c) => ids.includes(c.categoryId)).reduce((s, c) => s + c.amount, 0);
       return { amount, base: 0 };
     }
     if (d.mode === "facturado") {
@@ -239,14 +241,15 @@ export function TaxesTab({
   // Los guardados, con el importe al día para los modos que el informe recalcula en vivo.
   const savedAmount = (kind: TaxKind) => {
     const row = savedByKind.get(kind);
-    if (!row) return 0;
+    // Sin fila, el informe igual suma lo de extractos si el impuesto tiene categorías asignadas.
+    if (!row) return assignedIds(kind).length > 0 ? preview(kind).amount : 0;
     if (row.mode === "categorias" || row.mode === "facturado") {
       return drafts[kind] ? num(row.amount) : preview(kind).amount;
     }
     return num(row.amount);
   };
-  const totalOperativo = TAX_KINDS.filter((t) => t.placement === "operativo").reduce((s, t) => s + savedAmount(t.kind), 0);
-  const totalGanancias = savedAmount("ganancias");
+  // El IVA no suma: ya se descontó de las ventas facturadas.
+  const totalImpuestos = TAX_KINDS.filter((t) => t.kind !== "iva").reduce((s, t) => s + savedAmount(t.kind), 0);
 
   if (locals.length === 0) return <p className="text-sm text-muted-foreground">No hay locales cargados.</p>;
 
@@ -258,20 +261,17 @@ export function TaxesTab({
             <Percent className={`h-4 w-4 ${ECON.text}`} /> Impuestos de {monthLabel}
           </CardTitle>
           <p className="text-xs text-muted-foreground">
-            Se cargan por local. Ingresos Brutos se calcula sobre las ventas; Crédito y Débito salen de las
-            categorías de los extractos; el resto va a mano porque sale de la liquidación.
+            Se cargan por local. Ingresos Brutos se calcula sobre las ventas; Crédito, Débito y Ganancias pueden
+            salir de los extractos (las categorías se eligen en "Categorías que SÍ computan") o ir a mano. Todos
+            restan juntos, después del Resultado Operativo con Inversión.
           </p>
         </CardHeader>
         <CardContent>
           <div className="grid gap-4 sm:grid-cols-3">
             <LocalPicker locals={locals} value={localId} onChange={setLocalId} />
-            <div className="space-y-1">
-              <Label className="text-xs">Impuestos operativos (restan arriba)</Label>
-              <p className={`text-xl font-bold font-mono ${ECON.text}`}>{formatCurrency(totalOperativo)}</p>
-            </div>
-            <div className="space-y-1">
-              <Label className="text-xs">Ganancias (resta al final)</Label>
-              <p className={`text-xl font-bold font-mono ${ECON.text}`}>{formatCurrency(totalGanancias)}</p>
+            <div className="space-y-1 sm:col-span-2">
+              <Label className="text-xs">Total de impuestos del local (sin IVA, que no resta)</Label>
+              <p className={`text-xl font-bold font-mono ${ECON.text}`}>{formatCurrency(totalImpuestos)}</p>
             </div>
           </div>
         </CardContent>
@@ -292,9 +292,6 @@ export function TaxesTab({
                   <CardTitle className="text-sm flex items-center justify-between gap-2">
                     <span className="flex items-center gap-2">
                       {def.label}
-                      {def.placement === "sobre_resultado" && (
-                        <Badge variant="secondary" className="text-[10px]">se resta al final</Badge>
-                      )}
                       {row && !dirty && (
                         <Badge variant="outline" className={`text-[10px] ${ECON.text}`}>guardado</Badge>
                       )}
@@ -384,50 +381,39 @@ export function TaxesTab({
                     </div>
                   )}
 
-                  {d.mode === "categorias" && (
-                    <div className="space-y-1.5">
-                      <Label className="text-xs flex items-center gap-1.5">
-                        <Calculator className="h-3.5 w-3.5" />
-                        Categorías de los extractos que forman este impuesto
-                      </Label>
-                      {categoryTotals.length === 0 ? (
-                        <p className="text-xs text-muted-foreground">
-                          No hay movimientos de gastos categorizados de este local en {monthLabel}.
-                        </p>
-                      ) : (
-                        <>
-                          <div className="flex flex-wrap gap-1.5">
-                            {categoryTotals.map((c) => {
-                              const on = d.categoryIds.includes(c.categoryId);
-                              const owner = on ? null : categoryOwner(def.kind, c.categoryId);
-                              return (
-                                <button
-                                  key={c.categoryId}
-                                  type="button"
-                                  disabled={!!owner}
-                                  className={`px-3 py-1 rounded-full text-xs font-medium border transition-colors ${on ? ECON.chipOn : ECON.chipOff} ${owner ? "opacity-40 cursor-not-allowed" : ""}`}
-                                  title={owner ? `Ya forma el ${owner}` : `${c.groupName} — tocá para ${on ? "sacarla" : "sumarla"}`}
-                                  onClick={() =>
-                                    setDraft(def.kind, {
-                                      categoryIds: on ? d.categoryIds.filter((x) => x !== c.categoryId) : [...d.categoryIds, c.categoryId],
-                                    })
-                                  }
-                                  data-testid={`chip-tax-cat-${def.kind}-${c.categoryId}`}
-                                >
-                                  {c.name} · {formatCurrency(c.amount)}
-                                  {owner && ` (en ${owner})`}
-                                </button>
-                              );
-                            })}
-                          </div>
-                          <p className="text-[11px] text-muted-foreground">
-                            Total: <span className={`font-mono font-semibold ${ECON.text}`}>{formatCurrency(p.amount)}</span>. Estas
-                            categorías dejan de restar en Gastos Operativos y restan acá, así no se cuentan dos veces.
+                  {d.mode === "categorias" && (() => {
+                    const ids = assignedIds(def.kind);
+                    const totalById = new Map(categoryTotals.map((c) => [c.categoryId, c.amount]));
+                    return (
+                      <div className="space-y-1.5">
+                        <Label className="text-xs flex items-center gap-1.5">
+                          <Calculator className="h-3.5 w-3.5" />
+                          Categorías de los extractos que forman este impuesto
+                        </Label>
+                        {ids.length === 0 ? (
+                          <p className="text-xs text-amber-700 dark:text-amber-400">
+                            Todavía no tiene categorías. Asignáselas en "Categorías que SÍ computan" (arriba, al lado de
+                            "Grupos que computan"), eligiendo "Impuesto — {def.label}".
                           </p>
-                        </>
-                      )}
-                    </div>
-                  )}
+                        ) : (
+                          <>
+                            <div className="flex flex-wrap gap-1.5">
+                              {ids.map((id) => (
+                                <span key={id} className={`px-3 py-1 rounded-full text-xs font-medium border ${ECON.chipOn}`}>
+                                  {allCategories.find((c) => c.id === id)?.name ?? `Categoría ${id}`} ·{" "}
+                                  {formatCurrency(totalById.get(id) ?? 0)}
+                                </span>
+                              ))}
+                            </div>
+                            <p className="text-[11px] text-muted-foreground">
+                              Total en {monthLabel}: <span className={`font-mono font-semibold ${ECON.text}`}>{formatCurrency(p.amount)}</span>.
+                              Para cambiarlas, usá "Categorías que SÍ computan".
+                            </p>
+                          </>
+                        )}
+                      </div>
+                    );
+                  })()}
 
                   {d.mode === "calculado" && (
                     <div className="space-y-1.5">
