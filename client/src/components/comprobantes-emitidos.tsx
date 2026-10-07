@@ -44,6 +44,7 @@ import {
   type ParseComprobantesResult,
 } from "@shared/afipComprobantesParser";
 import type { Local, BusinessName } from "@shared/schema";
+import { AfipImportBatchesButton } from "@/components/afip-import-batches";
 
 interface SalePoint {
   id: number;
@@ -222,6 +223,7 @@ export function ComprobantesEmitidos() {
               Puntos de Venta
               {salePoints.length > 0 && <Badge variant="secondary" className="ml-2">{salePoints.length}</Badge>}
             </Button>
+            <AfipImportBatchesButton kind="issued" />
             <Button onClick={() => setImportOpen(true)} data-testid="button-import-emitidos">
               <Upload className="h-4 w-4 mr-2" />
               Importar Comprobantes Emitidos

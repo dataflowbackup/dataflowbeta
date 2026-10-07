@@ -45,6 +45,7 @@ import {
   type ParseComprobantesResult,
 } from "@shared/afipComprobantesParser";
 import { ComprobantesEmitidos } from "@/components/comprobantes-emitidos";
+import { AfipImportBatchesButton } from "@/components/afip-import-batches";
 import type { Local, Supplier } from "@shared/schema";
 
 type Tab = "recibidos" | "emitidos";
@@ -325,10 +326,13 @@ function ComprobantesRecibidos() {
         title="Comprobantes Recibidos"
         description="Lo que AFIP tiene registrado a nombre de la empresa, cruzado contra las facturas cargadas"
         actions={
-          <Button onClick={() => setImportOpen(true)} data-testid="button-import-recibidos">
-            <Upload className="h-4 w-4 mr-2" />
-            Importar Comprobantes Recibidos
-          </Button>
+          <div className="flex flex-wrap gap-2">
+            <AfipImportBatchesButton kind="received" />
+            <Button onClick={() => setImportOpen(true)} data-testid="button-import-recibidos">
+              <Upload className="h-4 w-4 mr-2" />
+              Importar Comprobantes Recibidos
+            </Button>
+          </div>
         }
       />
 

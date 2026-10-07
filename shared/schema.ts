@@ -259,6 +259,13 @@ export const unitsOfMeasure = pgTable("units_of_measure", {
 });
 
 export const insertUnitOfMeasureSchema = createInsertSchema(unitsOfMeasure).omit({ id: true });
+
+/** Catálogo cerrado de unidades (sep-2026): toda empresa tiene estas tres y solo estas. */
+export const CANONICAL_UNITS = [
+  { name: "Kilogramos", abbreviation: "Kg" },
+  { name: "Litros", abbreviation: "Lt" },
+  { name: "Unidad", abbreviation: "Und" },
+] as const;
 export type InsertUnitOfMeasure = z.infer<typeof insertUnitOfMeasureSchema>;
 export type UnitOfMeasure = typeof unitsOfMeasure.$inferSelect;
 
@@ -1978,7 +1985,7 @@ export const economicTaxes = pgTable(
     localId: integer("local_id").notNull().references(() => locals.id),
     /** "YYYY-MM". */
     economicMonth: varchar("economic_month", { length: 7 }).notNull(),
-    /** iva | iibb | ganancias | credito | debito | cheque — ver shared/economicStatement.ts. */
+    /** iva | iibb | ganancias | credito | debito — ver shared/economicStatement.ts. */
     taxKind: varchar("tax_kind", { length: 30 }).notNull(),
     /** manual | calculado | facturado | categorias — ver TaxMode en shared/economicStatement.ts. */
     mode: varchar("mode", { length: 12 }).notNull().default("manual"),

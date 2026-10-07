@@ -241,6 +241,7 @@ import {
   type InsertMerchandiseTransfer,
   type MerchandiseTransferItem,
   type InsertMerchandiseTransferItem,
+  CANONICAL_UNITS,
 } from "@shared/schema";
 import {
   computeBreakeven,
@@ -1355,9 +1356,19 @@ export class DatabaseStorage implements IStorage {
    * snapshot de la unidad y borrar la fila rompería esas referencias.
    */
   async getUnits(clientId: number): Promise<UnitOfMeasure[]> {
-    return db.select().from(unitsOfMeasure)
+    const read = () => db.select().from(unitsOfMeasure)
       .where(and(eq(unitsOfMeasure.clientId, clientId), eq(unitsOfMeasure.active, true)))
       .orderBy(unitsOfMeasure.name);
+    const units = await read();
+    // El catálogo es cerrado y la API no deja crear unidades, así que una empresa nueva quedaría
+    // sin ninguna: hay cuatro caminos que dan de alta empresas y ninguno las sembraba. Se
+    // completan acá las canónicas que falten — aditivo e idempotente, no toca las existentes.
+    const abbrs = new Set(units.map((u) => u.abbreviation.trim().toLowerCase()));
+    const faltantes = CANONICAL_UNITS.filter((c) => !abbrs.has(c.abbreviation.toLowerCase()));
+    if (faltantes.length === 0) return units;
+    await db.insert(unitsOfMeasure)
+      .values(faltantes.map((c) => ({ clientId, name: c.name, abbreviation: c.abbreviation, active: true })));
+    return read();
   }
 
   async createUnit(unit: InsertUnitOfMeasure): Promise<UnitOfMeasure> {
@@ -5555,6 +5566,7 @@ export class DatabaseStorage implements IStorage {
         // (ej. "Servicio de mesa") y tiene que haber con qué completar el top.
         topN: 30,
         ivaIncluded: false, // Las ventas van netas de IVA: el margen se mide contra el precio sin IVA.
+        withSales: false,
       });
       extras.topProductos = {
         source: topSource,
@@ -6950,6 +6962,8 @@ export class DatabaseStorage implements IStorage {
       ivaIncluded?: boolean;
       /** Productos que el usuario sacó del ranking (cubiertos, servicio de mesa, delivery…). */
       exclude?: string[];
+      /** Sumar la facturación de los dos períodos. El Estado de Resultado no la usa y se la ahorra. */
+      withSales?: boolean;
     },
   ) {
     const ivaIncluded = opts.ivaIncluded ?? false;
@@ -6967,9 +6981,14 @@ export class DatabaseStorage implements IStorage {
     const days = Math.round((toMs - fromMs) / 86400000) + 1;
     const prev = this.previousPeriod(opts.dateFrom, opts.dateTo, days);
 
-    const [rawRows, rawPrevRows] = await Promise.all([
+    const withSales = opts.withSales ?? true;
+    const [rawRows, rawPrevRows, facturacion, facturacionPrev] = await Promise.all([
       this.getSoldProductRows(clientId, { source: opts.source, dateFrom: opts.dateFrom, dateTo: opts.dateTo, localIds }),
       this.getSoldProductRows(clientId, { source: opts.source, dateFrom: prev.from, dateTo: prev.to, localIds }),
+      // Venta bruta total (con IVA) del mismo sistema, locales y período que las unidades. No se
+      // descuentan los productos excluidos: la venta diaria no viene abierta por producto.
+      withSales ? this.getSalesBySource(clientId, { dateFrom: opts.dateFrom, dateTo: opts.dateTo, localIds }, opts.source) : null,
+      withSales ? this.getSalesBySource(clientId, { dateFrom: prev.from, dateTo: prev.to, localIds }, opts.source) : null,
     ]);
     const rows = excluded.size > 0 ? rawRows.filter((r) => !excluded.has(this.productKey(r.producto))) : rawRows;
     const prevRows = excluded.size > 0 ? rawPrevRows.filter((r) => !excluded.has(this.productKey(r.producto))) : rawPrevRows;
@@ -7144,6 +7163,12 @@ export class DatabaseStorage implements IStorage {
         unidades,
         unidadesPrev,
         variacionPct: unidadesPrev > 0 ? ((unidades - unidadesPrev) / unidadesPrev) * 100 : null,
+        facturacion,
+        facturacionPrev,
+        facturacionVariacionPct:
+          facturacion != null && facturacionPrev != null && facturacionPrev > 0
+            ? ((facturacion - facturacionPrev) / facturacionPrev) * 100
+            : null,
         productosDistintos: all.length,
         unidadesConCosto,
         coberturaPct: unidades > 0 ? (unidadesConCosto / unidades) * 100 : null,
@@ -9992,14 +10017,35 @@ export class DatabaseStorage implements IStorage {
   }
 
   /** Lotes de importacion, para mostrarlos y poder deshacerlos. */
-  async listAfipImportBatches(clientId: number, kind?: string): Promise<AfipImportBatch[]> {
+  async listAfipImportBatches(
+    clientId: number,
+    kind?: string,
+  ): Promise<Array<AfipImportBatch & { currentRows: number }>> {
     const conds = [eq(afipImportBatches.clientId, clientId)];
     if (kind) conds.push(eq(afipImportBatches.kind, kind));
-    return db
+    const batches = await db
       .select()
       .from(afipImportBatches)
       .where(and(...conds))
       .orderBy(desc(afipImportBatches.id));
+    if (batches.length === 0) return [];
+
+    // Cuantas filas apuntan HOY a cada lote: es lo que se borraria. Puede ser menos que
+    // rowsImported porque reimportar un comprobante lo pasa al lote mas nuevo.
+    const ids = batches.map((b) => b.id);
+    const [rec, iss] = await Promise.all([
+      db.select({ batchId: afipReceivedVouchers.batchId, n: sql<number>`count(*)` })
+        .from(afipReceivedVouchers)
+        .where(and(eq(afipReceivedVouchers.clientId, clientId), inArray(afipReceivedVouchers.batchId, ids)))
+        .groupBy(afipReceivedVouchers.batchId),
+      db.select({ batchId: afipIssuedVouchers.batchId, n: sql<number>`count(*)` })
+        .from(afipIssuedVouchers)
+        .where(and(eq(afipIssuedVouchers.clientId, clientId), inArray(afipIssuedVouchers.batchId, ids)))
+        .groupBy(afipIssuedVouchers.batchId),
+    ]);
+    const current = new Map<number, number>();
+    for (const r of [...rec, ...iss]) if (r.batchId != null) current.set(r.batchId, Number(r.n));
+    return batches.map((b) => ({ ...b, currentRows: current.get(b.id) ?? 0 }));
   }
 
   /**

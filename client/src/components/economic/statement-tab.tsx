@@ -1272,7 +1272,9 @@ export function StatementTab({
                     <th className="text-right font-medium py-2">% del total</th>
                     <th className="text-right font-medium py-2">CMV %</th>
                     <th className="text-right font-medium py-2">Margen %</th>
-                    <th className="text-right font-medium py-2">vs mes ant.</th>
+                    <th className="text-right font-medium py-2" title="Variación de las unidades vendidas contra el mes anterior">
+                      Unid. vs mes anterior
+                    </th>
                     <th className="w-8" />
                   </tr>
                 </thead>
@@ -1315,8 +1317,11 @@ export function StatementTab({
                 </tbody>
               </table>
             </div>
+            <p className="mt-3 text-[11px] text-muted-foreground">
+              La columna "Unid. vs mes anterior" compara las unidades vendidas de cada producto contra las del mes anterior.
+            </p>
             {excluded.length > 0 && (
-              <p className="mt-3 text-[11px] text-muted-foreground">
+              <p className="mt-1 text-[11px] text-muted-foreground">
                 Fuera del ranking: {excluded.join(", ")}.{" "}
                 <button type="button" onClick={restablecer} className={`${ECON.text} hover:underline`} data-testid="button-restablecer-top">
                   Restablecer

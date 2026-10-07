@@ -9,7 +9,7 @@
 
 // ── Impuestos ────────────────────────────────────────────────────────────────
 
-export type TaxKind = "iva" | "iibb" | "ganancias" | "credito" | "debito" | "cheque";
+export type TaxKind = "iva" | "iibb" | "ganancias" | "credito" | "debito";
 /**
  * Cómo se determina el importe de un impuesto:
  *  - manual:     se escribe a mano (sale de la liquidación).
@@ -79,14 +79,6 @@ export const TAX_KINDS: TaxKindDef[] = [
     defaultRatePct: 0,
     placement: "operativo",
     help: "Sale de las categorías de los extractos donde se registra (o se carga a mano). Esas categorías dejan de restar en Gastos Operativos para no contarlas dos veces.",
-  },
-  {
-    kind: "cheque",
-    label: "Impuesto al Cheque",
-    modes: ["manual"],
-    defaultRatePct: 0,
-    placement: "operativo",
-    help: "Se carga a mano.",
   },
   {
     kind: "ganancias",

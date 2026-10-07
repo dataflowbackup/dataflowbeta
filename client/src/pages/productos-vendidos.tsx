@@ -98,6 +98,9 @@ interface ProductosVendidosResult {
     unidades: number;
     unidadesPrev: number;
     variacionPct: number | null;
+    facturacion: number | null;
+    facturacionPrev: number | null;
+    facturacionVariacionPct: number | null;
     productosDistintos: number;
     unidadesConCosto: number;
     coberturaPct: number | null;
@@ -539,21 +542,30 @@ export default function ProductosVendidosPage() {
           </CardHeader>
           <CardContent className="space-y-4">
             {isLoading ? (
-              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-                {[1, 2, 3, 4].map((i) => <Skeleton key={i} className="h-20 w-full" />)}
+              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
+                {[1, 2, 3, 4, 5].map((i) => <Skeleton key={i} className="h-20 w-full" />)}
               </div>
             ) : isError ? (
               <p className="text-sm text-destructive">{(error as Error)?.message}</p>
             ) : data ? (
               <>
-                <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
+                  <Stat
+                    label="Facturación"
+                    value={data.totals.facturacion == null ? "—" : formatCurrency(data.totals.facturacion)}
+                    hint={
+                      data.totals.facturacionVariacionPct == null
+                        ? "Venta bruta total del período"
+                        : `${fmtSigned(data.totals.facturacionVariacionPct)} vs período anterior (${formatCurrency(data.totals.facturacionPrev ?? 0)})`
+                    }
+                  />
                   <Stat
                     label="Unidades vendidas"
                     value={fmtNum(data.totals.unidades)}
                     hint={`${data.totals.productosDistintos} productos · ${data.period.diasConVenta} días con venta`}
                   />
                   <Stat
-                    label="Contra el período anterior"
+                    label="Unidades vs período anterior"
                     value={fmtSigned(data.totals.variacionPct)}
                     hint={`${fmtNum(data.totals.unidadesPrev)} unidades antes`}
                     tone={data.totals.variacionPct == null ? "default" : data.totals.variacionPct >= 0 ? "good" : "bad"}
