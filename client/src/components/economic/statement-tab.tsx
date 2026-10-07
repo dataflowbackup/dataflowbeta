@@ -652,14 +652,16 @@ export function StatementTab({
   });
 
   /** Top 10: endpoint propio, así cambiar la categoría o un excluido no recalcula todo el estado. */
-  const [topCategoria, setTopCategoria] = usePersistentFilter<string>("balanceEconomico.topCategoria", "");
+  const [topCategoria, setTopCategoria] = usePersistentFilter<string>("balanceEconomico.topCartaCat", "");
+  const [topSubcategoria, setTopSubcategoria] = usePersistentFilter<string>("balanceEconomico.topCartaSub", "");
   const topSource = salesSources[0] ?? "fudo";
   const { data: topData, isLoading: topLoading } = useQuery<TopProductosData>({
-    queryKey: ["/api/economic/top-productos", year, month, localParam, topSource, topCategoria, excluded.join("|")],
+    queryKey: ["/api/economic/top-productos", year, month, localParam, topSource, topCategoria, topSubcategoria, excluded.join("|")],
     queryFn: async () => {
       const qs = new URLSearchParams({ year: String(year), month: String(month), source: topSource });
       if (localParam) qs.set("localIds", localParam);
-      if (topCategoria) qs.set("categoria", topCategoria);
+      if (topCategoria) qs.set("cartaCategoryId", topCategoria);
+      if (topSubcategoria) qs.set("cartaSubcategoryId", topSubcategoria);
       const res = await fetch(`/api/economic/top-productos?${qs}`, { credentials: "include" });
       if (!res.ok) throw new Error((await res.json().catch(() => ({})))?.message || "Error al calcular el top");
       return res.json();
@@ -1350,7 +1352,11 @@ export function StatementTab({
         data={topData}
         isLoading={topLoading}
         categoria={topCategoria}
-        onCategoriaChange={setTopCategoria}
+        subcategoria={topSubcategoria}
+        onFilterChange={(c, sc) => {
+          setTopCategoria(c);
+          setTopSubcategoria(sc);
+        }}
         excluded={excluded}
         onExcludedChange={(productos) => saveExcluded.mutate(productos)}
       />

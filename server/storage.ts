@@ -5831,7 +5831,14 @@ export class DatabaseStorage implements IStorage {
    */
   async getEconomicTopProductos(
     clientId: number,
-    opts: { year: number; month: number; localIds?: number[]; source: "fudo" | "datalive" | "shares"; categoria?: string | null },
+    opts: {
+      year: number;
+      month: number;
+      localIds?: number[];
+      source: "fudo" | "datalive" | "shares";
+      cartaCategoryId?: number | null;
+      cartaSubcategoryId?: number | null;
+    },
   ) {
     const mes = `${opts.year}-${String(opts.month).padStart(2, "0")}`;
     const lastDay = new Date(Date.UTC(opts.year, opts.month, 0)).getUTCDate();
@@ -5845,19 +5852,21 @@ export class DatabaseStorage implements IStorage {
       ivaIncluded: false, // Las ventas van netas de IVA: el margen se mide contra el precio sin IVA.
       withSales: false,
       exclude,
-      categoria: opts.categoria ?? null,
+      cartaCategoryId: opts.cartaCategoryId ?? null,
+      cartaSubcategoryId: opts.cartaSubcategoryId ?? null,
     });
     return {
       source: opts.source,
-      categoria: r.categoria,
       coberturaPct: r.totals.coberturaPct,
       unidades: r.totals.unidades,
-      categorias: r.categorias,
+      carta: r.carta,
       productos: r.productosDelPeriodo,
       items: r.items.map((it) => ({
         rank: it.rank,
         producto: it.producto,
-        categoria: it.categoria,
+        cartaCategoria: it.cartaCategoria,
+        cartaSubcategoria: it.cartaSubcategoria,
+        cartaVia: it.cartaVia,
         cantidad: it.cantidad,
         participacionPct: it.participacionPct,
         cmvPct: it.cmvPct,
@@ -7144,8 +7153,12 @@ export class DatabaseStorage implements IStorage {
       exclude?: string[];
       /** Sumar la facturación de los dos períodos. El Estado de Resultado no la usa y se la ahorra. */
       withSales?: boolean;
-      /** Solo los productos de esta categoría (en los dos períodos y en los totales). */
-      categoria?: string | null;
+      /**
+       * Filtro por la Carta (Costos y Recetas): categoría y subcategoría del plato al que
+       * corresponde cada producto. `cartaCategoryId = 0` = los productos sin plato en la Carta.
+       */
+      cartaCategoryId?: number | null;
+      cartaSubcategoryId?: number | null;
     },
   ) {
     const ivaIncluded = opts.ivaIncluded ?? false;
@@ -7172,37 +7185,12 @@ export class DatabaseStorage implements IStorage {
       withSales ? this.getSalesBySource(clientId, { dateFrom: opts.dateFrom, dateTo: opts.dateTo, localIds }, opts.source) : null,
       withSales ? this.getSalesBySource(clientId, { dateFrom: prev.from, dateTo: prev.to, localIds }, opts.source) : null,
     ]);
-    // Categoría: la de la fila o, si no la tiene, la última conocida del producto.
+    // Categoría del sistema de ventas: la de la fila o, si no la tiene, la última conocida.
     const needsCatalog = [...rawRows, ...rawPrevRows].some((r) => !r.categoria);
     const catalog = needsCatalog ? await this.getProductCategoryCatalog(clientId, opts.source) : new Map<string, string>();
     for (const r of [...rawRows, ...rawPrevRows]) {
       if (!r.categoria) r.categoria = catalog.get(this.productKey(r.producto)) ?? null;
     }
-    const catKey = (c: string | null) => String(c ?? "").trim().toLowerCase();
-    const wantedCat = opts.categoria ? catKey(opts.categoria) : null;
-
-    /** Todos los productos del período, ANTES de excluir y de filtrar: para elegir qué se ve. */
-    const productosDelPeriodo = new Map<string, { producto: string; categoria: string | null; cantidad: number }>();
-    /** Categorías del período con sus unidades (sin los productos excluidos): el filtro. */
-    const categoriasDelPeriodo = new Map<string, { categoria: string; cantidad: number }>();
-    for (const r of rawRows) {
-      const key = this.productKey(r.producto);
-      if (!key) continue;
-      const p = productosDelPeriodo.get(key) ?? { producto: r.producto, categoria: r.categoria, cantidad: 0 };
-      p.cantidad += r.cantidad;
-      productosDelPeriodo.set(key, p);
-      if (excluded.has(key)) continue;
-      const cn = String(r.categoria ?? "").trim() || "Sin categoría";
-      const c = categoriasDelPeriodo.get(cn.toLowerCase()) ?? { categoria: cn, cantidad: 0 };
-      c.cantidad += r.cantidad;
-      categoriasDelPeriodo.set(cn.toLowerCase(), c);
-    }
-
-    const keep = (r: { producto: string; categoria: string | null }) =>
-      !excluded.has(this.productKey(r.producto)) &&
-      (wantedCat == null || (catKey(r.categoria) || "sin categoría") === wantedCat);
-    const rows = rawRows.filter(keep);
-    const prevRows = rawPrevRows.filter(keep);
 
     // Costeo: mismo camino que CMV Productos (product_costs manda, el mapeo viejo es fallback),
     // pero indexado por nombre normalizado para que el costo cargado una vez sirva a las variantes.
@@ -7214,6 +7202,78 @@ export class DatabaseStorage implements IStorage {
     const mappedRecipeByKey = new Map(mappingRows.map((m) => [this.productKey(m.productName), m.recipeId]));
     const recipeRows = await db.select().from(recipes).where(eq(recipes.clientId, clientId));
     const recipeById = new Map(recipeRows.map((r) => [r.id, r]));
+
+    // ── LA CARTA: a qué plato corresponde cada producto vendido ──
+    // Primero el vínculo cargado (Costear / mapeo); si no hay, el plato con el MISMO nombre
+    // (normalizado). Solo sirve para clasificar por categoría y subcategoría de la Carta: el costo
+    // sigue saliendo únicamente del vínculo explícito (oct-2026).
+    const [cartaCats, cartaSubs] = await Promise.all([
+      db.select({ id: recipeCategories.id, name: recipeCategories.name }).from(recipeCategories)
+        .where(eq(recipeCategories.clientId, clientId)),
+      db.select({ id: recipeSubcategories.id, name: recipeSubcategories.name }).from(recipeSubcategories)
+        .where(eq(recipeSubcategories.clientId, clientId)),
+    ]);
+    const cartaCatName = new Map(cartaCats.map((c) => [c.id, c.name]));
+    const cartaSubName = new Map(cartaSubs.map((c) => [c.id, c.name]));
+    const platoByName = new Map<string, (typeof recipeRows)[number]>();
+    for (const r of recipeRows) {
+      if ((r as any).recipeType === "sub") continue;
+      const k = this.productKey(r.name);
+      if (k && !platoByName.has(k)) platoByName.set(k, r);
+    }
+    const cartaCache = new Map<string, { recipe: (typeof recipeRows)[number]; via: "vinculo" | "nombre" } | null>();
+    const cartaOf = (producto: string) => {
+      const key = this.productKey(producto);
+      if (cartaCache.has(key)) return cartaCache.get(key)!;
+      const linkedId = costByKey.get(key)?.recipeId ?? mappedRecipeByKey.get(key) ?? null;
+      const linked = linkedId != null ? recipeById.get(linkedId) : undefined;
+      const out = linked ? { recipe: linked, via: "vinculo" as const }
+        : platoByName.has(key) ? { recipe: platoByName.get(key)!, via: "nombre" as const }
+        : null;
+      cartaCache.set(key, out);
+      return out;
+    };
+    const wantedCat = opts.cartaCategoryId ?? null;
+    const wantedSub = opts.cartaSubcategoryId ?? null;
+    const matchesCarta = (producto: string) => {
+      if (wantedCat == null && wantedSub == null) return true;
+      const c = cartaOf(producto);
+      if (wantedCat === 0) return c == null;
+      if (!c) return false;
+      if (wantedCat != null && c.recipe.categoryId !== wantedCat) return false;
+      if (wantedSub != null && c.recipe.subcategoryId !== wantedSub) return false;
+      return true;
+    };
+
+    /** Todos los productos del período, ANTES de excluir y de filtrar: para elegir qué se ve. */
+    const productosDelPeriodo = new Map<string, { producto: string; categoria: string | null; cantidad: number }>();
+    /** Categorías y subcategorías de la Carta del período, con sus unidades (sin los excluidos). */
+    const cartaArbol = new Map<number, { id: number; nombre: string; cantidad: number; subs: Map<number, { id: number; nombre: string; cantidad: number }> }>();
+    let sinCarta = 0;
+    for (const r of rawRows) {
+      const key = this.productKey(r.producto);
+      if (!key) continue;
+      const p = productosDelPeriodo.get(key) ?? { producto: r.producto, categoria: r.categoria, cantidad: 0 };
+      p.cantidad += r.cantidad;
+      productosDelPeriodo.set(key, p);
+      if (excluded.has(key)) continue;
+      const c = cartaOf(r.producto);
+      if (!c || c.recipe.categoryId == null) { sinCarta += r.cantidad; continue; }
+      const cid = c.recipe.categoryId;
+      const cat = cartaArbol.get(cid) ?? { id: cid, nombre: cartaCatName.get(cid) ?? `Categoría ${cid}`, cantidad: 0, subs: new Map() };
+      cat.cantidad += r.cantidad;
+      const sid = c.recipe.subcategoryId;
+      if (sid != null) {
+        const sub = cat.subs.get(sid) ?? { id: sid, nombre: cartaSubName.get(sid) ?? `Subcategoría ${sid}`, cantidad: 0 };
+        sub.cantidad += r.cantidad;
+        cat.subs.set(sid, sub);
+      }
+      cartaArbol.set(cid, cat);
+    }
+
+    const keep = (r: { producto: string }) => !excluded.has(this.productKey(r.producto)) && matchesCarta(r.producto);
+    const rows = rawRows.filter(keep);
+    const prevRows = rawPrevRows.filter(keep);
 
     const localRows = await db.select({ id: locals.id, name: locals.name }).from(locals)
       .where(eq(locals.clientId, clientId));
@@ -7282,9 +7342,13 @@ export class DatabaseStorage implements IStorage {
         ? ((a.cantidad - cantidadPrev) / cantidadPrev) * 100
         : null;
 
+      const carta = cartaOf(display);
       return {
         producto: display,
         categoria: a.categoria,
+        cartaCategoria: carta?.recipe.categoryId != null ? cartaCatName.get(carta.recipe.categoryId) ?? null : null,
+        cartaSubcategoria: carta?.recipe.subcategoryId != null ? cartaSubName.get(carta.recipe.subcategoryId) ?? null : null,
+        cartaVia: carta?.via ?? null,
         cantidad: a.cantidad,
         unidadesPorDia: days > 0 ? a.cantidad / days : 0,
         porLocal: Array.from(a.porLocal.entries())
@@ -7367,8 +7431,18 @@ export class DatabaseStorage implements IStorage {
       period: { from: opts.dateFrom, to: opts.dateTo, days, diasConVenta: diasConVenta.size },
       prevPeriod: prev,
       excluidos: opts.exclude ?? [],
-      categoria: opts.categoria ?? null,
-      categorias: Array.from(categoriasDelPeriodo.values()).sort((a, b) => b.cantidad - a.cantidad),
+      carta: {
+        categorias: Array.from(cartaArbol.values())
+          .map((c) => ({
+            id: c.id,
+            nombre: c.nombre,
+            cantidad: c.cantidad,
+            subcategorias: Array.from(c.subs.values()).sort((a, b) => b.cantidad - a.cantidad),
+          }))
+          .sort((a, b) => b.cantidad - a.cantidad),
+        /** Unidades de productos que no tienen plato en la Carta (ni vínculo ni mismo nombre). */
+        sinCarta,
+      },
       productosDelPeriodo: Array.from(productosDelPeriodo.entries())
         .map(([key, p]) => ({ ...p, excluido: excluded.has(key) }))
         .sort((a, b) => b.cantidad - a.cantidad),

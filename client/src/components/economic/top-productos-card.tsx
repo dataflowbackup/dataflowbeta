@@ -1,8 +1,9 @@
 /**
  * Top 10 de productos del Estado de Resultado Económico (oct-2026).
  *
- * Filtros: por categoría (la del sistema de ventas) y un desplegable con todos los productos del
- * mes para elegir cuáles se ven y cuáles no aparecen nunca. Lo destildado se guarda en las
+ * Filtros: por categoría y subcategoría de la CARTA (Costos y Recetas), y un desplegable con
+ * todos los productos del mes para elegir cuáles se ven y cuáles no aparecen nunca. El plato de
+ * cada producto sale del vínculo cargado (Costear) o, si no hay, del plato con el mismo nombre. Lo destildado se guarda en las
  * preferencias de la empresa (economic_top_excluded): queda fijo para todos y en cualquier
  * computadora. Las exclusiones se aplican en el servidor, así el % mide contra lo que se ve.
  */
@@ -20,15 +21,24 @@ import { ECON } from "./econ-shared";
 
 export interface TopProductosData {
   source: string;
-  categoria: string | null;
   coberturaPct: number | null;
   unidades: number;
-  categorias: Array<{ categoria: string; cantidad: number }>;
+  carta: {
+    categorias: Array<{
+      id: number;
+      nombre: string;
+      cantidad: number;
+      subcategorias: Array<{ id: number; nombre: string; cantidad: number }>;
+    }>;
+    sinCarta: number;
+  };
   productos: Array<{ producto: string; categoria: string | null; cantidad: number; excluido: boolean }>;
   items: Array<{
     rank: number;
     producto: string;
-    categoria: string | null;
+    cartaCategoria: string | null;
+    cartaSubcategoria: string | null;
+    cartaVia: "vinculo" | "nombre" | null;
     cantidad: number;
     participacionPct: number;
     cmvPct: number | null;
@@ -39,6 +49,8 @@ export interface TopProductosData {
 }
 
 const ALL = "__all__";
+/** Valor del filtro para los productos que no tienen plato en la Carta. */
+export const SIN_CARTA = "0";
 const pct = (v: number) => `${v.toFixed(1)}%`;
 const sourceLabel = (s: string) => (s === "fudo" ? "FUDO" : s === "shares" ? "Shares" : "Datalive");
 
@@ -46,14 +58,18 @@ export function TopProductosCard({
   data,
   isLoading,
   categoria,
-  onCategoriaChange,
+  subcategoria,
+  onFilterChange,
   excluded,
   onExcludedChange,
 }: {
   data: TopProductosData | undefined;
   isLoading: boolean;
+  /** Id de la categoría de la Carta ("" = todas, "0" = sin plato en la Carta). */
   categoria: string;
-  onCategoriaChange: (c: string) => void;
+  /** Id de la subcategoría ("" = todas). */
+  subcategoria: string;
+  onFilterChange: (categoria: string, subcategoria: string) => void;
   excluded: string[];
   onExcludedChange: (productos: string[]) => void;
 }) {
@@ -68,14 +84,18 @@ export function TopProductosCard({
     return (data?.productos ?? []).filter((p) => !q || p.producto.toLowerCase().includes(q));
   }, [data?.productos, search]);
 
-  const sinCategorias = (data?.categorias ?? []).every((c) => c.categoria === "Sin categoría");
+  const cats = data?.carta.categorias ?? [];
+  const catSel = cats.find((c) => String(c.id) === categoria);
+  const subSel = catSel?.subcategorias.find((s) => String(s.id) === subcategoria);
+  const filtroLabel =
+    categoria === SIN_CARTA ? "sin plato en la Carta" : catSel ? `${catSel.nombre}${subSel ? ` / ${subSel.nombre}` : ""}` : "";
 
   return (
     <Card>
       <CardContent className="pt-6">
         <div className="flex items-baseline justify-between gap-3 flex-wrap mb-3">
           <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-            Los 10 productos más vendidos del mes{categoria ? ` — ${categoria}` : ""}
+            Los 10 productos más vendidos del mes{filtroLabel ? ` — ${filtroLabel}` : ""}
           </p>
           {data && (
             <p className="text-[11px] text-muted-foreground">
@@ -85,15 +105,38 @@ export function TopProductosCard({
         </div>
 
         <div className="flex flex-wrap items-center gap-2 mb-3">
-          <Select value={categoria || ALL} onValueChange={(v) => onCategoriaChange(v === ALL ? "" : v)}>
+          <Select value={categoria || ALL} onValueChange={(v) => onFilterChange(v === ALL ? "" : v, "")}>
             <SelectTrigger className="h-8 w-56 text-xs" data-testid="select-top-categoria">
-              <SelectValue placeholder="Categoría" />
+              <SelectValue placeholder="Categoría de la Carta" />
             </SelectTrigger>
             <SelectContent>
               <SelectItem value={ALL} className="text-xs">Todas las categorías</SelectItem>
-              {(data?.categorias ?? []).map((c) => (
-                <SelectItem key={c.categoria} value={c.categoria} className="text-xs">
-                  {c.categoria} · {c.cantidad.toLocaleString("es-AR")} un.
+              {cats.map((c) => (
+                <SelectItem key={c.id} value={String(c.id)} className="text-xs">
+                  {c.nombre} · {c.cantidad.toLocaleString("es-AR")} un.
+                </SelectItem>
+              ))}
+              {(data?.carta.sinCarta ?? 0) > 0 && (
+                <SelectItem value={SIN_CARTA} className="text-xs">
+                  Sin plato en la Carta · {(data?.carta.sinCarta ?? 0).toLocaleString("es-AR")} un.
+                </SelectItem>
+              )}
+            </SelectContent>
+          </Select>
+
+          <Select
+            value={subcategoria || ALL}
+            onValueChange={(v) => onFilterChange(categoria, v === ALL ? "" : v)}
+            disabled={!catSel || catSel.subcategorias.length === 0}
+          >
+            <SelectTrigger className="h-8 w-56 text-xs" data-testid="select-top-subcategoria">
+              <SelectValue placeholder="Subcategoría" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value={ALL} className="text-xs">Todas las subcategorías</SelectItem>
+              {(catSel?.subcategorias ?? []).map((sc) => (
+                <SelectItem key={sc.id} value={String(sc.id)} className="text-xs">
+                  {sc.nombre} · {sc.cantidad.toLocaleString("es-AR")} un.
                 </SelectItem>
               ))}
             </SelectContent>
@@ -143,7 +186,7 @@ export function TopProductosCard({
           <Skeleton className="h-40 w-full" />
         ) : !data || data.items.length === 0 ? (
           <p className="text-sm text-muted-foreground py-4">
-            {categoria ? `No hay ventas de "${categoria}" en este mes.` : "No hay productos vendidos importados en este mes."}
+            {filtroLabel ? `No hay ventas de ${filtroLabel} en este mes.` : "No hay productos vendidos importados en este mes."}
           </p>
         ) : (
           <div className="overflow-x-auto">
@@ -153,7 +196,7 @@ export function TopProductosCard({
                   <th className="text-left font-medium py-2 w-8">#</th>
                   <th className="text-left font-medium py-2">Producto</th>
                   <th className="text-right font-medium py-2">Unidades</th>
-                  <th className="text-right font-medium py-2">{categoria ? "% de la categoría" : "% del total"}</th>
+                  <th className="text-right font-medium py-2">{filtroLabel ? "% del filtro" : "% del total"}</th>
                   <th className="text-right font-medium py-2">CMV %</th>
                   <th className="text-right font-medium py-2">Margen %</th>
                   <th className="text-right font-medium py-2" title="Variación de las unidades vendidas contra el mes anterior">
@@ -168,7 +211,15 @@ export function TopProductosCard({
                     <td className="py-2 text-xs text-muted-foreground">{it.rank}</td>
                     <td className="py-2">
                       {it.producto}
-                      {!categoria && it.categoria && <span className="ml-2 text-[10px] text-muted-foreground">{it.categoria}</span>}
+                      {it.cartaCategoria && (
+                        <span
+                          className="ml-2 text-[10px] text-muted-foreground"
+                          title={it.cartaVia === "nombre" ? "Plato de la Carta encontrado por el nombre" : "Plato vinculado en la Carta"}
+                        >
+                          {it.cartaCategoria}
+                          {it.cartaSubcategoria && it.cartaSubcategoria !== it.cartaCategoria ? ` / ${it.cartaSubcategoria}` : ""}
+                        </span>
+                      )}
                     </td>
                     <td className="py-2 text-right font-mono">{it.cantidad.toLocaleString("es-AR")}</td>
                     <td className="py-2 text-right font-mono">{pct(it.participacionPct)}</td>
@@ -207,8 +258,10 @@ export function TopProductosCard({
         )}
         <p className="mt-3 text-[11px] text-muted-foreground">
           La columna "Unid. vs mes anterior" compara las unidades vendidas de cada producto contra las del mes anterior.
-          {sinCategorias && data?.source === "datalive" &&
-            " Datalive guarda la categoría desde octubre de 2026: importá un reporte de productos nuevo y los meses anteriores también quedan clasificados."}
+          {" "}La categoría es la del plato en Costos y Recetas → Carta: el vinculado con "Costear" (Productos Vendidos) o, si
+          no hay, el plato con el mismo nombre.
+          {(data?.carta.sinCarta ?? 0) > 0 &&
+            ` ${(data?.carta.sinCarta ?? 0).toLocaleString("es-AR")} unidades son de productos sin plato en la Carta.`}
         </p>
       </CardContent>
     </Card>

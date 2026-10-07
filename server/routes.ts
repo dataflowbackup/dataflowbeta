@@ -4072,9 +4072,17 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         .filter((n) => Number.isFinite(n) && n > 0);
       const raw = String(req.query.source ?? "fudo");
       const source = raw === "datalive" || raw === "shares" ? raw : "fudo";
-      const categoria = String(req.query.categoria ?? "").trim() || null;
+      const intOrNull = (v: unknown) => {
+        const n = parseInt(String(v ?? ""), 10);
+        return Number.isFinite(n) && n >= 0 ? n : null;
+      };
       res.json(await storage.getEconomicTopProductos(clientId, {
-        year, month, localIds: localIds.length > 0 ? localIds : undefined, source, categoria,
+        year,
+        month,
+        localIds: localIds.length > 0 ? localIds : undefined,
+        source,
+        cartaCategoryId: intOrNull(req.query.cartaCategoryId),
+        cartaSubcategoryId: intOrNull(req.query.cartaSubcategoryId),
       }));
     } catch (e: any) {
       res.status(500).json({ message: e.message });
