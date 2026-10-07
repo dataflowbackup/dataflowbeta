@@ -5630,6 +5630,77 @@ export class DatabaseStorage implements IStorage {
     const cmvMode = cmvVariants[pedido].disponible ? pedido : "compras";
     const cmvElegido = cmvVariants[cmvMode];
 
+    // ── BRECHA DEL FOOD COST contra el TEÓRICO, y cuánto explican los DECOMISOS ──
+    // Con el costo por compras o por existencias elegido, se cruza contra el de unidades vendidas
+    // (lo que las recetas dicen que se tendría que haber consumido). Solo sobre los locales que
+    // tienen los dos: restar un total de 3 locales contra uno de 1 mide qué falta calcular.
+    // De la brecha, la parte que cubren los decomisos cargados está justificada; el resto no tiene
+    // explicación registrada (mal uso, desperdicio sin registrar, robo, proveedor que entregó de
+    // menos). Pedido del usuario, 07-oct-2026.
+    const brechaFoodCost = await (async () => {
+      if (cmvMode === "productos") return null;
+      const real = cmvVariants[cmvMode];
+      const teo = cmvVariants.productos;
+      if (teo.rows.length === 0) {
+        return { disponible: false as const, modo: cmvMode, motivo: "Todavía no hay CMV por unidades vendidas calculado para este mes." };
+      }
+      const teoByLocal = new Map(teo.rows.map((r) => [r.localId, r]));
+      const comunes = real.rows.filter((r) => teoByLocal.has(r.localId));
+      if (comunes.length === 0) {
+        return { disponible: false as const, modo: cmvMode, motivo: "Ningún local tiene calculados los dos costos en este mes." };
+      }
+      const realTotal = comunes.reduce((a, r) => a + r.amount, 0);
+      const teoTotal = comunes.reduce((a, r) => a + (teoByLocal.get(r.localId)?.amount ?? 0), 0);
+      const ventasComunes = comunes.reduce((a, r) => a + r.ventas, 0);
+      const monto = realTotal - teoTotal;
+
+      const decRows = await db.select({ tipo: decomisos.tipoDecomiso, valorizado: decomisos.valorizado })
+        .from(decomisos).where(and(
+          eq(decomisos.clientId, clientId),
+          inArray(decomisos.localId, comunes.map((r) => r.localId)),
+          gte(decomisos.fecha, from),
+          lte(decomisos.fecha, to),
+        ));
+      const porTipo = new Map<string, number>();
+      for (const d of decRows) {
+        const t = String(d.tipo ?? "").trim() || "Sin tipo";
+        porTipo.set(t, (porTipo.get(t) ?? 0) + num(d.valorizado));
+      }
+      const decomisosTotal = Array.from(porTipo.values()).reduce((a, v) => a + v, 0);
+      // Los decomisos explican la brecha hasta donde llega: si superan la brecha, no "sobra"
+      // explicación, simplemente toda la brecha está justificada.
+      const explicado = monto > 0 ? Math.min(decomisosTotal, monto) : 0;
+      const sinJustificar = monto > 0 ? monto - explicado : 0;
+      const pp = (v: number) => (ventasComunes > 0 ? (v / ventasComunes) * 100 : 0);
+      // Con cobertura de costeo baja el teórico está subvaluado y la brecha sale inflada.
+      const bajaCobertura = new Set(prodBalance.lowCoverageRows.map((r) => r.localId));
+      const coberturaBaja = comunes.some((r) => bajaCobertura.has(r.localId));
+      return {
+        disponible: true as const,
+        modo: cmvMode,
+        realLabel: real.label,
+        locales: comunes.map((r) => r.local),
+        ventas: ventasComunes,
+        real: realTotal,
+        realPct: pp(realTotal),
+        teorico: teoTotal,
+        teoricoPct: pp(teoTotal),
+        monto,
+        puntos: pp(monto),
+        decomisos: {
+          total: decomisosTotal,
+          porTipo: Array.from(porTipo.entries())
+            .map(([tipo, monto]) => ({ tipo, monto }))
+            .sort((a, b) => b.monto - a.monto),
+        },
+        explicado,
+        explicadoPct: monto > 0 ? (explicado / monto) * 100 : 0,
+        sinJustificar,
+        sinJustificarPuntos: pp(sinJustificar),
+        coberturaBaja,
+      };
+    })();
+
     // ── RESUMEN ───────────────────────────────────────────────────────────────
     const utilidadBruta = ventasTotal - cmvElegido.total;
     // Orden pedido por el usuario el 07-oct-2026: la inversión resta después del operativo y los
@@ -5719,25 +5790,8 @@ export class DatabaseStorage implements IStorage {
         modePedido: pedido,
         elegido: cmvElegido.label,
         variantes: [cmvVariants.compras, cmvVariants.inventario, cmvVariants.productos],
-        /**
-         * Inventario − teórico: lo que el costeo no explica (merma, desperdicio, faltante).
-         * SOLO sobre los locales que tienen los DOS cálculos: restar un total de 3 locales contra
-         * uno de 1 no mide merma, mide qué locales faltan calcular.
-         */
-        desvioMerma: (() => {
-          const prodByLocal = new Map(cmvVariants.productos.rows.map((r) => [r.localId, r]));
-          const comunes = cmvVariants.inventario.rows.filter((r) => prodByLocal.has(r.localId));
-          if (comunes.length === 0) return null;
-          const inv = comunes.reduce((a, r) => a + r.amount, 0);
-          const teo = comunes.reduce((a, r) => a + (prodByLocal.get(r.localId)?.amount ?? 0), 0);
-          const ventas = comunes.reduce((a, r) => a + r.ventas, 0);
-          return {
-            monto: inv - teo,
-            puntos: ventas > 0 ? ((inv - teo) / ventas) * 100 : 0,
-            locales: comunes.map((r) => r.local),
-            ventasComparadas: ventas,
-          };
-        })(),
+        /** El costo elegido (compras o existencias) contra el teórico, con los decomisos. */
+        brecha: brechaFoodCost,
       },
       gastos: { total: gastosTotal, pct: pct(gastosTotal), groups: gastosGroups, merchandiseComputing },
       /** Categorías con destino Inversión: restan después del Resultado Operativo. */

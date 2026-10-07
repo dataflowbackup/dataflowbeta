@@ -77,6 +77,29 @@ interface CmvVariant {
   aviso: string | null;
 }
 
+/** El food cost elegido (compras o existencias) contra el de unidades vendidas, con los decomisos. */
+type BrechaFoodCost =
+  | { disponible: false; modo: CmvMode; motivo: string }
+  | {
+      disponible: true;
+      modo: CmvMode;
+      realLabel: string;
+      locales: string[];
+      ventas: number;
+      real: number;
+      realPct: number;
+      teorico: number;
+      teoricoPct: number;
+      monto: number;
+      puntos: number;
+      decomisos: { total: number; porTipo: Array<{ tipo: string; monto: number }> };
+      explicado: number;
+      explicadoPct: number;
+      sinJustificar: number;
+      sinJustificarPuntos: number;
+      coberturaBaja: boolean;
+    };
+
 interface Statement {
   period: { year: number; month: number; economicMonth: string; from: string; to: string };
   locals: Array<{ id: number; name: string }>;
@@ -100,7 +123,7 @@ interface Statement {
     modePedido: CmvMode;
     elegido: string;
     variantes: CmvVariant[];
-    desvioMerma: { monto: number; puntos: number; locales: string[]; ventasComparadas: number } | null;
+    brecha: BrechaFoodCost | null;
   };
   gastos: { total: number; pct: number; groups: Node[]; merchandiseComputing: Array<{ id: number; label: string; amount: number }> };
   inversiones: { total: number; pct: number; groups: Node[] };
@@ -467,18 +490,111 @@ function CmvSelector({
           </div>
         ))}
 
-        {cmv.desvioMerma && (
-          <div className={`rounded-lg border ${ECON.border} ${ECON.bg} p-2.5`}>
-            <p className={`text-xs ${ECON.text}`}>
-              <span className="font-semibold">Desvío de costeo:</span> el costo real por inventarios supera al teórico
-              por recetas en <span className="font-mono font-semibold">{formatCurrency(cmv.desvioMerma.monto)}</span> (
-              {cmv.desvioMerma.puntos.toFixed(2)} puntos de las ventas). Eso es merma, desperdicio y faltante que el
-              costeo no explica. Comparado solo sobre {cmv.desvioMerma.locales.join(", ")}, que tienen los dos cálculos.
-            </p>
-          </div>
-        )}
+        {cmv.brecha && <BrechaFoodCostPanel brecha={cmv.brecha} />}
       </CardContent>
     </Card>
+  );
+}
+
+/**
+ * Cruce del food cost elegido contra el de unidades vendidas: cuánto se fue de más, qué parte
+ * explican los decomisos cargados y qué parte queda sin justificar.
+ */
+function BrechaFoodCostPanel({ brecha }: { brecha: BrechaFoodCost }) {
+  if (!brecha.disponible) {
+    return (
+      <div className="rounded-lg border p-2.5">
+        <p className="text-xs text-muted-foreground">
+          <span className="font-semibold">Contra unidades vendidas:</span> {brecha.motivo} Calculalo en CMV Productos
+          para ver cuánto del costo no está explicado.
+        </p>
+      </div>
+    );
+  }
+  const b = brecha;
+  const pp = (v: number) => `${v.toFixed(2)} pp`;
+  return (
+    <div className={`rounded-lg border ${ECON.border} p-3 space-y-2.5`} data-testid="panel-brecha-food-cost">
+      <p className={`text-xs font-semibold ${ECON.text}`}>
+        {b.modo === "compras" ? "Food cost por compras" : "Food cost por existencias"} contra unidades vendidas
+      </p>
+
+      <div className="grid gap-2 sm:grid-cols-3 text-xs">
+        <div className="rounded border p-2">
+          <p className="text-muted-foreground">Real ({b.modo === "compras" ? "compras" : "existencias"})</p>
+          <p className="font-mono font-semibold">{formatCurrency(b.real)}</p>
+          <p className="text-muted-foreground">{b.realPct.toFixed(2)}% de las ventas</p>
+        </div>
+        <div className="rounded border p-2">
+          <p className="text-muted-foreground">Teórico (unidades vendidas × receta)</p>
+          <p className="font-mono font-semibold">{formatCurrency(b.teorico)}</p>
+          <p className="text-muted-foreground">{b.teoricoPct.toFixed(2)}% de las ventas</p>
+        </div>
+        <div className={`rounded border p-2 ${b.monto > 0 ? "border-destructive/40" : ""}`}>
+          <p className="text-muted-foreground">Desfasaje</p>
+          <p className={`font-mono font-semibold ${b.monto > 0 ? "text-destructive" : ECON.text}`}>{formatCurrency(b.monto)}</p>
+          <p className="text-muted-foreground">{pp(b.puntos)} de las ventas</p>
+        </div>
+      </div>
+
+      {b.monto > 0 ? (
+        <>
+          <div className="space-y-1">
+            <div className="flex h-2.5 overflow-hidden rounded-full bg-muted">
+              <div className="bg-amber-500" style={{ width: `${Math.min(100, b.explicadoPct)}%` }} />
+              <div className="bg-destructive" style={{ width: `${Math.max(0, 100 - b.explicadoPct)}%` }} />
+            </div>
+            <div className="grid gap-2 sm:grid-cols-2 text-xs">
+              <p>
+                <span className="inline-block h-2 w-2 rounded-full bg-amber-500 mr-1.5" />
+                <span className="font-semibold">Justificado por decomisos:</span>{" "}
+                <span className="font-mono">{formatCurrency(b.explicado)}</span> ({b.explicadoPct.toFixed(1)}% del desfasaje)
+              </p>
+              <p>
+                <span className="inline-block h-2 w-2 rounded-full bg-destructive mr-1.5" />
+                <span className="font-semibold">Sin justificar:</span>{" "}
+                <span className="font-mono">{formatCurrency(b.sinJustificar)}</span> ({pp(b.sinJustificarPuntos)} de las ventas)
+              </p>
+            </div>
+          </div>
+          {b.sinJustificar > 0 && (
+            <p className="text-xs text-muted-foreground">
+              Lo no justificado puede ser mal uso de la mercadería, desperdicios sin registrar, robos o que el
+              proveedor haya entregado de menos.
+            </p>
+          )}
+          {b.decomisos.total > 0 && (
+            <p className="text-[11px] text-muted-foreground">
+              Decomisos cargados en el mes: {formatCurrency(b.decomisos.total)}
+              {b.decomisos.total > b.monto && " (más que el desfasaje: toda la diferencia queda justificada)"} —{" "}
+              {b.decomisos.porTipo.slice(0, 5).map((t) => `${t.tipo} ${formatCurrency(t.monto)}`).join(" · ")}
+              {b.decomisos.porTipo.length > 5 && " · …"}
+            </p>
+          )}
+          {b.decomisos.total === 0 && (
+            <p className="text-[11px] text-muted-foreground">No hay decomisos cargados para estos locales en el mes.</p>
+          )}
+        </>
+      ) : (
+        <p className="text-xs text-muted-foreground">
+          El costo real quedó por debajo del teórico: no hay desfasaje que justificar. Si la diferencia es grande,
+          suele ser una receta con costo desactualizado o productos sin costear.
+        </p>
+      )}
+
+      {b.modo === "compras" && (
+        <p className="text-[11px] text-amber-700 dark:text-amber-400">
+          Por compras, el desfasaje también incluye la variación de stock: un mes en que se compra para stockearse
+          aparece como diferencia sin que falte nada. La comparación limpia es por existencias.
+        </p>
+      )}
+      {b.coberturaBaja && (
+        <p className="text-[11px] text-amber-700 dark:text-amber-400">
+          La cobertura de costeo de unidades vendidas es baja: el teórico está subvaluado y el desfasaje sale inflado.
+        </p>
+      )}
+      <p className="text-[11px] text-muted-foreground">Comparado solo sobre {b.locales.join(", ")}, que tienen los dos cálculos.</p>
+    </div>
   );
 }
 
