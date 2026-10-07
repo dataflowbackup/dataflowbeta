@@ -4058,6 +4058,29 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
   });
 
+  app.get("/api/economic/top-productos", isAuthenticated, async (req, res) => {
+    try {
+      const clientId = await getClientId(req);
+      const year = parseInt(String(req.query.year ?? ""), 10);
+      const month = parseInt(String(req.query.month ?? ""), 10);
+      if (!Number.isFinite(year) || !Number.isFinite(month) || month < 1 || month > 12) {
+        return res.status(400).json({ message: "Año o mes inválido" });
+      }
+      const localIds = String(req.query.localIds ?? "")
+        .split(",")
+        .map((n) => parseInt(n, 10))
+        .filter((n) => Number.isFinite(n) && n > 0);
+      const raw = String(req.query.source ?? "fudo");
+      const source = raw === "datalive" || raw === "shares" ? raw : "fudo";
+      const categoria = String(req.query.categoria ?? "").trim() || null;
+      res.json(await storage.getEconomicTopProductos(clientId, {
+        year, month, localIds: localIds.length > 0 ? localIds : undefined, source, categoria,
+      }));
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
   // "Categorías que SÍ computan": destino de las categorías de los grupos que no computan.
   app.get("/api/economic/category-destinations", isAuthenticated, async (req, res) => {
     try {
@@ -5282,6 +5305,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
           .array(
             z.object({
               producto: z.string().max(255),
+              categoria: z.string().max(100).nullable().optional(),
               cantidad: z.coerce.number().int(),
             }),
           )

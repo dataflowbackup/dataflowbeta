@@ -2,7 +2,8 @@
  * Parser del reporte de PRODUCTOS de Datalive (archivo separado, distinto al de ventas diarias).
  *
  * Estructura del archivo (Sheet1):
- *   - Fila de sección:  ["EMPANADAS","","",""]          → col B vacío, sin ID → skip
+ *   - Fila de sección:  ["EMPANADAS","","",""]          → col B vacío, sin ID → es la CATEGORÍA
+ *                                                          de los productos que siguen
  *   - Fila de cabecera: ["Producto","ID","Local","Total"] → col A==="Producto" → skip
  *   - Fila de producto: ["EMPANADA",79986,33858,33858]   → col B es número (ID) → incluir
  *   - Fila de subtotal: ["TOTAL EMPANADAS","",33858,...] → col A empieza con "TOTAL" → skip
@@ -13,6 +14,8 @@
 
 export interface ParsedDataliveProducto {
   producto: string;
+  /** La sección del reporte bajo la que viene el producto, o null si vino antes de cualquiera. */
+  categoria: string | null;
   cantidad: number;
 }
 
@@ -26,6 +29,7 @@ export function parseDataliveProductsReport(rows: any[][]): DataliveProductsPars
   if (!rows || rows.length === 0) return { items: [], warnings: ["El archivo está vacío."] };
 
   const items: ParsedDataliveProducto[] = [];
+  let categoria: string | null = null;
 
   for (let i = 0; i < rows.length; i++) {
     const row = rows[i];
@@ -43,13 +47,16 @@ export function parseDataliveProductsReport(rows: any[][]): DataliveProductsPars
     // Skip: fila TOTAL (subtotales y total final)
     if (colA.toUpperCase().startsWith("TOTAL")) continue;
 
-    // Skip: sección header — col B es string vacío (no tiene ID numérico ni valor)
-    if (colB === "" || colB == null) continue;
+    // Sección: col B vacía (sin ID). Es la categoría de los productos que vienen debajo.
+    if (colB === "" || colB == null) {
+      categoria = colA;
+      continue;
+    }
 
     const producto = colA;
     const cantidad = Math.round(parseFloat(String(row[3] ?? 0)) || 0);
 
-    items.push({ producto, cantidad });
+    items.push({ producto, categoria, cantidad });
   }
 
   if (items.length === 0) {

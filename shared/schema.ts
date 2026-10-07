@@ -1775,6 +1775,8 @@ export const dataliveProductos = pgTable(
     fechaHasta: date("fecha_hasta").notNull(),
     producto: varchar("producto", { length: 255 }).notNull(),
     cantidad: integer("cantidad").notNull().default(0),
+    /** Sección del reporte ("EMPANADAS", "BEBIDAS"). Desde oct-2026; lo anterior queda NULL. */
+    categoria: varchar("categoria", { length: 100 }),
     sourceFile: varchar("source_file", { length: 255 }),
     createdBy: varchar("created_by").references(() => users.id),
     createdAt: timestamp("created_at").defaultNow(),

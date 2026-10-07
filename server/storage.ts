@@ -710,7 +710,7 @@ export interface IStorage {
     localId: number,
     fechaDesde: string,
     fechaHasta: string,
-    items: Array<{ producto: string; cantidad: number }>,
+    items: Array<{ producto: string; categoria?: string | null; cantidad: number }>,
     opts: { sourceFile?: string | null; createdBy?: string | null; replace?: boolean },
   ): Promise<{ insertados: number; omitidos: number; reemplazados: number }>;
   deleteDataliveProductosByPeriodo(clientId: number, localId: number, fechaDesde: string, fechaHasta: string): Promise<number>;
@@ -5643,35 +5643,8 @@ export class DatabaseStorage implements IStorage {
     // anterior (`skipExtras`), alcanza con el resumen y no vale la pena pagar estas consultas.
     const extras: Record<string, unknown> = {};
     if (!opts.skipExtras) {
-      // 1. Los 10 productos más vendidos del mes, con su CMV% y su margen de contribución.
-      //    Reusa el mismo cálculo que el sub-módulo Productos Vendidos.
-      const topSource = opts.salesSources[0] ?? "fudo";
-      const vendidos = await this.computeProductosVendidos(clientId, {
-        source: topSource,
-        dateFrom: from,
-        dateTo: to,
-        localIds,
-        // Se traen 30 aunque se muestren 10: la pantalla deja sacar productos del ranking
-        // (ej. "Servicio de mesa") y tiene que haber con qué completar el top.
-        topN: 30,
-        ivaIncluded: false, // Las ventas van netas de IVA: el margen se mide contra el precio sin IVA.
-        withSales: false,
-      });
-      extras.topProductos = {
-        source: topSource,
-        coberturaPct: vendidos.totals.coberturaPct,
-        unidades: vendidos.totals.unidades,
-        items: vendidos.items.map((it) => ({
-          rank: it.rank,
-          producto: it.producto,
-          cantidad: it.cantidad,
-          participacionPct: it.participacionPct,
-          cmvPct: it.cmvPct,
-          margenPct: it.margenPct,
-          variacionPct: it.variacionPct,
-          esNuevo: it.esNuevo,
-        })),
-      };
+      // 1. El Top 10 de productos se pide aparte (getEconomicTopProductos): tiene filtros propios
+      //    (categoría, productos excluidos) y cambiarlos no tiene que recalcular todo el estado.
 
       // 2. Ventas electrónicas no facturadas (punto 7): lo cobrado por medios que NO son efectivo
       //    (tarjeta, QR, transferencia, cuenta corriente) menos lo facturado. Es la venta que dejó
@@ -5794,6 +5767,50 @@ export class DatabaseStorage implements IStorage {
         resultadoNetoPct: pct(resultadoNeto),
       },
       ...extras,
+    };
+  }
+
+  /**
+   * Top 10 de productos del Estado de Resultado Económico: mismo cálculo que Productos Vendidos,
+   * con los excluidos de la empresa aplicados EN EL SERVIDOR (así el % de participación mide
+   * contra lo que se ve) y, si se pide, solo una categoría.
+   */
+  async getEconomicTopProductos(
+    clientId: number,
+    opts: { year: number; month: number; localIds?: number[]; source: "fudo" | "datalive" | "shares"; categoria?: string | null },
+  ) {
+    const mes = `${opts.year}-${String(opts.month).padStart(2, "0")}`;
+    const lastDay = new Date(Date.UTC(opts.year, opts.month, 0)).getUTCDate();
+    const exclude = await this.getEconomicTopExcluded(clientId);
+    const r = await this.computeProductosVendidos(clientId, {
+      source: opts.source,
+      dateFrom: `${mes}-01`,
+      dateTo: `${mes}-${String(lastDay).padStart(2, "0")}`,
+      localIds: opts.localIds,
+      topN: 10,
+      ivaIncluded: false, // Las ventas van netas de IVA: el margen se mide contra el precio sin IVA.
+      withSales: false,
+      exclude,
+      categoria: opts.categoria ?? null,
+    });
+    return {
+      source: opts.source,
+      categoria: r.categoria,
+      coberturaPct: r.totals.coberturaPct,
+      unidades: r.totals.unidades,
+      categorias: r.categorias,
+      productos: r.productosDelPeriodo,
+      items: r.items.map((it) => ({
+        rank: it.rank,
+        producto: it.producto,
+        categoria: it.categoria,
+        cantidad: it.cantidad,
+        participacionPct: it.participacionPct,
+        cmvPct: it.cmvPct,
+        margenPct: it.margenPct,
+        variacionPct: it.variacionPct,
+        esNuevo: it.esNuevo,
+      })),
     };
   }
 
@@ -6970,12 +6987,37 @@ export class DatabaseStorage implements IStorage {
     if (opts.localIds && opts.localIds.length > 0) conds.push(inArray(dataliveProductos.localId, opts.localIds));
     const rows = await db.select({
       producto: dataliveProductos.producto,
+      categoria: dataliveProductos.categoria,
       localId: dataliveProductos.localId,
       fecha: dataliveProductos.fechaDesde,
       cantidad: dataliveProductos.cantidad,
     }).from(dataliveProductos).where(and(...conds));
-    // Datalive no guarda categoría: el corte por categoría solo existe en FUDO y Shares.
-    return rows.map((r) => ({ ...r, categoria: null, fecha: String(r.fecha), cantidad: r.cantidad ?? 0 }));
+    // Datalive guarda la categoría desde oct-2026; lo importado antes queda NULL y se completa
+    // con el catálogo de categorías conocidas (getProductCategoryCatalog).
+    return rows.map((r) => ({ ...r, categoria: r.categoria ?? null, fecha: String(r.fecha), cantidad: r.cantidad ?? 0 }));
+  }
+
+  /**
+   * Última categoría conocida de cada producto (por nombre normalizado). La categoría es del
+   * producto, no del día: así un archivo nuevo con categorías completa los meses importados
+   * antes de que se guardara (Datalive hasta oct-2026).
+   */
+  private async getProductCategoryCatalog(
+    clientId: number,
+    source: "fudo" | "datalive" | "shares",
+  ): Promise<Map<string, string>> {
+    const t: any = source === "fudo" ? fudoProductos : source === "shares" ? sharesProductos : dataliveProductos;
+    const fecha = source === "datalive" ? t.fechaHasta : t.fecha;
+    const rows = await db.select({ producto: t.producto, categoria: t.categoria, fecha })
+      .from(t)
+      .where(and(eq(t.clientId, clientId), isNotNull(t.categoria)))
+      .orderBy(asc(fecha));
+    const out = new Map<string, string>();
+    for (const r of rows as any[]) {
+      const cat = String(r.categoria ?? "").trim();
+      if (cat) out.set(this.productKey(r.producto), cat); // la más nueva pisa
+    }
+    return out;
   }
 
   /**
@@ -7048,6 +7090,8 @@ export class DatabaseStorage implements IStorage {
       exclude?: string[];
       /** Sumar la facturación de los dos períodos. El Estado de Resultado no la usa y se la ahorra. */
       withSales?: boolean;
+      /** Solo los productos de esta categoría (en los dos períodos y en los totales). */
+      categoria?: string | null;
     },
   ) {
     const ivaIncluded = opts.ivaIncluded ?? false;
@@ -7074,8 +7118,37 @@ export class DatabaseStorage implements IStorage {
       withSales ? this.getSalesBySource(clientId, { dateFrom: opts.dateFrom, dateTo: opts.dateTo, localIds }, opts.source) : null,
       withSales ? this.getSalesBySource(clientId, { dateFrom: prev.from, dateTo: prev.to, localIds }, opts.source) : null,
     ]);
-    const rows = excluded.size > 0 ? rawRows.filter((r) => !excluded.has(this.productKey(r.producto))) : rawRows;
-    const prevRows = excluded.size > 0 ? rawPrevRows.filter((r) => !excluded.has(this.productKey(r.producto))) : rawPrevRows;
+    // Categoría: la de la fila o, si no la tiene, la última conocida del producto.
+    const needsCatalog = [...rawRows, ...rawPrevRows].some((r) => !r.categoria);
+    const catalog = needsCatalog ? await this.getProductCategoryCatalog(clientId, opts.source) : new Map<string, string>();
+    for (const r of [...rawRows, ...rawPrevRows]) {
+      if (!r.categoria) r.categoria = catalog.get(this.productKey(r.producto)) ?? null;
+    }
+    const catKey = (c: string | null) => String(c ?? "").trim().toLowerCase();
+    const wantedCat = opts.categoria ? catKey(opts.categoria) : null;
+
+    /** Todos los productos del período, ANTES de excluir y de filtrar: para elegir qué se ve. */
+    const productosDelPeriodo = new Map<string, { producto: string; categoria: string | null; cantidad: number }>();
+    /** Categorías del período con sus unidades (sin los productos excluidos): el filtro. */
+    const categoriasDelPeriodo = new Map<string, { categoria: string; cantidad: number }>();
+    for (const r of rawRows) {
+      const key = this.productKey(r.producto);
+      if (!key) continue;
+      const p = productosDelPeriodo.get(key) ?? { producto: r.producto, categoria: r.categoria, cantidad: 0 };
+      p.cantidad += r.cantidad;
+      productosDelPeriodo.set(key, p);
+      if (excluded.has(key)) continue;
+      const cn = String(r.categoria ?? "").trim() || "Sin categoría";
+      const c = categoriasDelPeriodo.get(cn.toLowerCase()) ?? { categoria: cn, cantidad: 0 };
+      c.cantidad += r.cantidad;
+      categoriasDelPeriodo.set(cn.toLowerCase(), c);
+    }
+
+    const keep = (r: { producto: string; categoria: string | null }) =>
+      !excluded.has(this.productKey(r.producto)) &&
+      (wantedCat == null || (catKey(r.categoria) || "sin categoría") === wantedCat);
+    const rows = rawRows.filter(keep);
+    const prevRows = rawPrevRows.filter(keep);
 
     // Costeo: mismo camino que CMV Productos (product_costs manda, el mapeo viejo es fallback),
     // pero indexado por nombre normalizado para que el costo cargado una vez sirva a las variantes.
@@ -7240,6 +7313,11 @@ export class DatabaseStorage implements IStorage {
       period: { from: opts.dateFrom, to: opts.dateTo, days, diasConVenta: diasConVenta.size },
       prevPeriod: prev,
       excluidos: opts.exclude ?? [],
+      categoria: opts.categoria ?? null,
+      categorias: Array.from(categoriasDelPeriodo.values()).sort((a, b) => b.cantidad - a.cantidad),
+      productosDelPeriodo: Array.from(productosDelPeriodo.entries())
+        .map(([key, p]) => ({ ...p, excluido: excluded.has(key) }))
+        .sort((a, b) => b.cantidad - a.cantidad),
       locals: selectedLocals,
       allLocalsCount: localRows.length,
       isAllLocals: !localIds,
@@ -7856,7 +7934,7 @@ export class DatabaseStorage implements IStorage {
     localId: number,
     fechaDesde: string,
     fechaHasta: string,
-    items: Array<{ producto: string; cantidad: number }>,
+    items: Array<{ producto: string; categoria?: string | null; cantidad: number }>,
     opts: { sourceFile?: string | null; createdBy?: string | null; replace?: boolean },
   ): Promise<{ insertados: number; omitidos: number; reemplazados: number }> {
     const existing = await db
@@ -7892,6 +7970,7 @@ export class DatabaseStorage implements IStorage {
         fechaDesde,
         fechaHasta,
         producto: item.producto,
+        categoria: item.categoria?.trim() || null,
         cantidad: item.cantidad,
         sourceFile: opts.sourceFile ?? null,
         createdBy: opts.createdBy ?? null,

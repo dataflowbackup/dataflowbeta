@@ -25,6 +25,8 @@ import { Button } from "@/components/ui/button";
 import { buildEconomicStatementPdf, type StatementPdfRow } from "@/lib/economic-statement-pdf";
 import { commissionLabel, TAX_KIND_BY_KEY, TAX_MODE_LABELS, type TaxKind, type TaxMode } from "@shared/economicStatement";
 import { ECON } from "./econ-shared";
+import { TopProductosCard, type TopProductosData } from "./top-productos-card";
+import { usePersistentFilter } from "@/hooks/usePersistentFilter";
 
 interface Leaf {
   label: string;
@@ -115,21 +117,6 @@ interface Statement {
   };
   resumen: Record<string, number>;
   indicadores: Record<string, number>;
-  topProductos?: {
-    source: string;
-    coberturaPct: number | null;
-    unidades: number;
-    items: Array<{
-      rank: number;
-      producto: string;
-      cantidad: number;
-      participacionPct: number;
-      cmvPct: number | null;
-      margenPct: number | null;
-      variacionPct: number | null;
-      esNuevo: boolean;
-    }>;
-  };
   ventasNoFacturadas?: {
     disponible: true;
     ventasNoEfectivo: number;
@@ -547,8 +534,22 @@ export function StatementTab({
     onError: (_e, _v, ctx) => queryClient.setQueryData([EXCLUDED_KEY], ctx?.prev ?? []),
     onSuccess: (saved) => queryClient.setQueryData([EXCLUDED_KEY], saved),
   });
-  const excluir = (producto: string) => saveExcluded.mutate([...excluded, producto]);
-  const restablecer = () => saveExcluded.mutate([]);
+
+  /** Top 10: endpoint propio, así cambiar la categoría o un excluido no recalcula todo el estado. */
+  const [topCategoria, setTopCategoria] = usePersistentFilter<string>("balanceEconomico.topCategoria", "");
+  const topSource = salesSources[0] ?? "fudo";
+  const { data: topData, isLoading: topLoading } = useQuery<TopProductosData>({
+    queryKey: ["/api/economic/top-productos", year, month, localParam, topSource, topCategoria, excluded.join("|")],
+    queryFn: async () => {
+      const qs = new URLSearchParams({ year: String(year), month: String(month), source: topSource });
+      if (localParam) qs.set("localIds", localParam);
+      if (topCategoria) qs.set("categoria", topCategoria);
+      const res = await fetch(`/api/economic/top-productos?${qs}`, { credentials: "include" });
+      if (!res.ok) throw new Error((await res.json().catch(() => ({})))?.message || "Error al calcular el top");
+      return res.json();
+    },
+    placeholderData: (prev) => prev,
+  });
 
   /**
    * Todo el plegado vive acá y no adentro de cada sección: el PDF exporta exactamente lo que se
@@ -742,11 +743,11 @@ export function StatementTab({
             ],
           }
         : null,
-      topProductos: data.topProductos
+      topProductos: topData && topData.items.length > 0
         ? {
-            source: data.topProductos.source,
-            coberturaPct: data.topProductos.coberturaPct,
-            items: topVisibles,
+            source: topData.source,
+            coberturaPct: topData.coberturaPct,
+            items: topData.items,
           }
         : null,
     });
@@ -779,11 +780,6 @@ export function StatementTab({
 
   const sinRubro = data.compras.groups.find((g) => g.label === "Sin rubro asignado");
 
-  const excludedSet = new Set(excluded);
-  const topVisibles = (data.topProductos?.items ?? [])
-    .filter((it) => !excludedSet.has(it.producto))
-    .slice(0, 10)
-    .map((it, i) => ({ ...it, rank: i + 1 }));
 
   return (
     <div className="space-y-4">
@@ -1234,93 +1230,14 @@ export function StatementTab({
       </div>
 
       {/* ── TOP 10 PRODUCTOS ── */}
-      {data.topProductos && (topVisibles.length > 0 || excluded.length > 0) && (
-        <Card>
-          <CardContent className="pt-6">
-            <div className="flex items-baseline justify-between gap-3 flex-wrap mb-3">
-              <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                Los 10 productos más vendidos del mes
-              </p>
-              <p className="text-[11px] text-muted-foreground">
-                Origen: {data.topProductos.source === "fudo" ? "FUDO" : data.topProductos.source === "shares" ? "Shares" : "Datalive"} ·
-                cobertura de costeo {data.topProductos.coberturaPct == null ? "—" : pct(data.topProductos.coberturaPct)}
-              </p>
-            </div>
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="border-b text-xs text-muted-foreground">
-                    <th className="text-left font-medium py-2 w-8">#</th>
-                    <th className="text-left font-medium py-2">Producto</th>
-                    <th className="text-right font-medium py-2">Unidades</th>
-                    <th className="text-right font-medium py-2">% del total</th>
-                    <th className="text-right font-medium py-2">CMV %</th>
-                    <th className="text-right font-medium py-2">Margen %</th>
-                    <th className="text-right font-medium py-2" title="Variación de las unidades vendidas contra el mes anterior">
-                      Unid. vs mes anterior
-                    </th>
-                    <th className="w-8" />
-                  </tr>
-                </thead>
-                <tbody>
-                  {topVisibles.map((it) => (
-                    <tr key={it.producto} className="border-b last:border-0">
-                      <td className="py-2 text-xs text-muted-foreground">{it.rank}</td>
-                      <td className="py-2">{it.producto}</td>
-                      <td className="py-2 text-right font-mono">{it.cantidad.toLocaleString("es-AR")}</td>
-                      <td className="py-2 text-right font-mono">{pct(it.participacionPct)}</td>
-                      <td className="py-2 text-right font-mono">{it.cmvPct == null ? "—" : pct(it.cmvPct)}</td>
-                      <td className={`py-2 text-right font-mono ${it.margenPct != null ? ECON.text : ""}`}>
-                        {it.margenPct == null ? "—" : pct(it.margenPct)}
-                      </td>
-                      <td className="py-2 text-right font-mono text-xs">
-                        {it.esNuevo ? (
-                          <Badge variant="secondary" className="text-[10px]">nuevo</Badge>
-                        ) : it.variacionPct == null ? (
-                          "—"
-                        ) : (
-                          <span className={it.variacionPct >= 0 ? "text-emerald-600 dark:text-emerald-500" : "text-destructive"}>
-                            {it.variacionPct >= 0 ? "+" : ""}
-                            {it.variacionPct.toFixed(1)}%
-                          </span>
-                        )}
-                      </td>
-                      <td className="py-2 text-right">
-                        <button
-                          type="button"
-                          onClick={() => excluir(it.producto)}
-                          className="text-xs text-muted-foreground hover:text-destructive"
-                          title="Sacar del ranking"
-                          data-testid={`button-excluir-top-${it.rank}`}
-                        >
-                          ✕
-                        </button>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-            <p className="mt-3 text-[11px] text-muted-foreground">
-              La columna "Unid. vs mes anterior" compara las unidades vendidas de cada producto contra las del mes anterior.
-            </p>
-            {excluded.length > 0 && (
-              <p className="mt-1 text-[11px] text-muted-foreground">
-                Fuera del ranking: {excluded.join(", ")}.{" "}
-                <button type="button" onClick={restablecer} className={`${ECON.text} hover:underline`} data-testid="button-restablecer-top">
-                  Restablecer
-                </button>
-              </p>
-            )}
-            {data.topProductos.coberturaPct != null && data.topProductos.coberturaPct < 95 && (
-              <p className="mt-3 text-[11px] text-amber-700 dark:text-amber-400">
-                Los productos con "—" no tienen costo cargado todavía. Se les asigna en CMV Productos o en Productos
-                Vendidos, y con eso se completan estas dos columnas.
-              </p>
-            )}
-          </CardContent>
-        </Card>
-      )}
+      <TopProductosCard
+        data={topData}
+        isLoading={topLoading}
+        categoria={topCategoria}
+        onCategoriaChange={setTopCategoria}
+        excluded={excluded}
+        onExcludedChange={(productos) => saveExcluded.mutate(productos)}
+      />
 
       {/* ── INDICADORES ── */}
       <Card>
