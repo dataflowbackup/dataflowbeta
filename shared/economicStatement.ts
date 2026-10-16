@@ -107,7 +107,7 @@ export function isTaxKind(v: unknown): v is TaxKind {
 export type CategoryDestination = "gastos" | "comisiones" | "inversion" | "impuesto";
 
 export const CATEGORY_DESTINATION_LABELS: Record<CategoryDestination, string> = {
-  gastos: "Gastos operativos",
+  gastos: "Gastos Fijos",
   comisiones: "Comisiones",
   inversion: "Inversión",
   impuesto: "Impuesto",

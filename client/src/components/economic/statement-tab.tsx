@@ -12,19 +12,19 @@
  * (÷1,21) y las no facturadas van completas; todos los % se miden sobre las ventas netas. Las
  * compras siguen con IVA. La línea de IVA de impuestos se muestra pero no resta.
  */
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
-import { Link } from "wouter";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { formatCurrency } from "@/lib/formatters";
-import { ChevronRight, ChevronDown, AlertTriangle, ExternalLink, FileDown, ChevronsDownUp, ChevronsUpDown } from "lucide-react";
+import { AlertTriangle, FileDown } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { buildEconomicStatementPdf, type StatementPdfRow } from "@/lib/economic-statement-pdf";
 import { commissionLabel, TAX_KIND_BY_KEY, TAX_MODE_LABELS, type TaxKind, type TaxMode } from "@shared/economicStatement";
 import { ECON } from "./econ-shared";
+import { Row, TreeRows, ColumnHeader, Department, ResultBand, DEPARTAMENTOS, pct, type TNode } from "./statement-visual";
 import { TopProductosCard, type TopProductosData } from "./top-productos-card";
 import { usePersistentFilter } from "@/hooks/usePersistentFilter";
 
@@ -36,6 +36,9 @@ interface Leaf {
   source?: string;
   ref?: string;
   invoiceId?: number;
+  /** Food Cost: el insumo tiene adentro sus facturas; sinInsumo = línea sin insumo vinculado. */
+  sinInsumo?: boolean;
+  items?: Leaf[];
 }
 interface Branch {
   label: string;
@@ -130,13 +133,21 @@ interface Statement {
   comisiones: {
     total: number;
     pct: number;
-    lines: Array<{ concept: string; amount: number; pct: number; origen: "manual" | "extractos"; byLocal: Array<{ local: string; amount: number }> }>;
+    lines: Array<{ concept: string; amount: number; pct: number; origen: "manual" | "extractos"; byLocal: Array<{ local: string; amount: number }>; items?: Leaf[] }>;
   };
   /** Todos los impuestos en una sección (Ganancias incluido); el IVA es informativo y no resta. */
   impuestos: {
     total: number;
     pct: number;
-    lines: Array<{ kind: string; amount: number; pct: number; informativo: boolean; byLocal: Array<{ local: string; amount: number; mode: string }> }>;
+    lines: Array<{
+      kind: string;
+      amount: number;
+      pct: number;
+      informativo: boolean;
+      byLocal: Array<{ local: string; amount: number; mode: string }>;
+      /** Categoría → movimientos de lo que sale de extractos; lo manual es una línea por local. */
+      children?: Array<{ label: string; amount: number; pct: number; manual: boolean; meta?: string; items: Leaf[] }>;
+    }>;
   };
   resumen: Record<string, number>;
   indicadores: Record<string, number>;
@@ -166,16 +177,6 @@ interface Statement {
   };
 }
 
-/**
- * Ancho de las dos columnas numéricas, en un solo lugar. Tienen que coincidir en el encabezado,
- * en las filas, en los títulos de sección y en el resultado neto: si una se desalinea, la columna
- * de porcentaje se corta contra el borde de la tarjeta.
- */
-const COL_IMPORTE = "w-40";
-const COL_PCT = "w-20";
-
-const pct = (v: number) => `${v.toFixed(1)}%`;
-
 /** La explicación que pidió el usuario, en la pantalla y en el PDF. */
 const NOTA_IVA =
   "A las ventas facturadas se les quita el IVA (÷1,21) porque ese 21% se le debe a AFIP, no es ingreso del negocio. Las ventas no facturadas se toman completas. Los % del informe se miden sobre las ventas netas.";
@@ -185,207 +186,156 @@ const fmtDate = (iso?: string) => {
   return y && m && d ? `${d}/${m}` : "";
 };
 
-/** Una fila del informe. La sangría marca el nivel; el % es siempre sobre ventas. */
-function Row({
-  label,
-  amount,
-  pctValue,
-  level,
-  bold,
-  tone,
-  right,
-  onClick,
-  open,
-  hasChildren,
-  meta,
-  testId,
-}: {
-  label: string;
-  amount: number;
-  pctValue: number;
-  level: 0 | 1 | 2 | 3;
-  bold?: boolean;
-  tone?: "total" | "muted" | "negative";
-  right?: React.ReactNode;
-  onClick?: () => void;
-  open?: boolean;
-  hasChildren?: boolean;
-  meta?: React.ReactNode;
-  testId?: string;
-}) {
-  const pad = ["pl-2", "pl-6", "pl-12", "pl-[4.5rem]"][level];
-  const toneClass =
-    tone === "total" ? `font-semibold ${ECON.text}` : tone === "negative" ? "text-destructive" : tone === "muted" ? "text-muted-foreground" : "";
-  return (
-    <div
-      className={`flex items-center gap-2 py-1.5 pr-3 border-b last:border-0 ${pad} ${onClick ? "cursor-pointer hover:bg-emerald-50/60 dark:hover:bg-emerald-950/20" : ""} ${bold ? "font-semibold" : ""}`}
-      onClick={onClick}
-      data-testid={testId}
-    >
-      <span className="w-4 shrink-0 text-muted-foreground">
-        {hasChildren ? (open ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />) : null}
-      </span>
-      <div className="flex-1 min-w-0">
-        <span className={`text-sm ${toneClass}`}>{label}</span>
-        {meta && <span className="ml-2 text-[11px] text-muted-foreground">{meta}</span>}
-      </div>
-      {right}
-      <span className={`${COL_IMPORTE} shrink-0 text-right font-mono text-sm ${toneClass}`}>{formatCurrency(amount)}</span>
-      <span className={`${COL_PCT} shrink-0 text-right font-mono text-xs text-muted-foreground`}>{pct(pctValue)}</span>
-    </div>
-  );
+/** Las seis secciones del edificio y a qué profundidad están sus "categorías" (para los botones 2 y 3). */
+type SeccionId = keyof typeof DEPARTAMENTOS;
+const SECCIONES: Array<{ id: SeccionId; catDepth: number }> = [
+  { id: "ventas", catDepth: 1 },
+  { id: "costo", catDepth: 0 },
+  { id: "gastos", catDepth: 1 },
+  { id: "comisiones", catDepth: 0 },
+  { id: "inversiones", catDepth: 1 },
+  { id: "impuestos", catDepth: 1 },
+];
+
+/** Qué abre cada botón de nivel (pedido del usuario, 16-oct-2026). */
+const NIVELES: Array<{ n: number; help: string }> = [
+  { n: 1, help: "Solo los totales de cada departamento" },
+  { n: 2, help: "Rubros del Food Cost y categorías del resto" },
+  { n: 3, help: "Sub-rubros del Food Cost y movimientos del resto" },
+  { n: 4, help: "Como el 3, con el Food Cost por insumo comprado" },
+  { n: 5, help: "Como el 4, con las facturas de cada insumo" },
+];
+
+const leafMeta = (it: Leaf) =>
+  [fmtDate(it.date), it.source, it.invoiceId ? it.ref : null].filter(Boolean).join(" · ") || undefined;
+
+/** Hoja genérica: un movimiento, una factura, o un insumo con sus facturas adentro. */
+function leafNode(key: string, it: Leaf): TNode {
+  const children = (it.items ?? []).map((x, i) => leafNode(`${key}/${i}`, x));
+  return {
+    key,
+    label: it.label,
+    amount: it.amount,
+    pct: it.pct,
+    meta: it.sinInsumo ? "sin insumo vinculado" : leafMeta(it),
+    invoiceId: it.invoiceId,
+    muted: children.length === 0,
+    children,
+  };
 }
 
-/**
- * Encabezado de una sección. Pliega y despliega TODO lo que tiene abajo de una sola vez: con
- * 22 rubros de compras abiertos, llegar al resultado neto era hacer scroll a ciegas.
- */
-function SectionHeader({
-  title,
-  amount,
-  pctValue,
-  open,
-  onToggle,
-  testId,
-}: {
-  title: string;
-  amount: number;
-  pctValue: number;
-  open?: boolean;
-  onToggle?: () => void;
-  testId?: string;
-}) {
-  return (
-    <div
-      className={`flex items-center gap-2 pl-2 pr-3 py-2 ${ECON.bg} border-b ${ECON.border} ${onToggle ? "cursor-pointer hover:brightness-95" : ""}`}
-      onClick={onToggle}
-      data-testid={testId}
-    >
-      <span className={`w-4 shrink-0 ${ECON.text}`}>
-        {onToggle ? (open ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />) : null}
-      </span>
-      <span className={`flex-1 text-xs font-semibold uppercase tracking-wide ${ECON.text}`}>{title}</span>
-      <span className={`${COL_IMPORTE} text-right font-mono text-sm font-semibold ${ECON.text}`}>{formatCurrency(amount)}</span>
-      <span className={`${COL_PCT} text-right font-mono text-xs ${ECON.textSoft}`}>{pct(pctValue)}</span>
-    </div>
-  );
+/** Grupo → sub-grupo → hojas (Food Cost por compras, Gastos Fijos, Inversión). */
+function groupsToNodes(groups: Node[], prefix: string): TNode[] {
+  return groups.map((g, gi) => ({
+    key: `${prefix}/${gi}`,
+    label: g.label,
+    amount: g.amount,
+    pct: g.pct,
+    badge: g.computes === false ? "no computa" : undefined,
+    children: g.children.map((c, ci) => ({
+      key: `${prefix}/${gi}/${ci}`,
+      label: c.label,
+      amount: c.amount,
+      pct: c.pct,
+      children: c.items.map((it, ii) => leafNode(`${prefix}/${gi}/${ci}/${ii}`, it)),
+    })),
+  }));
 }
 
-/** Sección con árbol de 3 niveles: grupo → sub-grupo → comprobante. */
-function TreeSection({
-  title,
-  total,
-  totalPct,
-  groups,
-  emptyText,
-  keyPrefix,
-  open,
-  onToggleSection,
-  openGroups,
-  openBranches,
-  onToggleGroup,
-  onToggleBranch,
-}: {
-  title: string;
-  total: number;
-  totalPct: number;
-  groups: Node[];
-  emptyText: string;
-  keyPrefix: string;
-  /** El estado de plegado vive en StatementTab: el PDF exporta exactamente lo que se ve. */
-  open: boolean;
-  onToggleSection: () => void;
-  openGroups: string[];
-  openBranches: string[];
-  onToggleGroup: (k: string) => void;
-  onToggleBranch: (k: string) => void;
-}) {
-  return (
-    <div>
-      <SectionHeader
-        title={title}
-        amount={total}
-        pctValue={totalPct}
-        open={open}
-        onToggle={onToggleSection}
-        testId={`section-${keyPrefix}`}
-      />
-      {!open ? null : groups.length === 0 ? (
-        <p className="px-4 py-3 text-sm text-muted-foreground">{emptyText}</p>
-      ) : (
-        groups.map((g, gi) => {
-          const gk = `${keyPrefix}-${gi}`;
-          const gOpen = openGroups.includes(gk);
-          return (
-            <div key={gk}>
-              <Row
-                label={g.label}
-                amount={g.amount}
-                pctValue={g.pct}
-                level={0}
-                bold
-                hasChildren={g.children.length > 0}
-                open={gOpen}
-                onClick={() => onToggleGroup(gk)}
-                meta={g.computes === false ? <Badge variant="outline" className="text-[10px]">no computa</Badge> : undefined}
-                testId={`row-${gk}`}
-              />
-              {gOpen &&
-                g.children.map((c, ci) => {
-                  const ck = `${gk}-${ci}`;
-                  const cOpen = openBranches.includes(ck);
-                  return (
-                    <div key={ck}>
-                      <Row
-                        label={c.label}
-                        amount={c.amount}
-                        pctValue={c.pct}
-                        level={1}
-                        hasChildren={c.items.length > 0}
-                        open={cOpen}
-                        onClick={() => onToggleBranch(ck)}
-                      />
-                      {cOpen &&
-                        c.items.map((it, ii) => (
-                          <Row
-                            key={`${ck}-${ii}`}
-                            label={it.label}
-                            amount={it.amount}
-                            pctValue={it.pct}
-                            level={2}
-                            tone="muted"
-                            meta={
-                              <>
-                                {fmtDate(it.date)}
-                                {it.source ? ` · ${it.source}` : ""}
-                                {it.ref && it.invoiceId ? ` · ${it.ref}` : ""}
-                              </>
-                            }
-                            right={
-                              it.invoiceId ? (
-                                <Link
-                                  href={`/facturas/${it.invoiceId}`}
-                                  onClick={(e) => e.stopPropagation()}
-                                  className={`shrink-0 ${ECON.text} hover:underline`}
-                                  title="Abrir la factura"
-                                >
-                                  <ExternalLink className="h-3.5 w-3.5" />
-                                </Link>
-                              ) : undefined
-                            }
-                          />
-                        ))}
-                    </div>
-                  );
-                })}
-            </div>
-          );
-        })
-      )}
-    </div>
-  );
+/** Los árboles de los seis departamentos, con claves estables para el estado de plegado. */
+function buildTrees(d: Statement): Record<SeccionId, TNode[]> {
+  const ventas: TNode[] = [
+    {
+      key: "ventas/0",
+      label: "Ventas brutas (por medio de pago)",
+      amount: d.ventas.brutas,
+      pct: d.ventas.total ? (d.ventas.brutas / d.ventas.total) * 100 : 0,
+      children: d.ventas.lines.map((l, i) => ({
+        key: `ventas/0/${i}`,
+        label: l.label,
+        amount: l.amount,
+        pct: l.pct,
+        meta: l.kind === "manual" ? `manual · ${l.invoiced ? "facturada" : "no facturada"}` : undefined,
+        muted: true,
+        children: [],
+      })),
+    },
+  ];
+  const variante = d.cmv.variantes.find((v) => v.key === d.cmv.mode);
+  const costo: TNode[] =
+    d.cmv.mode === "compras"
+      ? groupsToNodes(d.compras.groups, "costo")
+      : (variante?.rows ?? []).map((r) => ({
+          key: `costo/${r.localId}`,
+          label: r.local,
+          amount: r.amount,
+          pct: r.pct,
+          meta: r.detalle ?? undefined,
+          children: [],
+        }));
+  const comisiones: TNode[] = d.comisiones.lines.map((c, i) => ({
+    key: `comisiones/${i}`,
+    label: c.origen === "manual" ? commissionLabel(c.concept) : c.concept,
+    amount: c.amount,
+    pct: c.pct,
+    meta: c.origen === "manual" ? "cargada a mano" : "de extractos",
+    children: (c.items ?? []).map((it, ii) => leafNode(`comisiones/${i}/${ii}`, it)),
+  }));
+  const impuestos: TNode[] = d.impuestos.lines
+    .filter((t) => !t.informativo)
+    .map((t, i) => ({
+      key: `impuestos/${i}`,
+      label: TAX_KIND_BY_KEY[t.kind as TaxKind]?.label ?? t.kind,
+      amount: t.amount,
+      pct: t.pct,
+      meta:
+        t.byLocal.length > 1
+          ? `${t.byLocal.length} locales`
+          : (TAX_MODE_LABELS[t.byLocal[0]?.mode as TaxMode] ?? "a mano").toLowerCase(),
+      children: (t.children ?? []).map((c, ci) => ({
+        key: `impuestos/${i}/${ci}`,
+        label: c.label,
+        amount: c.amount,
+        pct: c.pct,
+        meta: c.manual ? c.meta : undefined,
+        muted: c.manual,
+        children: c.items.map((it, ii) => leafNode(`impuestos/${i}/${ci}/${ii}`, it)),
+      })),
+    }));
+  return {
+    ventas,
+    costo,
+    gastos: groupsToNodes(d.gastos.groups.filter((g) => g.computes !== false), "gastos"),
+    comisiones,
+    inversiones: groupsToNodes(d.inversiones?.groups ?? [], "inversiones"),
+    impuestos,
+  };
 }
 
+/** Los nodos que abre un botón de nivel. El 1 no abre nada (y además pliega los departamentos). */
+function nodosDelNivel(trees: Record<SeccionId, TNode[]>, nivel: number): Set<string> {
+  const out = new Set<string>();
+  for (const sec of SECCIONES) {
+    // Food Cost: 2 = rubros, 3 = sub-rubros, 4 = insumos, 5 = facturas. El resto: 2 = categorías,
+    // 3 en adelante = movimientos.
+    const max = sec.id === "costo" ? nivel - 3 : nivel === 2 ? sec.catDepth - 1 : nivel >= 3 ? sec.catDepth : -1;
+    const walk = (nodes: TNode[], depth: number) => {
+      if (depth > max) return;
+      for (const n of nodes) {
+        if (n.children.length === 0) continue;
+        out.add(n.key);
+        walk(n.children, depth + 1);
+      }
+    };
+    walk(trees[sec.id], 0);
+  }
+  return out;
+}
+
+/** El título de cada departamento, igual en la pantalla y en el PDF. */
+function tituloCosto(d: Statement) {
+  return d.cmv.mode === "compras" ? "Food Cost — compras del mes" : `Food Cost — ${d.cmv.elegido}`;
+}
 /**
  * Los tres costos de mercadería, lado a lado, con el selector de cuál manda en el resultado.
  * Cada uno se puede abrir para ver de qué local sale y cómo se compone.
@@ -405,7 +355,7 @@ function CmvSelector({
     <Card className={ECON.border}>
       <CardContent className="pt-5 space-y-3">
         <div>
-          <p className="text-sm font-semibold">Costo de mercadería</p>
+          <p className="text-sm font-semibold">Food Cost</p>
           <p className="text-xs text-muted-foreground">
             Los tres se calculan siempre. El que elijas es el que resta en el resultado neto; los otros dos
             quedan al lado como comparación.
@@ -670,24 +620,49 @@ export function StatementTab({
   });
 
   /**
-   * Todo el plegado vive acá y no adentro de cada sección: el PDF exporta exactamente lo que se
-   * ve en pantalla, así que necesita leer este estado.
+   * Todo el plegado vive acá y no adentro de cada departamento: el PDF exporta exactamente lo que
+   * se ve en pantalla, así que necesita leer este estado. Los botones 1 a 5 lo cambian de una vez;
+   * después cada fila se sigue abriendo y cerrando a mano (y el botón deja de marcarse).
    */
-  const [openSections, setOpenSections] = useState<string[]>(["ventas", "costo", "gastos", "comisiones", "impuestos", "inversiones"]);
-  const [openGroups, setOpenGroups] = useState<string[]>([]);
-  const [openBranches, setOpenBranches] = useState<string[]>([]);
-  const [openVentas, setOpenVentas] = useState(true);
+  const [openSections, setOpenSections] = useState<string[]>(SECCIONES.map((s) => s.id));
+  const [openNodes, setOpenNodes] = useState<Set<string>>(() => new Set(["ventas/0"]));
+  /** 0 = ningún botón marcado (se tocó algo a mano). Sobrevive al cambiar de mes o de local. */
+  const [nivel, setNivel] = usePersistentFilter<number>("balanceEconomico.nivel", 0);
 
-  const flip = (arr: string[], set: (v: string[]) => void, k: string) =>
-    set(arr.includes(k) ? arr.filter((x) => x !== k) : [...arr, k]);
+  const trees = useMemo(() => (data ? buildTrees(data) : null), [data]);
+
+  const aplicarNivel = (n: number) => {
+    if (!trees) return;
+    setNivel(n);
+    setOpenSections(n >= 2 ? SECCIONES.map((s) => s.id) : []);
+    setOpenNodes(nodosDelNivel(trees, n));
+  };
+  // Al cambiar de mes o de local los árboles son otros: el nivel elegido se vuelve a aplicar.
+  useEffect(() => {
+    if (trees && nivel) aplicarNivel(nivel);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [trees]);
+
   const isSectionOpen = (k: string) => openSections.includes(k);
+  const toggleSection = (k: string) => {
+    setNivel(0);
+    setOpenSections((prev) => (prev.includes(k) ? prev.filter((x) => x !== k) : [...prev, k]));
+  };
+  const toggleNode = (k: string) => {
+    setNivel(0);
+    setOpenNodes((prev) => {
+      const next = new Set(prev);
+      if (next.has(k)) next.delete(k);
+      else next.add(k);
+      return next;
+    });
+  };
 
   /**
-   * Aplana a filas EXACTAMENTE lo que se está viendo: respeta qué secciones, qué grupos y qué
-   * sub-grupos quedaron desplegados. Es lo que se manda al PDF, así el papel sale igual que la
-   * pantalla.
+   * Aplana a filas EXACTAMENTE lo que se está viendo: respeta qué departamentos y qué filas
+   * quedaron desplegados. Es lo que se manda al PDF, así el papel sale igual que la pantalla.
    */
-  const buildPdfRows = (d: Statement): StatementPdfRow[] => {
+  const buildPdfRows = (d: Statement, t: Record<SeccionId, TNode[]>): StatementPdfRow[] => {
     const out: StatementPdfRow[] = [];
     const push = (
       label: string,
@@ -698,30 +673,20 @@ export function StatementTab({
       meta?: string,
     ) => out.push({ label, amount, pct: pctValue, level, kind, meta });
 
-    const tree = (groups: Node[], keyPrefix: string) => {
-      groups.forEach((g, gi) => {
-        const gk = `${keyPrefix}-${gi}`;
-        push(g.label, g.amount, g.pct, 0, "row");
-        if (!openGroups.includes(gk)) return;
-        g.children.forEach((c, ci) => {
-          const ck = `${gk}-${ci}`;
-          push(c.label, c.amount, c.pct, 1, "row");
-          if (!openBranches.includes(ck)) return;
-          for (const it of c.items) {
-            const meta = [fmtDate(it.date), it.source, it.invoiceId ? it.ref : null].filter(Boolean).join(" · ");
-            push(it.label, it.amount, it.pct, 2, "row", meta || undefined);
-          }
-        });
-      });
+    const flatten = (nodes: TNode[], depth: number) => {
+      for (const n of nodes) {
+        const meta = [n.badge, n.meta].filter(Boolean).join(" · ");
+        push(n.label, n.amount ?? 0, n.pct, Math.min(depth, 3) as 0 | 1 | 2 | 3, "row", meta || undefined);
+        if (n.children.length > 0 && openNodes.has(n.key)) flatten(n.children, depth + 1);
+      }
+    };
+    const section = (id: SeccionId, title: string, amount: number, pctValue: number) => {
+      push(`${DEPARTAMENTOS[id].numero}. ${title}`, amount, pctValue, 0, "section");
+      if (isSectionOpen(id)) flatten(t[id], 0);
     };
 
-    // Ventas
-    push("Ventas netas", d.ventas.total, 100, 0, "section");
+    section("ventas", "Ventas netas", d.ventas.total, 100);
     if (isSectionOpen("ventas")) {
-      push("Ventas brutas (por medio de pago)", d.ventas.brutas, d.ventas.total ? (d.ventas.brutas / d.ventas.total) * 100 : 0, 0, "row");
-      if (openVentas)
-        for (const l of d.ventas.lines)
-          push(l.label, l.amount, l.pct, 1, "row", l.kind === "manual" ? (l.invoiced ? "manual · facturada" : "manual · no facturada") : undefined);
       push(
         "IVA contenido en ventas facturadas",
         -d.ventas.ivaFacturadas,
@@ -732,89 +697,30 @@ export function StatementTab({
       );
       if (d.ventas.objetivo > 0) push("Objetivo del mes", d.ventas.objetivo, null, 0, "row");
     }
-
-    // Costo de mercadería
-    const variante = d.cmv.variantes.find((v) => v.key === d.cmv.mode);
-    push(
-      d.cmv.mode === "compras" ? "Costo de mercadería — compras del mes" : `Costo de mercadería — ${d.cmv.elegido}`,
-      d.resumen.costoMercaderia,
-      d.indicadores.foodCostPct,
-      0,
-      "section",
-    );
-    if (isSectionOpen("costo")) {
-      if (d.cmv.mode === "compras") tree(d.compras.groups, "costo");
-      else for (const r of variante?.rows ?? []) push(r.local, r.amount, r.pct, 0, "row", r.detalle ?? undefined);
-    }
+    section("costo", tituloCosto(d), d.resumen.costoMercaderia, d.indicadores.foodCostPct);
     push("Utilidad bruta", d.resumen.utilidadBruta, d.indicadores.utilidadBrutaPct, 0, "subtotal");
-
-    // Gastos
-    push("Gastos operativos", d.gastos.total, d.gastos.pct, 0, "section");
-    if (isSectionOpen("gastos")) tree(d.gastos.groups.filter((g) => g.computes !== false), "gastos");
-
-    // Comisiones
-    push("Comisiones", d.comisiones.total, d.comisiones.pct, 0, "section");
-    if (isSectionOpen("comisiones"))
-      for (const c of d.comisiones.lines)
-        push(c.origen === "manual" ? commissionLabel(c.concept) : c.concept, c.amount, c.pct, 0, "row", c.origen === "manual" ? "cargada a mano" : "de extractos");
-
+    section("gastos", DEPARTAMENTOS.gastos.title, d.gastos.total, d.gastos.pct);
+    section("comisiones", DEPARTAMENTOS.comisiones.title, d.comisiones.total, d.comisiones.pct);
     push("Resultado operativo", d.resumen.resultadoOperativo, d.indicadores.resultadoOperativoPct, 0, "subtotal");
-
-    // Inversión
-    push("Inversión", d.inversiones.total, d.inversiones.pct, 0, "section");
-    if (isSectionOpen("inversiones")) tree(d.inversiones.groups, "inversiones");
-    push("Resultado operativo con inversión", d.resumen.resultadoConInversion, d.indicadores.resultadoConInversionPct, 0, "subtotal");
-
-    // Impuestos (Ganancias incluido)
-    push("Impuestos sobre ingresos y movimientos", d.impuestos.total, d.impuestos.pct, 0, "section");
-    if (isSectionOpen("impuestos")) {
-      for (const t of d.impuestos.lines)
-        push(
-          TAX_KIND_BY_KEY[t.kind as TaxKind]?.label ?? t.kind,
-          t.amount,
-          t.pct,
-          0,
-          "row",
-          t.informativo ? "informativo: ya descontado de las ventas, no resta" : undefined,
-        );
-    }
-
+    section("inversiones", DEPARTAMENTOS.inversiones.title, d.inversiones.total, d.inversiones.pct);
+    push(
+      "Resultado operativo con inversión (antes de impuestos)",
+      d.resumen.resultadoConInversion,
+      d.indicadores.resultadoConInversionPct,
+      0,
+      "subtotal",
+    );
+    section("impuestos", "Impuestos sobre ingresos y movimientos", d.impuestos.total, d.impuestos.pct);
     push("Resultado neto", d.resumen.resultadoNeto, d.indicadores.resultadoNetoPct, 0, "grand");
 
     return out;
   };
 
-  /** Plega todo de una: con 22 rubros abiertos, llegar al resultado neto era scroll a ciegas. */
-  const plegarTodo = () => {
-    setOpenSections([]);
-    setOpenGroups([]);
-    setOpenBranches([]);
-    setOpenVentas(false);
-  };
-
-  /** Abre todo hasta el comprobante. Las claves son las mismas que arma el árbol al dibujarse. */
-  const desplegarTodo = () => {
-    if (!data) return;
-    const gs: string[] = [];
-    const bs: string[] = [];
-    const walk = (groups: Node[], keyPrefix: string) => {
-      groups.forEach((g, gi) => {
-        const gk = `${keyPrefix}-${gi}`;
-        gs.push(gk);
-        g.children.forEach((_c, ci) => bs.push(`${gk}-${ci}`));
-      });
-    };
-    walk(data.compras.groups, "costo");
-    walk(data.gastos.groups.filter((g) => g.computes !== false), "gastos");
-    walk(data.inversiones?.groups ?? [], "inversiones");
-    setOpenSections(["ventas", "costo", "gastos", "comisiones", "impuestos", "inversiones"]);
-    setOpenGroups(gs);
-    setOpenBranches(bs);
-    setOpenVentas(true);
-  };
+  /** El IVA de la solapa Impuestos: se muestra aparte porque NO incide en el resultado. */
+  const informativos = (data?.impuestos.lines ?? []).filter((t) => t.informativo && Math.abs(t.amount) >= 0.005);
 
   const exportPdf = () => {
-    if (!data) return;
+    if (!data || !trees) return;
     const v = data.ventasNoFacturadas;
     const pe = data.puntoEquilibrio;
     const doc = buildEconomicStatementPdf({
@@ -826,11 +732,17 @@ export function StatementTab({
         .map((s) => (s === "fudo" ? "FUDO" : s === "shares" ? "Shares" : "Datalive"))
         .join(" + "),
       cmvLabel: data.cmv.elegido,
-      rows: buildPdfRows(data),
+      rows: buildPdfRows(data, trees),
+      informativos: informativos.map((t) => ({
+        label: TAX_KIND_BY_KEY[t.kind as TaxKind]?.label ?? t.kind,
+        amount: t.amount,
+        pct: t.pct,
+        meta: "ya se descontó de las ventas facturadas, no resta",
+      })),
       indicadores: [
         { label: "Food cost %", value: data.indicadores.foodCostPct },
         { label: "Utilidad bruta %", value: data.indicadores.utilidadBrutaPct },
-        { label: "Gastos %", value: data.indicadores.gastosPct },
+        { label: "Gastos fijos %", value: data.indicadores.gastosPct },
         { label: "Resultado operativo %", value: data.indicadores.resultadoOperativoPct },
         { label: "Resultado neto %", value: data.indicadores.resultadoNetoPct },
       ],
@@ -851,9 +763,9 @@ export function StatementTab({
             mesAnterior: data.anterior.period.economicMonth,
             lineas: [
               { label: "Ventas netas", hoy: data.resumen.ventas, antes: data.anterior.resumen.ventas },
-              { label: "Costo de mercadería", hoy: data.resumen.costoMercaderia, antes: data.anterior.resumen.costoMercaderia },
+              { label: "Food Cost", hoy: data.resumen.costoMercaderia, antes: data.anterior.resumen.costoMercaderia },
               { label: "Utilidad bruta", hoy: data.resumen.utilidadBruta, antes: data.anterior.resumen.utilidadBruta },
-              { label: "Gastos operativos", hoy: data.resumen.gastos, antes: data.anterior.resumen.gastos },
+              { label: "Gastos Fijos", hoy: data.resumen.gastos, antes: data.anterior.resumen.gastos },
               { label: "Comisiones", hoy: data.resumen.comisiones, antes: data.anterior.resumen.comisiones },
               { label: "Inversión", hoy: data.resumen.inversiones ?? 0, antes: data.anterior.resumen.inversiones ?? 0 },
               { label: "Impuestos", hoy: data.resumen.impuestos ?? 0, antes: data.anterior.resumen.impuestos ?? 0 },
@@ -871,14 +783,6 @@ export function StatementTab({
     });
     doc.save(`estado-resultado-economico_${data.period.economicMonth}.pdf`);
   };
-  const treeProps = (keyPrefix: string) => ({
-    open: isSectionOpen(keyPrefix),
-    onToggleSection: () => flip(openSections, setOpenSections, keyPrefix),
-    openGroups,
-    openBranches,
-    onToggleGroup: (k: string) => flip(openGroups, setOpenGroups, k),
-    onToggleBranch: (k: string) => flip(openBranches, setOpenBranches, k),
-  });
 
   if (isLoading) {
     return (
@@ -890,14 +794,20 @@ export function StatementTab({
     );
   }
   if (isError) return <p className="text-sm text-destructive">{(error as Error)?.message}</p>;
-  if (!data) return null;
+  if (!data || !trees) return null;
 
   const R = data.resumen;
   const I = data.indicadores;
   const desvioVentas = data.ventas.objetivo > 0 ? data.ventas.total - data.ventas.objetivo : null;
 
   const sinRubro = data.compras.groups.find((g) => g.label === "Sin rubro asignado");
-
+  const deptProps = (id: SeccionId) => ({
+    numero: DEPARTAMENTOS[id].numero,
+    open: isSectionOpen(id),
+    onToggle: () => toggleSection(id),
+    testId: `section-${id}`,
+  });
+  const vacio = (texto: string) => <p className="px-4 py-3 text-sm text-muted-foreground">{texto}</p>;
 
   return (
     <div className="space-y-4">
@@ -913,12 +823,21 @@ export function StatementTab({
             <span>Ventas netas de IVA en lo facturado · compras con IVA</span>
           </div>
           <div className="flex items-center gap-2">
-            <Button variant="outline" size="sm" onClick={plegarTodo} data-testid="button-plegar-todo">
-              <ChevronsDownUp className="h-3.5 w-3.5 mr-1.5" /> Plegar todo
-            </Button>
-            <Button variant="outline" size="sm" onClick={desplegarTodo} data-testid="button-desplegar-todo">
-              <ChevronsUpDown className="h-3.5 w-3.5 mr-1.5" /> Desplegar todo
-            </Button>
+            <span className="text-xs text-muted-foreground">Nivel</span>
+            <div className="flex items-center gap-1" data-testid="niveles">
+              {NIVELES.map((n) => (
+                <button
+                  key={n.n}
+                  type="button"
+                  title={n.help}
+                  onClick={() => aplicarNivel(n.n)}
+                  className={`h-8 w-8 rounded-md border text-sm font-semibold transition-colors ${nivel === n.n ? ECON.chipOn : ECON.chipOff}`}
+                  data-testid={`button-nivel-${n.n}`}
+                >
+                  {n.n}
+                </button>
+              ))}
+            </div>
             <Button size="sm" className={ECON.bgSolid} onClick={exportPdf} data-testid="button-export-statement-pdf">
               <FileDown className="h-4 w-4 mr-1.5" /> PDF
             </Button>
@@ -973,55 +892,12 @@ export function StatementTab({
         </div>
       )}
 
-      <Card className="overflow-hidden">
-        <CardContent className="p-0">
-          {/* Encabezado de columnas */}
-          <div className="flex items-center gap-2 pl-2 pr-3 py-2 border-b bg-muted/40 text-[11px] font-medium text-muted-foreground uppercase tracking-wide">
-            <span className="w-4 shrink-0" />
-            <span className="flex-1">Concepto</span>
-            <span className={`${COL_IMPORTE} text-right`}>Importe</span>
-            <span className={`${COL_PCT} text-right whitespace-nowrap`}>% s/Vtas</span>
-          </div>
+      {/* ── EL EDIFICIO: un departamento por tarjeta, con los resultados entre medio ── */}
+      <div className="space-y-3" data-testid="estado-edificio">
+        <ColumnHeader />
 
-          {/* ── VENTAS ── */}
-          <SectionHeader
-            title="Ventas netas"
-            amount={data.ventas.total}
-            pctValue={100}
-            open={isSectionOpen("ventas")}
-            onToggle={() => flip(openSections, setOpenSections, "ventas")}
-            testId="section-ventas"
-          />
-          {isSectionOpen("ventas") && (
-          <>
-          <Row
-            label="Ventas brutas (por medio de pago)"
-            amount={data.ventas.brutas}
-            pctValue={data.ventas.total ? (data.ventas.brutas / data.ventas.total) * 100 : 0}
-            level={0}
-            hasChildren={data.ventas.lines.length > 0}
-            open={openVentas}
-            onClick={() => setOpenVentas(!openVentas)}
-            testId="row-ventas-detalle"
-          />
-          {openVentas &&
-            data.ventas.lines.map((l, i) => (
-              <Row
-                key={i}
-                label={l.label}
-                amount={l.amount}
-                pctValue={l.pct}
-                level={1}
-                tone="muted"
-                meta={
-                  l.kind === "manual" ? (
-                    <Badge variant="secondary" className="text-[10px]">
-                      manual · {l.invoiced ? "facturada" : "no facturada"}
-                    </Badge>
-                  ) : undefined
-                }
-              />
-            ))}
+        <Department {...deptProps("ventas")} title="Ventas netas" amount={data.ventas.total} pctValue={100}>
+          <TreeRows nodes={trees.ventas} openNodes={openNodes} onToggle={toggleNode} />
           <Row
             label="− IVA contenido en ventas facturadas"
             amount={-data.ventas.ivaFacturadas}
@@ -1041,9 +917,6 @@ export function StatementTab({
             }
             testId="row-iva-ventas"
           />
-          <p className="px-4 py-2 text-[11px] text-muted-foreground border-b bg-muted/20" data-testid="text-nota-iva">
-            {NOTA_IVA}
-          </p>
           {data.ventas.objetivo > 0 && (
             <Row
               label="Objetivo del mes"
@@ -1061,144 +934,81 @@ export function StatementTab({
               }
             />
           )}
-          </>
-          )}
+          <p className="px-4 py-2 text-[11px] text-muted-foreground bg-muted/20" data-testid="text-nota-iva">
+            {NOTA_IVA}
+          </p>
+        </Department>
 
-          {/* ── COSTO DE MERCADERÍA (la variante que eligió el usuario) ── */}
-          {data.cmv.mode === "compras" ? (
-            <TreeSection
-              title="Costo de mercadería — compras del mes"
-              total={data.compras.total}
-              totalPct={data.compras.pct}
-              groups={data.compras.groups}
-              keyPrefix="costo"
-              emptyText="No hay facturas de compra cargadas en este mes."
-              {...treeProps("costo")}
-            />
-          ) : (
-            <>
-              <SectionHeader
-                title={`Costo de mercadería — ${data.cmv.elegido}`}
-                amount={R.costoMercaderia}
-                pctValue={I.foodCostPct}
-                open={isSectionOpen("costo")}
-                onToggle={() => flip(openSections, setOpenSections, "costo")}
-                testId="section-costo"
-              />
-              {isSectionOpen("costo") && (data.cmv.variantes.find((v) => v.key === data.cmv.mode)?.rows ?? []).map((r) => (
-                <Row key={r.localId} label={r.local} amount={r.amount} pctValue={r.pct} level={0} meta={r.detalle ?? undefined} />
-              ))}
-            </>
-          )}
+        <Department {...deptProps("costo")} title={tituloCosto(data)} amount={R.costoMercaderia} pctValue={I.foodCostPct}>
+          {trees.costo.length === 0
+            ? vacio("No hay facturas de compra cargadas en este mes.")
+            : <TreeRows nodes={trees.costo} openNodes={openNodes} onToggle={toggleNode} />}
+        </Department>
 
-          <Row label="UTILIDAD BRUTA" amount={R.utilidadBruta} pctValue={I.utilidadBrutaPct} level={0} bold tone="total" />
+        <ResultBand label="Utilidad bruta" amount={R.utilidadBruta} pctValue={I.utilidadBrutaPct} testId="band-utilidad-bruta" />
 
-          {/* ── GASTOS ── */}
-          <TreeSection
-            title="Gastos operativos"
-            total={data.gastos.total}
-            totalPct={data.gastos.pct}
-            groups={data.gastos.groups.filter((g) => g.computes !== false)}
-            keyPrefix="gastos"
-            emptyText="No hay movimientos con mes económico en este período."
-            {...treeProps("gastos")}
-          />
+        <Department {...deptProps("gastos")} title={DEPARTAMENTOS.gastos.title} amount={data.gastos.total} pctValue={data.gastos.pct}>
+          {trees.gastos.length === 0
+            ? vacio("No hay movimientos con mes económico en este período.")
+            : <TreeRows nodes={trees.gastos} openNodes={openNodes} onToggle={toggleNode} />}
+        </Department>
 
-          {/* ── COMISIONES ── */}
-          <SectionHeader
-            title="Comisiones"
-            amount={data.comisiones.total}
-            pctValue={data.comisiones.pct}
-            open={isSectionOpen("comisiones")}
-            onToggle={() => flip(openSections, setOpenSections, "comisiones")}
-            testId="section-comisiones"
-          />
-          {!isSectionOpen("comisiones") ? null : data.comisiones.lines.length === 0 ? (
-            <p className="px-4 py-3 text-sm text-muted-foreground">
-              No hay comisiones en este mes. Cargalas en la solapa Comisiones o asigná categorías de extractos en
-              "Categorías que SÍ computan".
-            </p>
-          ) : (
-            data.comisiones.lines.map((c) => (
-              <Row
-                key={`${c.origen}-${c.concept}`}
-                label={c.origen === "manual" ? commissionLabel(c.concept) : c.concept}
-                amount={c.amount}
-                pctValue={c.pct}
-                level={0}
-                meta={c.origen === "manual" ? "cargada a mano" : "de extractos"}
-              />
-            ))
-          )}
+        <Department {...deptProps("comisiones")} title={DEPARTAMENTOS.comisiones.title} amount={data.comisiones.total} pctValue={data.comisiones.pct}>
+          {trees.comisiones.length === 0
+            ? vacio('No hay comisiones en este mes. Cargalas en la solapa Comisiones o asigná categorías de extractos en "Categorías que SÍ computan".')
+            : <TreeRows nodes={trees.comisiones} openNodes={openNodes} onToggle={toggleNode} />}
+        </Department>
 
-          <Row label="RESULTADO OPERATIVO" amount={R.resultadoOperativo} pctValue={I.resultadoOperativoPct} level={0} bold tone="total" />
+        <ResultBand label="Resultado operativo" amount={R.resultadoOperativo} pctValue={I.resultadoOperativoPct} testId="band-resultado-operativo" />
 
-          {/* ── INVERSIÓN: las categorías con ese destino en "Categorías que SÍ computan" ── */}
-          <TreeSection
-            title="Inversión"
-            total={data.inversiones.total}
-            totalPct={data.inversiones.pct}
-            groups={data.inversiones.groups}
-            keyPrefix="inversiones"
-            emptyText='No hay inversión en este mes. Se arma con las categorías que mandes a "Inversión" en "Categorías que SÍ computan".'
-            {...treeProps("inversiones")}
-          />
+        <Department {...deptProps("inversiones")} title={DEPARTAMENTOS.inversiones.title} amount={data.inversiones.total} pctValue={data.inversiones.pct}>
+          {trees.inversiones.length === 0
+            ? vacio('No hay inversión en este mes. Se arma con las categorías que mandes a "Inversión" en "Categorías que SÍ computan".')
+            : <TreeRows nodes={trees.inversiones} openNodes={openNodes} onToggle={toggleNode} />}
+        </Department>
 
-          <Row
-            label="RESULTADO OPERATIVO CON INVERSIÓN"
-            amount={R.resultadoConInversion}
-            pctValue={I.resultadoConInversionPct}
-            level={0}
-            bold
-            tone={R.resultadoConInversion >= 0 ? "total" : "negative"}
-          />
+        <ResultBand
+          label="Resultado operativo con inversión"
+          hint="antes de impuestos"
+          amount={R.resultadoConInversion}
+          pctValue={I.resultadoConInversionPct}
+          testId="band-resultado-con-inversion"
+        />
 
-          {/* ── IMPUESTOS (Ganancias incluido) ── */}
-          <SectionHeader
-            title="Impuestos sobre ingresos y movimientos"
-            amount={data.impuestos.total}
-            pctValue={data.impuestos.pct}
-            open={isSectionOpen("impuestos")}
-            onToggle={() => flip(openSections, setOpenSections, "impuestos")}
-            testId="section-impuestos"
-          />
-          {!isSectionOpen("impuestos") ? null : data.impuestos.lines.length === 0 ? (
-            <p className="px-4 py-3 text-sm text-muted-foreground">
-              No hay impuestos en este mes. Cargalos en la solapa Impuestos o asigná categorías de extractos en
-              "Categorías que SÍ computan".
-            </p>
-          ) : (
-            data.impuestos.lines.map((t) => (
+        <Department
+          {...deptProps("impuestos")}
+          title={DEPARTAMENTOS.impuestos.title}
+          subtitle="sobre ingresos y movimientos"
+          amount={data.impuestos.total}
+          pctValue={data.impuestos.pct}
+        >
+          {trees.impuestos.length === 0
+            ? vacio('No hay impuestos en este mes. Cargalos en la solapa Impuestos o asigná categorías de extractos en "Categorías que SÍ computan".')
+            : <TreeRows nodes={trees.impuestos} openNodes={openNodes} onToggle={toggleNode} />}
+        </Department>
+
+        <ResultBand grand label="Resultado neto" amount={R.resultadoNeto} pctValue={I.resultadoNetoPct} testId="band-resultado-neto" />
+
+        {informativos.length > 0 && (
+          <Card className="border-dashed" data-testid="card-informativos">
+            <div className="px-4 pt-3 pb-1">
+              <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Datos informativos</p>
+              <p className="text-[11px] text-muted-foreground">No inciden en el resultado: se muestran solo como referencia.</p>
+            </div>
+            {informativos.map((t) => (
               <Row
                 key={t.kind}
                 label={TAX_KIND_BY_KEY[t.kind as TaxKind]?.label ?? t.kind}
                 amount={t.amount}
                 pctValue={t.pct}
                 level={0}
-                tone={t.informativo ? "muted" : undefined}
-                meta={
-                  t.informativo
-                    ? "informativo: ya se descontó de las ventas, no resta"
-                    : t.byLocal.length > 1
-                      ? `${t.byLocal.length} locales`
-                      : (TAX_MODE_LABELS[t.byLocal[0]?.mode as TaxMode] ?? "a mano").toLowerCase()
-                }
+                tone="muted"
+                meta="ya se descontó de las ventas facturadas, no resta"
               />
-            ))
-          )}
-
-          <div className={`flex items-center gap-2 pl-2 pr-3 py-3 ${ECON.bg} border-t-2 ${ECON.border}`}>
-            <span className="w-4 shrink-0" />
-            <span className={`flex-1 text-sm font-bold uppercase tracking-wide ${ECON.text}`}>Resultado neto</span>
-            <span className={`${COL_IMPORTE} text-right font-mono text-base font-bold ${R.resultadoNeto >= 0 ? ECON.text : "text-destructive"}`}>
-              {formatCurrency(R.resultadoNeto)}
-            </span>
-            <span className={`${COL_PCT} text-right font-mono text-xs font-semibold ${R.resultadoNeto >= 0 ? ECON.text : "text-destructive"}`}>
-              {pct(I.resultadoNetoPct)}
-            </span>
-          </div>
-        </CardContent>
-      </Card>
+            ))}
+          </Card>
+        )}
+      </div>
 
       {/* ── CONTRA EL MES ANTERIOR ── */}
       {data.anterior && (
@@ -1221,9 +1031,9 @@ export function StatementTab({
                 <tbody>
                   {[
                     { key: "ventas", label: "Ventas", bueno: "sube" as const },
-                    { key: "costoMercaderia", label: "Costo de mercadería", bueno: "baja" as const },
+                    { key: "costoMercaderia", label: "Food Cost", bueno: "baja" as const },
                     { key: "utilidadBruta", label: "Utilidad bruta", bueno: "sube" as const },
-                    { key: "gastos", label: "Gastos operativos", bueno: "baja" as const },
+                    { key: "gastos", label: "Gastos Fijos", bueno: "baja" as const },
                     { key: "comisiones", label: "Comisiones", bueno: "baja" as const },
                     { key: "resultadoOperativo", label: "Resultado operativo", bueno: "sube" as const },
                     { key: "inversiones", label: "Inversión", bueno: "baja" as const },
@@ -1268,7 +1078,7 @@ export function StatementTab({
               <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Punto de equilibrio del mes</p>
               {!data.puntoEquilibrio.alcanzable ? (
                 <p className="text-sm text-destructive">
-                  El margen de contribución no es positivo: con este costo de mercadería no hay volumen de ventas
+                  El margen de contribución no es positivo: con este food cost no hay volumen de ventas
                   que alcance el equilibrio.
                 </p>
               ) : (
@@ -1278,7 +1088,7 @@ export function StatementTab({
                   </p>
                   <p className="text-xs text-muted-foreground">
                     Costos fijos {formatCurrency(data.puntoEquilibrio.costosFijos)} ÷ margen de contribución{" "}
-                    {pct(data.puntoEquilibrio.margenContribucionPct)}. Gastos + comisiones + impuestos operativos.
+                    {pct(data.puntoEquilibrio.margenContribucionPct)}. Gastos fijos + comisiones + impuestos operativos.
                   </p>
                   <p
                     className={`text-sm font-medium ${(data.puntoEquilibrio.excedente ?? 0) >= 0 ? "text-emerald-600 dark:text-emerald-500" : "text-destructive"}`}
@@ -1369,7 +1179,7 @@ export function StatementTab({
             {[
               { label: "Food cost %", value: I.foodCostPct, hint: "Compras sobre ventas" },
               { label: "Utilidad bruta %", value: I.utilidadBrutaPct, hint: "Ventas − costo de insumos" },
-              { label: "Gastos %", value: I.gastosPct, hint: "Gastos operativos sobre ventas" },
+              { label: "Gastos fijos %", value: I.gastosPct, hint: "Gastos fijos sobre ventas" },
               { label: "Resultado operativo %", value: I.resultadoOperativoPct, hint: "Antes de inversión e impuestos" },
               { label: "Resultado neto %", value: I.resultadoNetoPct, hint: "Después de todo" },
             ].map((k) => (

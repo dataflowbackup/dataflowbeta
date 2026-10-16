@@ -27,6 +27,8 @@ export interface StatementPdfInput {
   sourcesLabel: string;
   cmvLabel: string;
   rows: StatementPdfRow[];
+  /** Datos que NO inciden en el resultado (el IVA): van aparte, debajo del resultado neto. */
+  informativos?: Array<{ label: string; amount: number; pct: number | null; meta?: string }>;
   indicadores: Array<{ label: string; value: number }>;
   puntoEquilibrio?: { ventasNecesarias: number; costosFijos: number; margenPct: number; excedente: number } | null;
   ventasNoFacturadas?: { noFacturada: number; pct: number; total: number } | null;
@@ -145,8 +147,15 @@ export function buildEconomicStatementPdf(input: StatementPdfInput): jsPDF {
   headerRow();
 
   let zebra = 0;
+  let first = true;
   for (const row of input.rows) {
     const h = row.kind === "grand" ? 22 : 16;
+    // El "edificio": aire antes de cada departamento y de cada resultado, como en la pantalla.
+    if (!first && row.kind !== "row") {
+      y += 6;
+      zebra = 0;
+    }
+    first = false;
     if (y + h > pageH - 46) {
       footer();
       doc.addPage();
@@ -211,6 +220,37 @@ export function buildEconomicStatementPdf(input: StatementPdfInput): jsPDF {
     y += h;
   }
   y += 10;
+  if (input.informativos && input.informativos.length > 0) {
+    ensure(40);
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(7.5);
+    doc.setTextColor(MUTED.r, MUTED.g, MUTED.b);
+    doc.text("DATOS INFORMATIVOS — NO INCIDEN EN EL RESULTADO", M + 7, y + 8);
+    y += 14;
+    for (const r of input.informativos) {
+      ensure(16);
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(8);
+      doc.setTextColor(MUTED.r, MUTED.g, MUTED.b);
+      doc.text(r.label, M + 7, y + 11);
+      if (r.meta) {
+        const w = doc.getTextWidth(r.label);
+        doc.setFontSize(6.5);
+        doc.text(r.meta, M + 13 + w, y + 11);
+        doc.setFontSize(8);
+      }
+      doc.text(money(r.amount), M + W - COL_PCT - 7, y + 11, { align: "right" });
+      doc.setFontSize(7);
+      doc.text(pctTxt(r.pct), M + W - 7, y + 11, { align: "right" });
+      doc.setDrawColor(LINE.r, LINE.g, LINE.b);
+      doc.setLineWidth(0.4);
+      doc.setLineDashPattern([2, 2], 0);
+      doc.line(M, y + 16, M + W, y + 16);
+      doc.setLineDashPattern([], 0);
+      y += 16;
+    }
+    y += 8;
+  }
   if (input.notaIva) paragraph(input.notaIva, 7);
   y += 8;
 

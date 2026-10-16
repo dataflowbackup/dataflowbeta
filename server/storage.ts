@@ -1,6 +1,6 @@
 import { formatInvoiceVoucherDisplay } from "@shared/invoiceDisplay";
 import { resolveEconomicMonth } from "@shared/economicMonth";
-import { netOfIva } from "@shared/economicStatement";
+import { netOfIva, TAX_MODE_LABELS, type TaxMode } from "@shared/economicStatement";
 import { isCreditNote as isCreditNoteCode } from "@shared/afipComprobantesParser";
 import {
   normalizeSalesSourcePreferences,
@@ -5166,6 +5166,8 @@ export class DatabaseStorage implements IStorage {
       invoiceId: invoiceItems.invoiceId,
       subtotal: invoiceItems.subtotal,
       description: invoiceItems.description,
+      supplyId: invoiceItems.supplyId,
+      supplyName: supplies.name,
       supplyRubroId: supplies.rubroId,
       supplySubRubroId: supplies.subRubroId,
       subRubroName: subRubros.name,
@@ -5185,10 +5187,16 @@ export class DatabaseStorage implements IStorage {
 
     const SIN_RUBRO = "Sin rubro asignado";
     const SIN_SUB = "Sin sub-rubro";
+    type ComprasFactura = { invoiceId: number; label: string; amount: number; date: string; source: string; ref: string };
+    /** Rubro → sub-rubro → insumo → factura (el insumo se agregó el 16-oct-2026, botones 4 y 5). */
     interface ComprasNode {
       label: string;
       amount: number;
-      children: Map<string, { label: string; amount: number; items: Map<number, { invoiceId: number; label: string; amount: number; date: string; source: string; ref: string }> }>;
+      children: Map<string, {
+        label: string;
+        amount: number;
+        items: Map<string, { label: string; amount: number; sinInsumo: boolean; items: Map<number, ComprasFactura> }>;
+      }>;
     }
     const comprasTree = new Map<string, ComprasNode>();
     const comprasByLocal: Record<number, number> = {};
@@ -5215,13 +5223,27 @@ export class DatabaseStorage implements IStorage {
       const hijo = nodo.children.get(sub)!;
       hijo.amount += amount;
 
-      // Una factura puede tener varios ítems del mismo sub-rubro: se acumulan en una sola línea.
-      const prev = hijo.items.get(inv.id);
+      // Sin insumo vinculado, la línea se agrupa por su descripción: es lo único que la nombra.
+      const descripcion = String(it.description ?? "").trim();
+      const insumoKey = it.supplyId != null ? `s${it.supplyId}` : `d${descripcion.toLowerCase()}`;
+      if (!hijo.items.has(insumoKey)) {
+        hijo.items.set(insumoKey, {
+          label: it.supplyId != null ? String(it.supplyName ?? `Insumo ${it.supplyId}`) : descripcion || "Sin descripción",
+          amount: 0,
+          sinInsumo: it.supplyId == null,
+          items: new Map(),
+        });
+      }
+      const insumo = hijo.items.get(insumoKey)!;
+      insumo.amount += amount;
+
+      // Una factura puede tener varios ítems del mismo insumo: se acumulan en una sola línea.
+      const prev = insumo.items.get(inv.id);
       if (prev) {
         prev.amount += amount;
       } else {
         const fecha = String(inv.invoiceDate).slice(0, 10);
-        hijo.items.set(inv.id, {
+        insumo.items.set(inv.id, {
           invoiceId: inv.id,
           // La fecha va en su propia columna: repetirla en el nombre la mostraba dos veces.
           label: String(inv.supplierName ?? "Sin proveedor"),
@@ -5243,9 +5265,17 @@ export class DatabaseStorage implements IStorage {
             label: c.label,
             amount: c.amount,
             pct: pct(c.amount),
-            // Por fecha, la primera arriba; a igual fecha, el mayor importe primero.
-            items: Array.from(c.items.values()).sort(byDateThenAmount)
-              .map((i) => ({ ...i, pct: pct(i.amount) })),
+            items: Array.from(c.items.values())
+              .map((ins) => ({
+                label: ins.label,
+                amount: ins.amount,
+                pct: pct(ins.amount),
+                sinInsumo: ins.sinInsumo,
+                // Por fecha, la primera arriba; a igual fecha, el mayor importe primero.
+                items: Array.from(ins.items.values()).sort(byDateThenAmount)
+                  .map((i) => ({ ...i, pct: pct(i.amount) })),
+              }))
+              .sort((a, b) => b.amount - a.amount),
           }))
           .sort((a, b) => b.amount - a.amount),
       }))
@@ -5320,9 +5350,20 @@ export class DatabaseStorage implements IStorage {
     const gastosTree = new Map<string, GastoNode>();
     const inversionTree = new Map<string, GastoNode>();
     /** Comisiones que vienen de extractos, por categoría (se suman a las cargadas a mano). */
-    const comisionesExtractos = new Map<number, { label: string; amount: number; byLocal: Map<number, number> }>();
+    type MovItem = { label: string; amount: number; date: string; source: string; ref: string; pct: number };
+    const movItem = (tx: any, cat: any, net: number): MovItem => ({
+      label: String(tx.description ?? "").trim() || cat.name,
+      amount: net,
+      date: String(tx.transactionDate).slice(0, 10),
+      source: localNameById.get(tx.localId) ?? "—",
+      ref: String(tx.id),
+      pct: 0,
+    });
+    const comisionesExtractos = new Map<number, { label: string; amount: number; byLocal: Map<number, number>; items: MovItem[] }>();
     /** Impuestos que vienen de extractos: "local:impuesto" → importe. */
     const impuestoExtractos = new Map<string, number>();
+    /** El mismo importe abierto en categoría → movimientos, para desplegarlo en el informe. */
+    const impuestoExtractosDetalle = new Map<string, Map<number, { label: string; amount: number; items: MovItem[] }>>();
 
     // "Categorías que SÍ computan": a dónde va cada categoría de un grupo que no computa.
     const destinoByCat = new Map(
@@ -5346,14 +5387,7 @@ export class DatabaseStorage implements IStorage {
       if (!nodo.children.has(cat.id)) nodo.children.set(cat.id, { id: cat.id, label: cat.name, amount: 0, items: [] });
       const hijo = nodo.children.get(cat.id)!;
       hijo.amount += net;
-      hijo.items.push({
-        label: String(tx.description ?? "").trim() || cat.name,
-        amount: net,
-        date: String(tx.transactionDate).slice(0, 10),
-        source: localNameById.get(tx.localId) ?? "—",
-        ref: String(tx.id),
-        pct: 0,
-      });
+      hijo.items.push(movItem(tx, cat, net));
     };
 
     for (const tx of txRows) {
@@ -5389,13 +5423,20 @@ export class DatabaseStorage implements IStorage {
       } else if (destino.destination === "inversion") {
         addToTree(inversionTree, group, true, cat, tx, net);
       } else if (destino.destination === "comisiones") {
-        if (!comisionesExtractos.has(cat.id)) comisionesExtractos.set(cat.id, { label: cat.name, amount: 0, byLocal: new Map() });
+        if (!comisionesExtractos.has(cat.id)) comisionesExtractos.set(cat.id, { label: cat.name, amount: 0, byLocal: new Map(), items: [] });
         const c = comisionesExtractos.get(cat.id)!;
         c.amount += net;
         c.byLocal.set(tx.localId, (c.byLocal.get(tx.localId) ?? 0) + net);
+        c.items.push(movItem(tx, cat, net));
       } else if (destino.destination === "impuesto" && destino.taxKind) {
         const k = `${tx.localId}:${destino.taxKind}`;
         impuestoExtractos.set(k, (impuestoExtractos.get(k) ?? 0) + net);
+        if (!impuestoExtractosDetalle.has(k)) impuestoExtractosDetalle.set(k, new Map());
+        const porCat = impuestoExtractosDetalle.get(k)!;
+        if (!porCat.has(cat.id)) porCat.set(cat.id, { label: cat.name, amount: 0, items: [] });
+        const d = porCat.get(cat.id)!;
+        d.amount += net;
+        d.items.push(movItem(tx, cat, net));
       }
     }
 
@@ -5449,7 +5490,7 @@ export class DatabaseStorage implements IStorage {
       node.byLocal.push({ local: localNameById.get(r.localId) ?? `Local ${r.localId}`, amount });
     }
     const comisiones = [
-      ...Array.from(commissionsByConcept.values()).map((c) => ({ ...c, origen: "manual" as const })),
+      ...Array.from(commissionsByConcept.values()).map((c) => ({ ...c, origen: "manual" as const, items: [] as MovItem[] })),
       ...Array.from(comisionesExtractos.values())
         .filter((c) => Math.abs(c.amount) >= 0.005)
         .map((c) => ({
@@ -5457,6 +5498,7 @@ export class DatabaseStorage implements IStorage {
           amount: c.amount,
           origen: "extractos" as const,
           byLocal: Array.from(c.byLocal.entries()).map(([lid, amount]) => ({ local: localNameById.get(lid) ?? `Local ${lid}`, amount })),
+          items: c.items.sort(byDateThenAmount).map((i) => ({ ...i, pct: pct(i.amount) })),
         })),
     ]
       .map((c) => ({ ...c, pct: pct(c.amount) }))
@@ -5482,12 +5524,41 @@ export class DatabaseStorage implements IStorage {
       });
       invoicedNetByLocal.set(lid, inv.neto);
     }
-    const taxByKind = new Map<string, { kind: string; amount: number; byLocal: Array<{ local: string; amount: number; mode: string }> }>();
+    /**
+     * Detalle de cada impuesto para desplegarlo (botones 2 y 3 del informe): lo que sale de
+     * extractos se abre en categoría → movimientos; lo cargado a mano o calculado es una línea
+     * por local, sin movimientos detrás.
+     */
+    type TaxDetail = { label: string; amount: number; manual: boolean; meta?: string; items: MovItem[] };
+    const taxByKind = new Map<string, {
+      kind: string;
+      amount: number;
+      byLocal: Array<{ local: string; amount: number; mode: string }>;
+      detalle: Map<string, TaxDetail>;
+    }>();
     const addTax = (kind: string, localId: number, amount: number, mode: string) => {
-      if (!taxByKind.has(kind)) taxByKind.set(kind, { kind, amount: 0, byLocal: [] });
+      if (!taxByKind.has(kind)) taxByKind.set(kind, { kind, amount: 0, byLocal: [], detalle: new Map() });
       const node = taxByKind.get(kind)!;
       node.amount += amount;
-      node.byLocal.push({ local: localNameById.get(localId) ?? `Local ${localId}`, amount, mode });
+      const localName = localNameById.get(localId) ?? `Local ${localId}`;
+      node.byLocal.push({ local: localName, amount, mode });
+      if (mode === "categorias") {
+        for (const [catId, d] of Array.from(impuestoExtractosDetalle.get(`${localId}:${kind}`)?.entries() ?? [])) {
+          const key = `c${catId}`;
+          if (!node.detalle.has(key)) node.detalle.set(key, { label: d.label, amount: 0, manual: false, items: [] });
+          const t = node.detalle.get(key)!;
+          t.amount += d.amount;
+          t.items.push(...d.items);
+        }
+      } else if (Math.abs(amount) >= 0.005) {
+        node.detalle.set(`m${localId}`, {
+          label: localName,
+          amount,
+          manual: true,
+          meta: (TAX_MODE_LABELS[mode as TaxMode] ?? "a mano").toLowerCase(),
+          items: [],
+        });
+      }
     };
     const rowByLocalKind = new Set<string>();
     for (const r of taxRows) {
@@ -5508,7 +5579,19 @@ export class DatabaseStorage implements IStorage {
     // El IVA ya se descontó de las ventas facturadas: la línea se muestra pero NO resta, si no se
     // descontaría dos veces.
     const impuestos = Array.from(taxByKind.values())
-      .map((t) => ({ ...t, pct: pct(t.amount), informativo: t.kind === "iva" }))
+      .map(({ detalle, ...t }) => ({
+        ...t,
+        pct: pct(t.amount),
+        informativo: t.kind === "iva",
+        children: Array.from(detalle.values())
+          .filter((d) => Math.abs(d.amount) >= 0.005)
+          .map((d) => ({
+            ...d,
+            pct: pct(d.amount),
+            items: d.items.sort(byDateThenAmount).map((i) => ({ ...i, pct: pct(i.amount) })),
+          }))
+          .sort((a, b) => b.amount - a.amount),
+      }))
       .sort((a, b) => TAX_ORDER.indexOf(a.kind) - TAX_ORDER.indexOf(b.kind));
     const impuestosTotal = impuestos.filter((t) => !t.informativo).reduce((a, t) => a + t.amount, 0);
     /** Sin Ganancias: es la base de los costos fijos del punto de equilibrio. */
