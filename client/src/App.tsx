@@ -34,8 +34,7 @@ import RecipesPage from "@/pages/recipes";
 import RecipeFormPage from "@/pages/recipe-form";
 import SubRecipesPage from "@/pages/sub-recipes";
 import CostHistoryPage from "@/pages/cost-history";
-import TransactionCategoriesPage from "@/pages/transaction-categories";
-import FinancialGroupsPage from "@/pages/financial-groups";
+import EstructuraImputacionesPage from "@/pages/estructura-imputaciones";
 import BankStatementsPage from "@/pages/bank-statements";
 import CashPage from "@/pages/cash";
 import ExtractosEfectivoPage from "@/pages/extractos-efectivo";
@@ -109,8 +108,10 @@ function AppRouter() {
       <Route path="/recetas/nueva" component={RecipeFormPage} />
       <Route path="/recetas/:id" component={RecipeFormPage} />
       <Route path="/historial-costos" component={CostHistoryPage} />
-      <Route path="/categorias-movimientos" component={TransactionCategoriesPage} />
-      <Route path="/grupos-financieros" component={FinancialGroupsPage} />
+      <Route path="/estructura-imputaciones" component={EstructuraImputacionesPage} />
+      {/* Grupos Financ. y Categorías Mov. se unificaron en Estructura Imputaciones (16-oct-2026). */}
+      <Route path="/categorias-movimientos">{() => <Redirect to="/estructura-imputaciones" />}</Route>
+      <Route path="/grupos-financieros">{() => <Redirect to="/estructura-imputaciones" />}</Route>
       <Route path="/extractos-efectivo" component={ExtractosEfectivoPage} />
       <Route path="/extractos" component={BankStatementsPage} />
       <Route path="/efectivo" component={CashPage} />

@@ -33,6 +33,7 @@ export const MODULE_ROUTES: Record<string, string[]> = {
     "/mis-comprobantes",
     "/extractos",
     "/efectivo",
+    "/estructura-imputaciones",
     "/categorias-movimientos",
     "/grupos-financieros",
     "/balance",

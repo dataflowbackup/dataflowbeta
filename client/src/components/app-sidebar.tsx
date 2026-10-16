@@ -134,8 +134,7 @@ const menuSections: MenuSection[] = [
     items: [
       { title: "Extractos/Efectivo", url: "/extractos-efectivo", icon: Receipt },
       { title: "Mis Comprobantes", url: "/mis-comprobantes", icon: FileCheck2 },
-      { title: "Categorias Mov.", url: "/categorias-movimientos", icon: Tags },
-      { title: "Grupos Financ.", url: "/grupos-financieros", icon: FolderTree },
+      { title: "Estructura Imputaciones", url: "/estructura-imputaciones", icon: FolderTree },
       { title: "Estado de Resultado Financiero", url: "/balance", icon: LineChart },
       { title: "Estado de Resultado Economico", url: "/balances-economicos", icon: BarChart3, iconClass: "text-emerald-600 dark:text-emerald-500" },
       { title: "CMC", url: "/cmc", icon: ShoppingCart, permission: "cmc.view" },
