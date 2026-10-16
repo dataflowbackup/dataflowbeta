@@ -166,13 +166,13 @@ export function TreeRows({
 }
 
 /** Encabezado de las columnas, una sola vez arriba del edificio. */
-export function ColumnHeader({ first = "Concepto" }: { first?: string }) {
+export function ColumnHeader({ first = "Concepto", pctLabel = "% s/Vtas" }: { first?: string; pctLabel?: string }) {
   return (
     <div className="flex items-center gap-2 pl-2 pr-3 py-2 rounded-md border bg-muted/40 text-[11px] font-medium text-muted-foreground uppercase tracking-wide">
       <span className="w-4 shrink-0" />
       <span className="flex-1">{first}</span>
       <span className={`${COL_IMPORTE} text-right`}>Importe</span>
-      <span className={`${COL_PCT} text-right whitespace-nowrap`}>% s/Vtas</span>
+      <span className={`${COL_PCT} text-right whitespace-nowrap`}>{pctLabel}</span>
     </div>
   );
 }

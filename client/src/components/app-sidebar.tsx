@@ -104,8 +104,7 @@ const menuSections: MenuSection[] = [
     title: "Catalogos",
     items: [
       { title: "Proveedores", url: "/proveedores", icon: Users },
-      { title: "Rubros", url: "/rubros", icon: Tags },
-      { title: "Sub-Rubros", url: "/sub-rubros", icon: Layers },
+      { title: "Estructura Food Cost", url: "/estructura-food-cost", icon: Layers },
       { title: "Locales", url: "/locales", icon: Building2 },
       { title: "Impuestos", url: "/impuestos", icon: Percent },
       { title: "Unidades", url: "/unidades", icon: Scale },

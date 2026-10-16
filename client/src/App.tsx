@@ -1,4 +1,4 @@
-import { Switch, Route, useLocation } from "wouter";
+import { Switch, Route, Redirect, useLocation } from "wouter";
 import { queryClient } from "./lib/queryClient";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { Toaster } from "@/components/ui/toaster";
@@ -17,8 +17,7 @@ import Landing from "@/pages/landing";
 import Home from "@/pages/home";
 import SuppliersPage from "@/pages/suppliers";
 import LocalsPage from "@/pages/locals";
-import RubrosPage from "@/pages/rubros";
-import SubRubrosPage from "@/pages/sub-rubros";
+import EstructuraFoodCostPage from "@/pages/estructura-food-cost";
 import TaxesPage from "@/pages/taxes";
 import UnitsPage from "@/pages/units";
 import SuppliesPage from "@/pages/supplies";
@@ -88,8 +87,10 @@ function AppRouter() {
       <Route path="/" component={Home} />
       <Route path="/proveedores" component={SuppliersPage} />
       <Route path="/locales" component={LocalsPage} />
-      <Route path="/rubros" component={RubrosPage} />
-      <Route path="/sub-rubros" component={SubRubrosPage} />
+      <Route path="/estructura-food-cost" component={EstructuraFoodCostPage} />
+      {/* Rubros y Sub-Rubros se unificaron en Estructura Food Cost (16-oct-2026). */}
+      <Route path="/rubros">{() => <Redirect to="/estructura-food-cost" />}</Route>
+      <Route path="/sub-rubros">{() => <Redirect to="/estructura-food-cost" />}</Route>
       <Route path="/impuestos" component={TaxesPage} />
       <Route path="/unidades" component={UnitsPage} />
       <Route path="/insumos" component={SuppliesPage} />

@@ -10,7 +10,7 @@
  */
 
 export const MODULE_ROUTES: Record<string, string[]> = {
-  Catalogos: ["/proveedores", "/rubros", "/sub-rubros", "/locales", "/impuestos", "/unidades"],
+  Catalogos: ["/proveedores", "/estructura-food-cost", "/rubros", "/sub-rubros", "/locales", "/impuestos", "/unidades"],
   "Facturas y Ctas Ctes": [
     "/facturas",
     "/cuentas-corrientes",
