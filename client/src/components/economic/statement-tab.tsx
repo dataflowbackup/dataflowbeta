@@ -810,7 +810,8 @@ export function StatementTab({
 
   return (
     <div className="space-y-4">
-      <Card className={ECON.border}>
+      {/* Fija arriba al bajar: los botones de nivel y el PDF siempre a mano (pedido del usuario, 16-oct). */}
+      <Card className={`${ECON.border} sticky top-0 z-20 shadow-sm`} data-testid="barra-niveles">
         <CardContent className="py-3 flex flex-wrap items-center justify-between gap-3">
           <div className="text-xs text-muted-foreground flex flex-wrap gap-x-4 gap-y-1">
             <span>
