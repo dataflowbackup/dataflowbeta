@@ -287,6 +287,16 @@ export const OTROS_MOVIMIENTOS_SPECIAL_TYPES = new Set<string>([
 export const MOVIMIENTOS_FINANCIEROS_GROUP_TYPE = "movimientos_financieros";
 
 /**
+ * Filas afectadas por un DELETE/UPDATE. Postgres lo informa en `rowCount`; libSQL/Turso (producción)
+ * en `rowsAffected`. Leer solo `rowCount` daba siempre 0 en producción: la fila se borraba pero el
+ * endpoint contestaba "no encontrado" y la pantalla mostraba un error (facturas, 16-oct-2026).
+ */
+export function affectedRows(result: unknown): number {
+  const r = result as { rowCount?: number | null; rowsAffected?: number | null } | null | undefined;
+  return Number(r?.rowCount ?? r?.rowsAffected ?? 0);
+}
+
+/**
  * Criterio de una acción masiva sobre movimientos (clasificar, descategorizar, asignar caja/local,
  * borrar). Se resuelve entero en SQL: ver `selectTransactionIdsForBatch`.
  */
@@ -1237,7 +1247,7 @@ export class DatabaseStorage implements IStorage {
 
   async deleteLocal(clientId: number, id: number): Promise<boolean> {
     const result = await db.delete(locals).where(and(eq(locals.id, id), eq(locals.clientId, clientId)));
-    return (result.rowCount ?? 0) > 0;
+    return affectedRows(result) > 0;
   }
 
   async getSuppliers(clientId: number): Promise<Supplier[]> {
@@ -1265,7 +1275,7 @@ export class DatabaseStorage implements IStorage {
 
   async deleteSupplier(clientId: number, id: number): Promise<boolean> {
     const result = await db.delete(suppliers).where(and(eq(suppliers.id, id), eq(suppliers.clientId, clientId)));
-    return (result.rowCount ?? 0) > 0;
+    return affectedRows(result) > 0;
   }
 
   async getRubros(clientId: number): Promise<Rubro[]> {
@@ -1287,7 +1297,7 @@ export class DatabaseStorage implements IStorage {
 
   async deleteRubro(clientId: number, id: number): Promise<boolean> {
     const result = await db.delete(rubros).where(and(eq(rubros.id, id), eq(rubros.clientId, clientId)));
-    return (result.rowCount ?? 0) > 0;
+    return affectedRows(result) > 0;
   }
 
   async getSubRubros(clientId: number): Promise<(SubRubro & { rubro?: Rubro | null })[]> {
@@ -1327,7 +1337,7 @@ export class DatabaseStorage implements IStorage {
 
   async deleteSubRubro(clientId: number, id: number): Promise<boolean> {
     const result = await db.delete(subRubros).where(and(eq(subRubros.id, id), eq(subRubros.clientId, clientId)));
-    return (result.rowCount ?? 0) > 0;
+    return affectedRows(result) > 0;
   }
 
   async getTaxes(clientId: number): Promise<Tax[]> {
@@ -1349,7 +1359,7 @@ export class DatabaseStorage implements IStorage {
 
   async deleteTax(clientId: number, id: number): Promise<boolean> {
     const result = await db.delete(taxes).where(and(eq(taxes.id, id), eq(taxes.clientId, clientId)));
-    return (result.rowCount ?? 0) > 0;
+    return affectedRows(result) > 0;
   }
 
   /**
@@ -1388,7 +1398,7 @@ export class DatabaseStorage implements IStorage {
 
   async deleteUnit(clientId: number, id: number): Promise<boolean> {
     const result = await db.delete(unitsOfMeasure).where(and(eq(unitsOfMeasure.id, id), eq(unitsOfMeasure.clientId, clientId)));
-    return (result.rowCount ?? 0) > 0;
+    return affectedRows(result) > 0;
   }
 
   async getSupplies(clientId: number): Promise<any[]> {
@@ -1585,7 +1595,7 @@ export class DatabaseStorage implements IStorage {
 
   async deleteSupply(clientId: number, id: number): Promise<boolean> {
     const result = await db.delete(supplies).where(and(eq(supplies.id, id), eq(supplies.clientId, clientId)));
-    return (result.rowCount ?? 0) > 0;
+    return affectedRows(result) > 0;
   }
 
   async getInvoices(clientId: number): Promise<any[]> {
@@ -1775,7 +1785,7 @@ export class DatabaseStorage implements IStorage {
     await db.delete(invoiceItems).where(eq(invoiceItems.invoiceId, id));
     await db.delete(costHistory).where(eq(costHistory.invoiceId, id));
     const result = await db.delete(invoices).where(and(eq(invoices.id, id), eq(invoices.clientId, clientId)));
-    return (result.rowCount ?? 0) > 0;
+    return affectedRows(result) > 0;
   }
 
   /** Libera (desasigna) los pagos aplicados a una factura. Los pagos en sí no se borran. */
@@ -2002,7 +2012,7 @@ export class DatabaseStorage implements IStorage {
     
     await db.delete(paymentAllocations).where(eq(paymentAllocations.paymentId, id));
     const result = await db.delete(payments).where(and(eq(payments.id, id), eq(payments.clientId, clientId)));
-    return (result.rowCount ?? 0) > 0;
+    return affectedRows(result) > 0;
   }
 
   async getRecipeCategories(clientId: number): Promise<RecipeCategory[]> {
@@ -2025,7 +2035,7 @@ export class DatabaseStorage implements IStorage {
   async deleteRecipeCategory(clientId: number, id: number): Promise<boolean> {
     const result = await db.delete(recipeCategories)
       .where(and(eq(recipeCategories.id, id), eq(recipeCategories.clientId, clientId)));
-    return (result.rowCount ?? 0) > 0;
+    return affectedRows(result) > 0;
   }
 
   async getRecipeSubcategories(
@@ -2097,7 +2107,7 @@ export class DatabaseStorage implements IStorage {
     const result = await db
       .delete(recipeSubcategories)
       .where(and(eq(recipeSubcategories.id, id), eq(recipeSubcategories.clientId, clientId)));
-    return (result.rowCount ?? 0) > 0;
+    return affectedRows(result) > 0;
   }
 
   async getRecipes(clientId: number): Promise<Recipe[]> {
@@ -2187,7 +2197,7 @@ export class DatabaseStorage implements IStorage {
     
     await db.delete(recipeIngredients).where(eq(recipeIngredients.recipeId, id));
     const result = await db.delete(recipes).where(and(eq(recipes.id, id), eq(recipes.clientId, clientId)));
-    return (result.rowCount ?? 0) > 0;
+    return affectedRows(result) > 0;
   }
 
   async getCostHistory(clientId: number): Promise<CostHistory[]> {
@@ -2247,7 +2257,7 @@ export class DatabaseStorage implements IStorage {
   async deleteFinancialGroup(clientId: number, id: number): Promise<boolean> {
     const result = await db.delete(financialGroups)
       .where(and(eq(financialGroups.id, id), eq(financialGroups.clientId, clientId)));
-    return (result.rowCount ?? 0) > 0;
+    return affectedRows(result) > 0;
   }
 
   async getClientBanks(clientId: number): Promise<ClientBank[]> {
@@ -2292,7 +2302,7 @@ export class DatabaseStorage implements IStorage {
     const result = await db
       .delete(businessNames)
       .where(and(eq(businessNames.clientId, clientId), eq(businessNames.id, id)));
-    return (result.rowCount ?? 0) > 0;
+    return affectedRows(result) > 0;
   }
 
   async getCounterparties(clientId: number): Promise<Counterparty[]> {
@@ -2325,7 +2335,7 @@ export class DatabaseStorage implements IStorage {
     const result = await db
       .delete(counterparties)
       .where(and(eq(counterparties.clientId, clientId), eq(counterparties.id, id)));
-    return (result.rowCount ?? 0) > 0;
+    return affectedRows(result) > 0;
   }
 
   async getCounterpartyIdentifiers(clientId: number, counterpartyId: number): Promise<CounterpartyIdentifier[]> {
@@ -2345,7 +2355,7 @@ export class DatabaseStorage implements IStorage {
     const result = await db
       .delete(counterpartyIdentifiers)
       .where(and(eq(counterpartyIdentifiers.clientId, clientId), eq(counterpartyIdentifiers.id, id)));
-    return (result.rowCount ?? 0) > 0;
+    return affectedRows(result) > 0;
   }
 
   async createClientBank(bank: InsertClientBank): Promise<ClientBank> {
@@ -2364,7 +2374,7 @@ export class DatabaseStorage implements IStorage {
   async deleteClientBank(clientId: number, id: number): Promise<boolean> {
     const result = await db.delete(clientBanks)
       .where(and(eq(clientBanks.id, id), eq(clientBanks.clientId, clientId)));
-    return (result.rowCount ?? 0) > 0;
+    return affectedRows(result) > 0;
   }
 
   async getTransactionCategories(clientId: number): Promise<TransactionCategory[]> {
@@ -2402,7 +2412,7 @@ export class DatabaseStorage implements IStorage {
   async deleteTransactionCategory(clientId: number, id: number): Promise<boolean> {
     const result = await db.delete(transactionCategories)
       .where(and(eq(transactionCategories.id, id), eq(transactionCategories.clientId, clientId)));
-    return (result.rowCount ?? 0) > 0;
+    return affectedRows(result) > 0;
   }
 
   async getBankAccounts(clientId: number): Promise<BankAccount[]> {
@@ -8392,7 +8402,7 @@ export class DatabaseStorage implements IStorage {
         eq(rolePermissions.role, role),
         eq(rolePermissions.permissionId, permissionId)
       ));
-    return (result.rowCount ?? 0) > 0;
+    return affectedRows(result) > 0;
   }
 
   async getEffectivePermission(
@@ -8452,7 +8462,7 @@ export class DatabaseStorage implements IStorage {
 
   async deleteUserLocalAssignment(id: number): Promise<boolean> {
     const result = await db.delete(userLocalAssignments).where(eq(userLocalAssignments.id, id));
-    return (result.rowCount ?? 0) > 0;
+    return affectedRows(result) > 0;
   }
 
   async getNotifications(clientId: number, userId?: string): Promise<Notification[]> {
@@ -8568,7 +8578,7 @@ export class DatabaseStorage implements IStorage {
   async deleteAuditTemplate(clientId: number, id: number): Promise<boolean> {
     const result = await db.delete(auditTemplates)
       .where(and(eq(auditTemplates.id, id), eq(auditTemplates.clientId, clientId)));
-    return (result.rowCount ?? 0) > 0;
+    return affectedRows(result) > 0;
   }
 
   async getAuditTemplateItems(templateId: number): Promise<AuditTemplateItem[]> {
@@ -8584,7 +8594,7 @@ export class DatabaseStorage implements IStorage {
 
   async deleteAuditTemplateItem(id: number): Promise<boolean> {
     const result = await db.delete(auditTemplateItems).where(eq(auditTemplateItems.id, id));
-    return (result.rowCount ?? 0) > 0;
+    return affectedRows(result) > 0;
   }
 
   async getOperationalAudits(clientId: number, localId?: number): Promise<OperationalAudit[]> {
@@ -8660,7 +8670,7 @@ export class DatabaseStorage implements IStorage {
   async deleteEmployee(clientId: number, id: number): Promise<boolean> {
     const result = await db.delete(employees)
       .where(and(eq(employees.id, id), eq(employees.clientId, clientId)));
-    return (result.rowCount ?? 0) > 0;
+    return affectedRows(result) > 0;
   }
 
   async getAttendances(clientId: number, employeeId?: number, date?: string): Promise<Attendance[]> {
@@ -8804,14 +8814,14 @@ export class DatabaseStorage implements IStorage {
       .update(userClients)
       .set({ role })
       .where(and(eq(userClients.clientId, clientId), eq(userClients.userId, userId)));
-    return (r.rowCount ?? 0) > 0;
+    return affectedRows(r) > 0;
   }
 
   async removeUserFromClient(clientId: number, userId: string): Promise<boolean> {
     const r = await db
       .delete(userClients)
       .where(and(eq(userClients.clientId, clientId), eq(userClients.userId, userId)));
-    return (r.rowCount ?? 0) > 0;
+    return affectedRows(r) > 0;
   }
 
   async countClientsForUser(userId: string): Promise<number> {
@@ -8891,7 +8901,7 @@ export class DatabaseStorage implements IStorage {
   async deleteInvitation(clientId: number, id: number): Promise<boolean> {
     const result = await db.delete(clientInvitations)
       .where(and(eq(clientInvitations.id, id), eq(clientInvitations.clientId, clientId)));
-    return (result.rowCount ?? 0) > 0;
+    return affectedRows(result) > 0;
   }
 
   async getLocalAliases(clientId: number): Promise<LocalAlias[]> {
@@ -8917,7 +8927,7 @@ export class DatabaseStorage implements IStorage {
   async deleteLocalAlias(clientId: number, id: number): Promise<boolean> {
     const result = await db.delete(localAliases)
       .where(and(eq(localAliases.id, id), eq(localAliases.clientId, clientId)));
-    return (result.rowCount ?? 0) > 0;
+    return affectedRows(result) > 0;
   }
 
   async getSupplySuppliers(clientId: number): Promise<SupplySupplier[]> {
