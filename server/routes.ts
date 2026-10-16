@@ -5944,8 +5944,40 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
           dateTo: q.dateTo || undefined,
           supplierId: q.supplierId && q.supplierId !== "all" ? parseInt(q.supplierId, 10) : undefined,
           localId: q.localId && q.localId !== "all" ? parseInt(q.localId, 10) : undefined,
+          excluidos: q.excluidos === "solo" ? "solo" : "ocultar",
         }),
       );
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
+  // Emisores de AFIP que la empresa ocultó de Comprobantes Recibidos (no son de Food Cost).
+  // Solo cambia qué se muestra, no ningún dato, así que puede tocarlo cualquier usuario.
+  app.get("/api/afip/received/issuers", isAuthenticated, async (req, res) => {
+    try {
+      const clientId = await getClientId(req);
+      res.json(await storage.listAfipReceivedIssuers(clientId));
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
+  app.get("/api/preferences/afip-excluded-issuers", isAuthenticated, async (req, res) => {
+    try {
+      const clientId = await getClientId(req);
+      res.json(await storage.getAfipExcludedIssuers(clientId));
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
+  app.put("/api/preferences/afip-excluded-issuers", isAuthenticated, async (req, res) => {
+    try {
+      const clientId = await getClientId(req);
+      const parsed = z.array(z.string().max(20)).max(2000).safeParse(req.body?.cuits);
+      if (!parsed.success) return res.status(400).json({ message: "Datos invalidos" });
+      res.json(await storage.setAfipExcludedIssuers(clientId, parsed.data));
     } catch (e: any) {
       res.status(500).json({ message: e.message });
     }

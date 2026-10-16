@@ -45,6 +45,8 @@ import {
 } from "@shared/afipComprobantesParser";
 import type { Local, BusinessName } from "@shared/schema";
 import { AfipImportBatchesButton } from "@/components/afip-import-batches";
+import { ExportMenu } from "@/components/export-menu";
+import type { ExportInput } from "@/lib/table-export";
 
 interface SalePoint {
   id: number;
@@ -211,6 +213,57 @@ export function ComprobantesEmitidos() {
     },
   ];
 
+  /** Lo que se exporta es exactamente lo que se ve con los filtros puestos. */
+  const buildExport = (): ExportInput => {
+    const fmtD = (iso: string) => (iso ? iso.split("-").reverse().join("/") : "");
+    const rows = data?.rows ?? [];
+    return {
+      title: "Comprobantes Emitidos",
+      filtros: [
+        `Período: ${fmtD(dateFrom)} al ${fmtD(dateTo)}`,
+        `Local: ${localOptions.find((o) => o.value === localId)?.label ?? "Todos los locales"}`,
+        `Punto de venta: ${salePointOptions.find((o) => o.value === salePointFilter)?.label ?? "Todos los puntos de venta"}`,
+      ],
+      resumen: [
+        `Comprobantes: ${resumen?.cantidad ?? 0}`,
+        `Neto: ${formatCurrency(resumen?.neto ?? 0)}`,
+        `IVA: ${formatCurrency(resumen?.iva ?? 0)}`,
+        `Total: ${formatCurrency(resumen?.total ?? 0)}`,
+      ],
+      fileBase: "comprobantes_emitidos",
+      sheets: [
+        {
+          name: "Comprobantes",
+          rows,
+          columns: [
+            { header: "Fecha", value: (r: IssuedRow) => fmtD(r.voucherDate), width: 0.8 },
+            { header: "Punto de venta", value: (r: IssuedRow) => String(r.salePoint).padStart(4, "0"), width: 0.8 },
+            { header: "Nombre", value: (r: IssuedRow) => r.salePointName ?? "", width: 1.3 },
+            { header: "Comprobante", value: (r: IssuedRow) => r.voucherTypeName, width: 1.5 },
+            { header: "Local", value: (r: IssuedRow) => r.localName ?? "", width: 1.1 },
+            { header: "Cantidad", value: (r: IssuedRow) => r.quantity, width: 0.6 },
+            { header: "Neto", value: (r: IssuedRow) => r.netGravado, money: true, width: 1.1 },
+            { header: "IVA", value: (r: IssuedRow) => r.totalIva, money: true, width: 1 },
+            { header: "Total", value: (r: IssuedRow) => r.total, money: true, width: 1.1 },
+          ],
+        },
+        {
+          name: "Por punto de venta",
+          rows: data?.porPuntoVenta ?? [],
+          columns: [
+            { header: "Punto de venta", value: (p: IssuedSummary["porPuntoVenta"][number]) => String(p.salePoint).padStart(4, "0"), width: 0.8 },
+            { header: "Nombre", value: (p: IssuedSummary["porPuntoVenta"][number]) => p.salePointName ?? "sin dar de alta", width: 1.4 },
+            { header: "Local", value: (p: IssuedSummary["porPuntoVenta"][number]) => p.localName ?? "", width: 1.1 },
+            { header: "Comprobantes", value: (p: IssuedSummary["porPuntoVenta"][number]) => p.cantidad, width: 0.8 },
+            { header: "Neto", value: (p: IssuedSummary["porPuntoVenta"][number]) => p.neto, money: true, width: 1.1 },
+            { header: "IVA", value: (p: IssuedSummary["porPuntoVenta"][number]) => p.iva, money: true, width: 1 },
+            { header: "Total", value: (p: IssuedSummary["porPuntoVenta"][number]) => p.total, money: true, width: 1.1 },
+          ],
+        },
+      ],
+    };
+  };
+
   return (
     <div className="space-y-6">
       <PageHeader
@@ -223,6 +276,7 @@ export function ComprobantesEmitidos() {
               Puntos de Venta
               {salePoints.length > 0 && <Badge variant="secondary" className="ml-2">{salePoints.length}</Badge>}
             </Button>
+            <ExportMenu build={buildExport} disabled={isLoading || !data} testId="button-export-emitidos" />
             <AfipImportBatchesButton kind="issued" />
             <Button onClick={() => setImportOpen(true)} data-testid="button-import-emitidos">
               <Upload className="h-4 w-4 mr-2" />

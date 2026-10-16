@@ -1659,6 +1659,11 @@ export const clientPreferences = pgTable(
      * (ej. "Servicio de mesa"), como JSON array de nombres. NULL = ninguno. Sep-2026.
      */
     economicTopExcluded: text("economic_top_excluded"),
+    /**
+     * Emisores de AFIP (CUIT, solo dígitos) que la empresa ocultó de Mis Comprobantes Recibidos
+     * porque no son de Food Cost (servicios, etc.), como JSON array. NULL = ninguno. Oct-2026.
+     */
+    afipExcludedIssuers: text("afip_excluded_issuers"),
     createdAt: timestamp("created_at").defaultNow(),
     updatedAt: timestamp("updated_at").defaultNow(),
   },

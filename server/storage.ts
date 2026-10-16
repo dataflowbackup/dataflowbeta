@@ -9991,9 +9991,87 @@ export class DatabaseStorage implements IStorage {
    *  - "faltante"  AFIP lo tiene y el sistema no.
    * Y aparte, las facturas del sistema que AFIP no informa quedan como "sobrante".
    */
+  // ── Emisores excluidos de Mis Comprobantes Recibidos (oct-2026) ─────────────
+
+  /** CUITs (solo dígitos) que la empresa ocultó de Mis Comprobantes Recibidos. */
+  async getAfipExcludedIssuers(clientId: number): Promise<string[]> {
+    const [row] = await db
+      .select({ v: clientPreferences.afipExcludedIssuers })
+      .from(clientPreferences)
+      .where(eq(clientPreferences.clientId, clientId))
+      .limit(1);
+    try {
+      const parsed = JSON.parse(String(row?.v ?? "[]"));
+      return Array.isArray(parsed) ? parsed.filter((x): x is string => typeof x === "string") : [];
+    } catch {
+      return [];
+    }
+  }
+
+  async setAfipExcludedIssuers(clientId: number, cuits: string[]): Promise<string[]> {
+    const limpios = Array.from(new Set(cuits.map((c) => String(c).replace(/\D/g, "")).filter(Boolean)));
+    const value = limpios.length > 0 ? JSON.stringify(limpios) : null;
+    const [existing] = await db
+      .select({ id: clientPreferences.id })
+      .from(clientPreferences)
+      .where(eq(clientPreferences.clientId, clientId))
+      .limit(1);
+    if (existing) {
+      await db
+        .update(clientPreferences)
+        .set({ afipExcludedIssuers: value, updatedAt: new Date() })
+        .where(eq(clientPreferences.clientId, clientId));
+    } else {
+      await db.insert(clientPreferences).values({ clientId, afipExcludedIssuers: value });
+    }
+    return limpios;
+  }
+
+  /** Todos los emisores que aparecen en los comprobantes recibidos importados, con cantidad e importe. */
+  async listAfipReceivedIssuers(clientId: number): Promise<Array<{ cuit: string; name: string; comprobantes: number; total: number; ultimo: string | null }>> {
+    const rows = await db
+      .select({
+        cuit: afipReceivedVouchers.issuerCuit,
+        name: sql<string>`max(${afipReceivedVouchers.issuerName})`,
+        comprobantes: sql<number>`count(*)`,
+        total: sql<number>`sum(cast(${afipReceivedVouchers.total} as real))`,
+        ultimo: sql<string>`max(${afipReceivedVouchers.voucherDate})`,
+      })
+      .from(afipReceivedVouchers)
+      .where(eq(afipReceivedVouchers.clientId, clientId))
+      .groupBy(afipReceivedVouchers.issuerCuit);
+    const porCuit = new Map<string, { cuit: string; name: string; comprobantes: number; total: number; ultimo: string | null }>();
+    for (const r of rows) {
+      const cuit = String(r.cuit ?? "").replace(/\D/g, "");
+      if (!cuit) continue;
+      const prev = porCuit.get(cuit);
+      if (prev) {
+        prev.comprobantes += Number(r.comprobantes) || 0;
+        prev.total += Number(r.total) || 0;
+        if (r.ultimo && (!prev.ultimo || String(r.ultimo) > prev.ultimo)) prev.ultimo = String(r.ultimo);
+      } else {
+        porCuit.set(cuit, {
+          cuit,
+          name: String(r.name ?? ""),
+          comprobantes: Number(r.comprobantes) || 0,
+          total: Number(r.total) || 0,
+          ultimo: r.ultimo ? String(r.ultimo) : null,
+        });
+      }
+    }
+    return Array.from(porCuit.values()).sort((a, b) => b.total - a.total);
+  }
+
   async getAfipReceivedReconciliation(
     clientId: number,
-    filters: { dateFrom?: string; dateTo?: string; supplierId?: number; localId?: number } = {},
+    filters: {
+      dateFrom?: string;
+      dateTo?: string;
+      supplierId?: number;
+      localId?: number;
+      /** Emisores excluidos: "ocultar" (por defecto) los saca; "solo" muestra únicamente esos. */
+      excluidos?: "ocultar" | "solo";
+    } = {},
   ): Promise<any> {
     const vouchers = await this.listAfipReceivedVouchers(clientId, {
       dateFrom: filters.dateFrom,
@@ -10227,10 +10305,19 @@ export class DatabaseStorage implements IStorage {
 
     // El filtro por LOCAL se aplica DESPUES del cruce: el local de un comprobante de AFIP sale
     // de la factura que le matcheo, asi que los que no matchearon no tienen local.
-    const filteredRows =
+    const porLocalRows =
       filters.localId != null ? rows.filter((r) => r.localId === filters.localId) : rows;
-    const filteredSobrantes =
+    const porLocalSobrantes =
       filters.localId != null ? sobrantes.filter((s) => s.localId === filters.localId) : sobrantes;
+
+    // Emisores excluidos (no son de Food Cost): también DESPUES del cruce, así no cambia qué cruza
+    // con qué; solo qué se muestra y qué suman los recuadros.
+    const excluidos = new Set(await this.getAfipExcludedIssuers(clientId));
+    const esExcluido = (cuit: unknown) => excluidos.has(digits(cuit as any));
+    const soloExcluidos = filters.excluidos === "solo";
+    const filteredRows = porLocalRows.filter((r) => esExcluido(r.issuerCuit) === soloExcluidos);
+    const filteredSobrantes = porLocalSobrantes.filter((s) => esExcluido(s.supplierCuit) === soloExcluidos);
+    const ocultos = porLocalRows.filter((r) => esExcluido(r.issuerCuit));
 
     const sum = (list: any[], pick: (x: any) => number) => Math.round(list.reduce((s, x) => s + pick(x), 0) * 100) / 100;
     const byStatus = (st: string) => filteredRows.filter((r) => r.status === st);
@@ -10238,6 +10325,12 @@ export class DatabaseStorage implements IStorage {
     return {
       rows: filteredRows,
       sobrantes: filteredSobrantes,
+      /** Lo que la exclusión saca de la vista normal (para el aviso "se están ocultando..."). */
+      excluidos: {
+        emisores: excluidos.size,
+        comprobantes: ocultos.length,
+        total: Math.round(ocultos.reduce((s, r) => s + r.total, 0) * 100) / 100,
+      },
       resumen: {
         totalComprobantes: filteredRows.length,
         totalAfip: sum(filteredRows, (r) => r.total),

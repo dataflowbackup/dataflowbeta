@@ -29,6 +29,8 @@ import {
   AlertCircle,
   ArrowUpRight,
   CheckCircle2,
+  Eye,
+  EyeOff,
   FileSpreadsheet,
   FileText,
   HelpCircle,
@@ -48,6 +50,8 @@ import {
 import { ComprobantesEmitidos } from "@/components/comprobantes-emitidos";
 import { ConfirmDialog } from "@/components/confirm-dialog";
 import { AfipImportBatchesButton } from "@/components/afip-import-batches";
+import { ExportMenu } from "@/components/export-menu";
+import type { ExportInput } from "@/lib/table-export";
 import type { Local, Supplier } from "@shared/schema";
 
 type Tab = "recibidos" | "emitidos";
@@ -95,6 +99,8 @@ interface SobranteRow {
 interface ReconResponse {
   rows: ReconRow[];
   sobrantes: SobranteRow[];
+  /** Lo que la exclusión de emisores saca de la vista normal. */
+  excluidos?: { emisores: number; comprobantes: number; total: number };
   resumen: {
     totalComprobantes: number;
     totalAfip: number;
@@ -203,7 +209,36 @@ function ComprobantesRecibidos() {
   const [statusFilter, setStatusFilter] = useState<"all" | ReconRow["status"]>("all");
   const [importOpen, setImportOpen] = useState(false);
   const [toFix, setToFix] = useState<ReconRow | null>(null);
+  /** true = se ven SOLO los comprobantes de los emisores excluidos. */
+  const [verExcluidos, setVerExcluidos] = useState(false);
+  const [excludedOpen, setExcludedOpen] = useState(false);
   const { toast } = useToast();
+
+  /**
+   * Emisores que la empresa sacó de la vista porque no son de Food Cost (servicios, etc.). Se
+   * guardan por empresa, por CUIT, así valen para todos los usuarios y todos los períodos.
+   */
+  const EXCLUDED_KEY = "/api/preferences/afip-excluded-issuers";
+  const { data: excluidos = [] } = useQuery<string[]>({ queryKey: [EXCLUDED_KEY] });
+  const saveExcluidos = useMutation({
+    mutationFn: async (cuits: string[]) => (await apiRequest("PUT", EXCLUDED_KEY, { cuits })).json() as Promise<string[]>,
+    onMutate: (cuits) => {
+      const prev = queryClient.getQueryData<string[]>([EXCLUDED_KEY]);
+      queryClient.setQueryData([EXCLUDED_KEY], cuits);
+      return { prev };
+    },
+    onError: (e: Error, _v, ctx) => {
+      queryClient.setQueryData([EXCLUDED_KEY], ctx?.prev ?? []);
+      toast({ title: "No se pudo guardar", description: e.message, variant: "destructive" });
+    },
+    onSettled: () => queryClient.invalidateQueries({ queryKey: ["/api/afip/received/reconciliation"] }),
+  });
+  const cuitDigits = (c: string) => String(c ?? "").replace(/\D/g, "");
+  const toggleExcluido = (cuit: string) => {
+    const d = cuitDigits(cuit);
+    if (!d) return;
+    saveExcluidos.mutate(excluidos.includes(d) ? excluidos.filter((x) => x !== d) : [...excluidos, d]);
+  };
 
   const { data: locals = [] } = useQuery<Local[]>({ queryKey: ["/api/locals"] });
   const { data: suppliers = [] } = useQuery<Supplier[]>({ queryKey: ["/api/suppliers"] });
@@ -225,10 +260,11 @@ function ComprobantesRecibidos() {
   const params = new URLSearchParams({ dateFrom, dateTo });
   if (localId !== "all") params.set("localId", localId);
   if (supplierId !== "all") params.set("supplierId", supplierId);
+  if (verExcluidos) params.set("excluidos", "solo");
   const url = `/api/afip/received/reconciliation?${params.toString()}`;
 
   const { data, isLoading } = useQuery<ReconResponse>({
-    queryKey: ["/api/afip/received/reconciliation", dateFrom, dateTo, localId, supplierId],
+    queryKey: ["/api/afip/received/reconciliation", dateFrom, dateTo, localId, supplierId, verExcluidos, excluidos.join(",")],
     queryFn: async () => {
       const res = await fetch(url, { credentials: "include" });
       if (!res.ok) throw new Error((await res.json().catch(() => ({}))).message ?? "No se pudo cargar el cruce");
@@ -335,6 +371,26 @@ function ComprobantesRecibidos() {
       },
     },
     {
+      key: "excluir",
+      header: "",
+      cell: (r) => {
+        const excluido = excluidos.includes(cuitDigits(r.issuerCuit));
+        return (
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-7 w-7"
+            title={excluido ? "Volver a mostrar este emisor" : "Ocultar este emisor (no es de Food Cost)"}
+            disabled={!cuitDigits(r.issuerCuit)}
+            onClick={() => toggleExcluido(r.issuerCuit)}
+            data-testid={`button-excluir-${r.id}`}
+          >
+            {excluido ? <Eye className="h-3.5 w-3.5" /> : <EyeOff className="h-3.5 w-3.5 text-muted-foreground" />}
+          </Button>
+        );
+      },
+    },
+    {
       key: "acciones",
       header: "",
       cell: (r) =>
@@ -390,6 +446,68 @@ function ComprobantesRecibidos() {
     { key: "sobrante", label: "En el sistema, no en AFIP", count: resumen?.sobrante ?? 0, amount: resumen?.sobranteTotal ?? 0, tone: "text-muted-foreground" },
   ];
 
+  /** Lo que se exporta es exactamente lo que se ve: mismos filtros, mismo estado elegido. */
+  const buildExport = (): ExportInput => {
+    const fmtD = (iso: string) => (iso ? iso.split("-").reverse().join("/") : "");
+    const filtros = [
+      `Período: ${fmtD(dateFrom)} al ${fmtD(dateTo)}`,
+      `Local: ${localOptions.find((o) => o.value === localId)?.label ?? "Todos los locales"}`,
+      `Proveedor: ${supplierOptions.find((o) => o.value === supplierId)?.label ?? "Todos los proveedores"}`,
+      `Estado: ${statusFilter === "all" ? "Todos" : STATUS_META[statusFilter].label}`,
+      verExcluidos
+        ? "Solo los proveedores excluidos"
+        : excluidos.length > 0
+          ? `Sin los ${excluidos.length} proveedores excluidos`
+          : "Sin proveedores excluidos",
+    ];
+    const comp = (r: ReconRow) => `${String(r.salePoint).padStart(4, "0")}-${String(r.numberFrom).padStart(8, "0")}`;
+    const total = rows.reduce((a, r) => a + r.total, 0);
+    return {
+      title: "Comprobantes Recibidos",
+      filtros,
+      resumen: [`Comprobantes: ${rows.length}`, `Total AFIP: ${formatCurrency(total)}`],
+      fileBase: "comprobantes_recibidos",
+      sheets: [
+        {
+          name: "Comprobantes",
+          rows,
+          columns: [
+            { header: "Fecha", value: (r: ReconRow) => fmtD(r.voucherDate), width: 0.8 },
+            { header: "Comprobante", value: (r: ReconRow) => r.voucherTypeName, width: 1.4 },
+            { header: "Número", value: comp, width: 1.1 },
+            { header: "Proveedor", value: (r: ReconRow) => r.supplierName ?? r.issuerName, width: 2 },
+            { header: "CUIT", value: (r: ReconRow) => r.issuerCuit, width: 1 },
+            { header: "Local", value: (r: ReconRow) => r.localName ?? "", width: 1 },
+            { header: "Importe AFIP", value: (r: ReconRow) => r.total, money: true, width: 1.1 },
+            { header: "IVA", value: (r: ReconRow) => r.totalIva, money: true, width: 1 },
+            { header: "Estado", value: (r: ReconRow) => STATUS_META[r.status].label, width: 1.1 },
+            { header: "Motivo", value: (r: ReconRow) => (r.matchLevel ? MATCH_REASON[r.matchLevel] ?? "" : ""), width: 1.4 },
+            { header: "Importe sistema", value: (r: ReconRow) => r.invoiceTotal, money: true, width: 1.1 },
+            { header: "Diferencia", value: (r: ReconRow) => r.amountDiff, money: true, width: 1 },
+          ],
+        },
+        {
+          name: "En el sistema, no en AFIP",
+          rows: data?.sobrantes ?? [],
+          columns: [
+            { header: "Fecha", value: (s: SobranteRow) => fmtD(s.invoiceDate), width: 0.8 },
+            { header: "Tipo", value: (s: SobranteRow) => s.invoiceType, width: 0.7 },
+            { header: "Número", value: (s: SobranteRow) => `${s.salePoint ? `${s.salePoint}-` : ""}${s.number}`, width: 1.1 },
+            { header: "Proveedor", value: (s: SobranteRow) => s.supplierName ?? "", width: 2 },
+            { header: "CUIT", value: (s: SobranteRow) => s.supplierCuit ?? "", width: 1 },
+            { header: "Local", value: (s: SobranteRow) => s.localName ?? "", width: 1 },
+            { header: "Total", value: (s: SobranteRow) => s.total, money: true, width: 1.1 },
+            {
+              header: "Motivo",
+              value: (s: SobranteRow) => (s.reason === "proveedor_sin_cuit" ? "Proveedor sin CUIT cargado" : "AFIP no lo informa"),
+              width: 1.6,
+            },
+          ],
+        },
+      ],
+    };
+  };
+
   return (
     <div className="space-y-6">
       <PageHeader
@@ -397,6 +515,12 @@ function ComprobantesRecibidos() {
         description="Lo que AFIP tiene registrado a nombre de la empresa, cruzado contra las facturas cargadas"
         actions={
           <div className="flex flex-wrap gap-2">
+            <Button variant="outline" onClick={() => setExcludedOpen(true)} data-testid="button-emisores-excluidos">
+              <EyeOff className="h-4 w-4 mr-2" />
+              Proveedores excluidos
+              {excluidos.length > 0 && <Badge variant="secondary" className="ml-2">{excluidos.length}</Badge>}
+            </Button>
+            <ExportMenu build={buildExport} disabled={isLoading || !data} testId="button-export-recibidos" />
             <AfipImportBatchesButton kind="received" />
             <Button onClick={() => setImportOpen(true)} data-testid="button-import-recibidos">
               <Upload className="h-4 w-4 mr-2" />
@@ -426,6 +550,31 @@ function ComprobantesRecibidos() {
           </div>
         </CardContent>
       </Card>
+
+      {verExcluidos ? (
+        <Alert className="border-amber-500/40 bg-amber-500/10" data-testid="alert-viendo-excluidos">
+          <EyeOff className="h-4 w-4" />
+          <AlertDescription className="flex flex-wrap items-center justify-between gap-2">
+            <span>
+              Estás viendo <strong>solo los comprobantes de los proveedores excluidos</strong>. Con el ojo de cada fila
+              volvés a mostrar un emisor.
+            </span>
+            <Button variant="outline" size="sm" className="h-7" onClick={() => setVerExcluidos(false)}>
+              Volver a la vista normal
+            </Button>
+          </AlertDescription>
+        </Alert>
+      ) : (data?.excluidos?.comprobantes ?? 0) > 0 ? (
+        <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground" data-testid="text-ocultando-excluidos">
+          <EyeOff className="h-3.5 w-3.5" />
+          Se están ocultando {data!.excluidos!.comprobantes} comprobante{data!.excluidos!.comprobantes === 1 ? "" : "s"} de{" "}
+          {data!.excluidos!.emisores} proveedor{data!.excluidos!.emisores === 1 ? "" : "es"} excluido
+          {data!.excluidos!.emisores === 1 ? "" : "s"} ({formatCurrency(data!.excluidos!.total)}).
+          <Button variant="ghost" size="sm" className="h-6 px-2 text-xs" onClick={() => setVerExcluidos(true)}>
+            Verlos
+          </Button>
+        </div>
+      ) : null}
 
       {localId !== "all" && (
         <Alert>
@@ -540,6 +689,12 @@ function ComprobantesRecibidos() {
       )}
 
       <ImportRecibidosDialog open={importOpen} onOpenChange={setImportOpen} />
+      <ExcludedIssuersDialog
+        open={excludedOpen}
+        onOpenChange={setExcludedOpen}
+        excluidos={excluidos}
+        onChange={(cuits) => saveExcluidos.mutate(cuits)}
+      />
       <ConfirmDialog
         open={toFix != null}
         onOpenChange={(v) => !v && setToFix(null)}
@@ -554,6 +709,87 @@ function ComprobantesRecibidos() {
         onConfirm={() => toFix && fixMutation.mutate(toFix)}
       />
     </div>
+  );
+}
+
+/**
+ * Proveedores (emisores de AFIP) que no son de Food Cost. Lista todos los que aparecen en lo
+ * importado, aunque no estén dados de alta como proveedores, porque se excluyen por CUIT.
+ */
+function ExcludedIssuersDialog({
+  open,
+  onOpenChange,
+  excluidos,
+  onChange,
+}: {
+  open: boolean;
+  onOpenChange: (v: boolean) => void;
+  excluidos: string[];
+  onChange: (cuits: string[]) => void;
+}) {
+  const [q, setQ] = useState("");
+  const [soloExcluidos, setSoloExcluidos] = useState(false);
+  const { data: emisores = [], isLoading } = useQuery<Array<{ cuit: string; name: string; comprobantes: number; total: number; ultimo: string | null }>>({
+    queryKey: ["/api/afip/received/issuers"],
+    enabled: open,
+  });
+  const set = new Set(excluidos);
+  const norm = (t: string) => t.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+  const visibles = emisores.filter(
+    (e) => (!soloExcluidos || set.has(e.cuit)) && (!q.trim() || norm(`${e.name} ${e.cuit}`).includes(norm(q.trim()))),
+  );
+  const totalExcluido = emisores.filter((e) => set.has(e.cuit)).reduce((a, e) => a + e.total, 0);
+  const toggle = (cuit: string) => onChange(set.has(cuit) ? excluidos.filter((x) => x !== cuit) : [...excluidos, cuit]);
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-w-2xl">
+        <DialogHeader>
+          <DialogTitle>Proveedores excluidos</DialogTitle>
+          <DialogDescription>
+            Tildá los proveedores que no son de Food Cost (servicios, alquileres, etc.). Sus comprobantes dejan de
+            verse en Comprobantes Recibidos, en los recuadros y en lo que se exporta. No se borra nada: se guarda para
+            esta empresa y vale para todos los períodos.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="flex flex-wrap items-center gap-2">
+          <Input placeholder="Buscar por nombre o CUIT…" value={q} onChange={(e) => setQ(e.target.value)} className="h-9 flex-1 min-w-[200px]" data-testid="input-buscar-emisor" />
+          <Button variant={soloExcluidos ? "default" : "outline"} size="sm" onClick={() => setSoloExcluidos(!soloExcluidos)}>
+            Solo excluidos ({excluidos.length})
+          </Button>
+        </div>
+        <p className="text-xs text-muted-foreground">
+          {excluidos.length} de {emisores.length} proveedores excluidos · {formatCurrency(totalExcluido)} en todo lo importado
+        </p>
+        <div className="max-h-[50vh] overflow-y-auto rounded-md border divide-y">
+          {isLoading ? (
+            <div className="p-3 space-y-2">{[1, 2, 3].map((i) => <Skeleton key={i} className="h-5 w-full" />)}</div>
+          ) : visibles.length === 0 ? (
+            <p className="p-4 text-center text-sm text-muted-foreground">Ningún proveedor coincide.</p>
+          ) : (
+            visibles.map((e) => {
+              const on = set.has(e.cuit);
+              return (
+                <label key={e.cuit} className="flex cursor-pointer items-center gap-3 px-3 py-2 hover:bg-muted/40" data-testid={`emisor-${e.cuit}`}>
+                  <input type="checkbox" checked={on} onChange={() => toggle(e.cuit)} className="h-4 w-4" />
+                  <div className="min-w-0 flex-1">
+                    <p className={cn("text-sm truncate", on && "text-muted-foreground line-through")}>{e.name || "Sin nombre"}</p>
+                    <p className="text-xs text-muted-foreground font-mono">
+                      {e.cuit} · {e.comprobantes} comprobante{e.comprobantes === 1 ? "" : "s"}
+                      {e.ultimo ? ` · último ${formatDate(e.ultimo)}` : ""}
+                    </p>
+                  </div>
+                  <span className="font-mono text-sm whitespace-nowrap">{formatCurrency(e.total)}</span>
+                </label>
+              );
+            })
+          )}
+        </div>
+        <DialogFooter>
+          <Button onClick={() => onOpenChange(false)}>Listo</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 
