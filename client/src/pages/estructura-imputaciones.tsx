@@ -538,7 +538,7 @@ export default function EstructuraImputacionesPage() {
     const destino =
       u.zona === "fuera"
         ? `No aparece en el Estado de Resultado Económico — ${MOTIVOS[u.motivo!]}`
-        : `${DEPARTAMENTOS[u.zona].numero}. ${DEPARTAMENTOS[u.zona].title}${u.taxKind ? ` — ${TAX_KIND_BY_KEY[u.taxKind as keyof typeof TAX_KIND_BY_KEY]?.label ?? u.taxKind}` : ""}`;
+        : `${DEPARTAMENTOS[u.zona].title}${u.taxKind ? ` — ${TAX_KIND_BY_KEY[u.taxKind as keyof typeof TAX_KIND_BY_KEY]?.label ?? u.taxKind}` : ""}`;
     const hoja: TNode = { key: "p/0", label: cForm.name.trim(), amount: null, pct: null, children: [] };
     const nodes: TNode[] =
       u.zona === "comisiones" || (u.zona === "fuera" && (u.motivo === "otros_mov" || u.motivo === "sin_grupo"))
@@ -609,31 +609,31 @@ export default function EstructuraImputacionesPage() {
               </CardContent>
             </Card>
           ) : (
-            <div className="space-y-3">
+            <div className="space-y-6">
               <ColumnHeader first="Grupo / Categoría" pctLabel="" />
 
-              <Department numero={1} title="Ventas netas" subtitle="salen de FUDO, Datalive, Shares y las ventas manuales: no se arman con categorías" amount={null} pctValue={null} open={false} />
-              <Department numero={2} title="Food Cost" subtitle="" amount={null} pctValue={null} open={false} actions={<Link href="/estructura-food-cost" className={`text-[11px] ${ECON.text} hover:underline`}>se arma en Estructura Food Cost →</Link>} />
+              <Department title="Ventas netas" subtitle="salen de FUDO, Datalive, Shares y las ventas manuales: no se arman con categorías" amount={null} pctValue={null} open={false} />
+              <Department title="Food Cost" subtitle="" amount={null} pctValue={null} open={false} actions={<Link href="/estructura-food-cost" className={`text-[11px] ${ECON.text} hover:underline`}>se arma en Estructura Food Cost →</Link>} />
 
-              <Department numero={3} title={DEPARTAMENTOS.gastos.title} subtitle="grupos que computan y categorías mandadas acá" amount={conNumeros ? estado!.gastos.total : null} pctValue={null} {...dept("gastos")} testId="estructura-gastos">
+              <Department title={DEPARTAMENTOS.gastos.title} subtitle="grupos que computan y categorías mandadas acá" amount={conNumeros ? estado!.gastos.total : null} pctValue={null} {...dept("gastos")} testId="estructura-gastos">
                 {arbol.gastos.length === 0
                   ? <p className="px-4 py-3 text-sm text-muted-foreground">Ningún grupo de gasto computa.</p>
                   : <TreeRows nodes={arbol.gastos} openNodes={nodosAbiertos} onToggle={toggleNode} />}
               </Department>
 
-              <Department numero={4} title={DEPARTAMENTOS.comisiones.title} subtitle="más las que se cargan a mano en la solapa Comisiones" amount={conNumeros ? estado!.comisiones.total : null} pctValue={null} {...dept("comisiones")} testId="estructura-comisiones">
+              <Department title={DEPARTAMENTOS.comisiones.title} subtitle="más las que se cargan a mano en la solapa Comisiones" amount={conNumeros ? estado!.comisiones.total : null} pctValue={null} {...dept("comisiones")} testId="estructura-comisiones">
                 {arbol.comisiones.length === 0
                   ? <p className="px-4 py-3 text-sm text-muted-foreground">Ninguna categoría va a Comisiones. Se manda desde un grupo que no computa.</p>
                   : <TreeRows nodes={arbol.comisiones} openNodes={nodosAbiertos} onToggle={toggleNode} />}
               </Department>
 
-              <Department numero={5} title={DEPARTAMENTOS.inversiones.title} amount={conNumeros ? estado!.inversiones.total : null} pctValue={null} {...dept("inversiones")} testId="estructura-inversion">
+              <Department title={DEPARTAMENTOS.inversiones.title} amount={conNumeros ? estado!.inversiones.total : null} pctValue={null} {...dept("inversiones")} testId="estructura-inversion">
                 {arbol.inversiones.length === 0
                   ? <p className="px-4 py-3 text-sm text-muted-foreground">Ninguna categoría va a Inversión. Se manda desde un grupo que no computa.</p>
                   : <TreeRows nodes={arbol.inversiones} openNodes={nodosAbiertos} onToggle={toggleNode} />}
               </Department>
 
-              <Department numero={6} title={DEPARTAMENTOS.impuestos.title} subtitle="el IVA no va acá: es informativo" amount={conNumeros ? estado!.impuestos.total : null} pctValue={null} {...dept("impuestos")} testId="estructura-impuestos">
+              <Department title={DEPARTAMENTOS.impuestos.title} subtitle="el IVA no va acá: es informativo" amount={conNumeros ? estado!.impuestos.total : null} pctValue={null} {...dept("impuestos")} testId="estructura-impuestos">
                 <TreeRows nodes={arbol.impuestos} openNodes={nodosAbiertos} onToggle={toggleNode} />
               </Department>
 
@@ -719,7 +719,7 @@ export default function EstructuraImputacionesPage() {
                 <span className={`font-medium ${gForm.type === "expense" && gForm.computes ? ECON.text : "text-muted-foreground"}`}>
                   {gForm.type === "expense"
                     ? gForm.computes
-                      ? "3. Gastos Fijos"
+                      ? "Gastos Fijos"
                       : "no computa (sus categorías se mandan una por una)"
                     : `no aparece — ${MOTIVOS[gForm.type === "income" ? "ingresos" : gForm.type === "movimientos_financieros" ? "movfin" : "transfer"]}`}
                 </span>

@@ -178,11 +178,10 @@ export function ColumnHeader({ first = "Concepto", pctLabel = "% s/Vtas" }: { fi
 }
 
 /**
- * Un departamento del edificio: tarjeta propia con su número, su total y su contenido. El
+ * Un departamento del edificio: tarjeta propia con su total y su contenido. El
  * encabezado pliega y despliega TODO lo que tiene abajo.
  */
 export function Department({
-  numero,
   title,
   subtitle,
   amount,
@@ -193,7 +192,6 @@ export function Department({
   children,
   testId,
 }: {
-  numero: number;
   title: string;
   subtitle?: string;
   amount: number | null;
@@ -212,12 +210,6 @@ export function Department({
       >
         <span className={`w-4 shrink-0 ${ECON.text}`}>
           {onToggle ? (open ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />) : null}
-        </span>
-        <span
-          className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-full ${ECON.bgSolid} text-[10px] font-bold text-white`}
-          title={`Departamento ${numero}`}
-        >
-          {numero}
         </span>
         <div className="flex-1 min-w-0">
           <span className={`text-xs font-semibold uppercase tracking-wide ${ECON.text}`}>{title}</span>
@@ -280,10 +272,10 @@ export function ResultBand({
 
 /** Los seis departamentos, en el orden del informe. Los usan también las pantallas de estructura. */
 export const DEPARTAMENTOS = {
-  ventas: { numero: 1, title: "Ventas" },
-  costo: { numero: 2, title: "Food Cost" },
-  gastos: { numero: 3, title: "Gastos Fijos" },
-  comisiones: { numero: 4, title: "Comisiones" },
-  inversiones: { numero: 5, title: "Inversión" },
-  impuestos: { numero: 6, title: "Impuestos" },
+  ventas: { title: "Ventas" },
+  costo: { title: "Food Cost" },
+  gastos: { title: "Gastos Fijos" },
+  comisiones: { title: "Comisiones" },
+  inversiones: { title: "Inversión" },
+  impuestos: { title: "Impuestos" },
 } as const;

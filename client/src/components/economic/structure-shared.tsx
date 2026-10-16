@@ -73,7 +73,7 @@ export function MapaEdificio({ activos }: { activos: Array<keyof typeof DEPARTAM
             key={k}
             className={`rounded-full border px-2 py-0.5 ${on ? ECON.chipOn : "text-muted-foreground border-dashed"}`}
           >
-            {DEPARTAMENTOS[k].numero}. {DEPARTAMENTOS[k].title}
+            {DEPARTAMENTOS[k].title}
           </span>
         );
       })}

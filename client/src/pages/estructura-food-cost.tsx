@@ -383,10 +383,9 @@ export default function EstructuraFoodCostPage() {
           </CardContent>
         </Card>
       ) : (
-        <div className="space-y-3">
+        <div className="space-y-6">
           <ColumnHeader first="Rubro / Sub-rubro / Insumo" pctLabel={conNumeros ? "% Food Cost" : ""} />
           <Department
-            numero={2}
             title="Food Cost — compras del mes"
             amount={total}
             pctValue={conNumeros ? 100 : null}

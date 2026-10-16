@@ -152,7 +152,7 @@ export function buildEconomicStatementPdf(input: StatementPdfInput): jsPDF {
     const h = row.kind === "grand" ? 22 : 16;
     // El "edificio": aire antes de cada departamento y de cada resultado, como en la pantalla.
     if (!first && row.kind !== "row") {
-      y += 6;
+      y += 12;
       zebra = 0;
     }
     first = false;

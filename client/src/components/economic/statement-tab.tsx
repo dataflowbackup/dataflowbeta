@@ -681,7 +681,7 @@ export function StatementTab({
       }
     };
     const section = (id: SeccionId, title: string, amount: number, pctValue: number) => {
-      push(`${DEPARTAMENTOS[id].numero}. ${title}`, amount, pctValue, 0, "section");
+      push(title, amount, pctValue, 0, "section");
       if (isSectionOpen(id)) flatten(t[id], 0);
     };
 
@@ -802,7 +802,6 @@ export function StatementTab({
 
   const sinRubro = data.compras.groups.find((g) => g.label === "Sin rubro asignado");
   const deptProps = (id: SeccionId) => ({
-    numero: DEPARTAMENTOS[id].numero,
     open: isSectionOpen(id),
     onToggle: () => toggleSection(id),
     testId: `section-${id}`,
@@ -893,7 +892,7 @@ export function StatementTab({
       )}
 
       {/* ── EL EDIFICIO: un departamento por tarjeta, con los resultados entre medio ── */}
-      <div className="space-y-3" data-testid="estado-edificio">
+      <div className="space-y-6" data-testid="estado-edificio">
         <ColumnHeader />
 
         <Department {...deptProps("ventas")} title="Ventas netas" amount={data.ventas.total} pctValue={100}>
