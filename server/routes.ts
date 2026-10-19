@@ -27,6 +27,7 @@ import {
   getSoldProductMappings,
   saveProductRecipeMappings,
 } from "./supplyMetricsQueries";
+import { getCostEvolution, getCostEvolutionPurchases } from "./costEvolutionQueries";
 import { listDeviationPeriods, computeDeviation, computeDeviationOverview } from "./deviationQueries";
 import { processFinancialImportJobBody } from "./processFinancialImportJob";
 import type {
@@ -2354,6 +2355,67 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const clientId = await getClientId(req);
       const data = await storage.getCostHistory(clientId);
       res.json(data);
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
+  // Evolución de Costos (oct-2026): tablero de precios de insumos, sub-recetas y platos.
+  app.get("/api/cost-evolution", isAuthenticated, async (req, res) => {
+    try {
+      const clientId = await getClientId(req);
+      const q = req.query as Record<string, unknown>;
+      const optNum = (raw: unknown) => {
+        if (raw == null || raw === "" || raw === "all") return undefined;
+        const n = parseInt(String(raw), 10);
+        return Number.isFinite(n) ? n : undefined;
+      };
+      const isIso = (v: unknown): v is string => typeof v === "string" && /^\d{4}-\d{2}-\d{2}$/.test(v);
+      if (!isIso(q.dateFrom) || !isIso(q.dateTo) || q.dateFrom > q.dateTo) {
+        return res.status(400).json({ message: "Período inválido" });
+      }
+      const cmvRaw = parseFloat(String(q.cmvObjetivo ?? ""));
+      res.json(
+        await getCostEvolution(clientId, {
+          dateFrom: q.dateFrom,
+          dateTo: q.dateTo,
+          granularity: q.granularity === "week" ? "week" : "month",
+          includeSuspicious: q.includeSuspicious === "true",
+          localId: optNum(q.localId),
+          supplierId: optNum(q.supplierId),
+          rubroId: optNum(q.rubroId),
+          subRubroId: optNum(q.subRubroId),
+          cmvObjetivo: Number.isFinite(cmvRaw) && cmvRaw > 0 ? cmvRaw : 35,
+        }),
+      );
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
+  app.get("/api/cost-evolution/purchases", isAuthenticated, async (req, res) => {
+    try {
+      const clientId = await getClientId(req);
+      const q = req.query as Record<string, unknown>;
+      const optNum = (raw: unknown) => {
+        if (raw == null || raw === "" || raw === "all") return undefined;
+        const n = parseInt(String(raw), 10);
+        return Number.isFinite(n) ? n : undefined;
+      };
+      const isIso = (v: unknown): v is string => typeof v === "string" && /^\d{4}-\d{2}-\d{2}$/.test(v);
+      const supplyId = optNum(q.supplyId);
+      if (supplyId == null || !isIso(q.dateFrom) || !isIso(q.dateTo)) {
+        return res.status(400).json({ message: "Faltan el insumo o el período" });
+      }
+      res.json(
+        await getCostEvolutionPurchases(clientId, {
+          supplyId,
+          dateFrom: q.dateFrom,
+          dateTo: q.dateTo,
+          localId: optNum(q.localId),
+          supplierId: optNum(q.supplierId),
+        }),
+      );
     } catch (e: any) {
       res.status(500).json({ message: e.message });
     }

@@ -69,7 +69,7 @@ const modules = [
     items: [
       { name: "Insumos", href: "/insumos", icon: Package },
       { name: "Carta", href: "/recetas", icon: ChefHat },
-      { name: "Historial de Costos", href: "/historial-costos", icon: Calculator },
+      { name: "Evolución de Costos", href: "/historial-costos", icon: TrendingUp },
     ],
   },
   {

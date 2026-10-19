@@ -37,6 +37,7 @@ import {
   Target,
   Trash2,
   LineChart,
+  TrendingUp,
   SlidersHorizontal,
   FileCheck2,
   Trophy,
@@ -126,7 +127,7 @@ const menuSections: MenuSection[] = [
       { title: "Insumos", url: "/insumos", icon: Package },
       { title: "Carta", url: "/recetas", icon: ChefHat },
       { title: "Sub-Recetas", url: "/sub-recetas", icon: Layers },
-      { title: "Historial Costos", url: "/historial-costos", icon: Calculator },
+      { title: "Evolución de Costos", url: "/historial-costos", icon: TrendingUp },
     ],
   },
   {
