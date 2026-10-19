@@ -45,6 +45,18 @@ import {
   updateTempSupply,
   deleteTempSupply,
 } from "./recipeDraftQueries";
+import {
+  EventError,
+  listEvents,
+  getEvent,
+  createEvent,
+  updateEvent,
+  setEventStatus,
+  newEventVersion,
+  duplicateEvent,
+  deleteEvent,
+  getFixedCostAverages,
+} from "./eventQueries";
 import { listDeviationPeriods, computeDeviation, computeDeviationOverview } from "./deviationQueries";
 import { processFinancialImportJobBody } from "./processFinancialImportJob";
 import type {
@@ -2525,6 +2537,137 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     isAuthenticated,
     draftHandler(async (req, clientId) => {
       await deleteTempSupply(clientId, idParam(req));
+      return { ok: true };
+    }),
+  );
+
+  // ==========================================
+  // EVENTOS (oct-2026): propuestas costeadas. No impactan en ningún informe.
+  // ==========================================
+  const eventItemSchema = z.object({
+    key: z.string().min(1),
+    sourceType: z.enum(["recipe", "draft", "manual"]),
+    recipeId: z.coerce.number().int().nullable().optional(),
+    draftId: z.coerce.number().int().nullable().optional(),
+    name: z.string().trim().min(1, "Cada plato necesita un nombre").max(255),
+    description: z.string().max(1000).nullable().optional(),
+    quantity: z.coerce.number().min(0),
+    unitPrice: z.coerce.number().min(0),
+    unitCost: z.coerce.number().min(0),
+  });
+  const eventPayloadSchema = z.object({
+    name: z.string().trim().min(1, "El nombre del evento es obligatorio").max(255),
+    localId: z.coerce.number().int().nullable().optional(),
+    customerName: z.string().max(255).nullable().optional(),
+    contactName: z.string().max(255).nullable().optional(),
+    contactPhone: z.string().max(80).nullable().optional(),
+    contactEmail: z.string().max(255).nullable().optional(),
+    eventDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable().optional().or(z.literal("")),
+    eventTime: z.string().max(40).nullable().optional(),
+    location: z.string().max(255).nullable().optional(),
+    guests: z.coerce.number().int().min(0).nullable().optional(),
+    brandName: z.string().max(255).nullable().optional(),
+    validUntil: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable().optional().or(z.literal("")),
+    paymentTerms: z.string().max(2000).nullable().optional(),
+    clientNotes: z.string().max(4000).nullable().optional(),
+    internalNotes: z.string().max(4000).nullable().optional(),
+    ivaMode: z.enum(["incluido", "discriminado", "sin_iva"]),
+    ivaRate: z.coerce.number().min(0).max(100),
+    discountType: z.enum(["pct", "amount"]),
+    discountValue: z.coerce.number().min(0),
+    items: z.array(eventItemSchema).max(300),
+    directCosts: z.array(z.object({ key: z.string(), concept: z.string().max(255), amount: z.coerce.number() })).max(100),
+    fixedCosts: z
+      .array(
+        z.object({
+          key: z.string(),
+          concept: z.string().max(255),
+          financialGroupId: z.coerce.number().int().nullable().optional(),
+          categoryId: z.coerce.number().int().nullable().optional(),
+          mode: z.enum(["manual", "promedio"]),
+          monthlyAverage: z.coerce.number().nullable().optional(),
+          sharePct: z.coerce.number().min(0).max(100).nullable().optional(),
+          months: z.coerce.number().int().nullable().optional(),
+          amount: z.coerce.number(),
+        }),
+      )
+      .max(100),
+    taxes: z
+      .array(
+        z.object({
+          key: z.string(),
+          name: z.string().trim().min(1).max(120),
+          taxId: z.coerce.number().int().nullable().optional(),
+          mode: z.enum(["pct", "amount"]),
+          rate: z.coerce.number().nullable().optional(),
+          amount: z.coerce.number().nullable().optional(),
+          chargedToClient: z.boolean(),
+        }),
+      )
+      .max(30),
+  });
+
+  const eventHandler =
+    (fn: (req: any, clientId: number, userId: string | null) => Promise<unknown>) => async (req: any, res: any) => {
+      try {
+        const clientId = await getClientId(req);
+        const userId = (await getAuthenticatedUserId(req)) ?? null;
+        res.json(await fn(req, clientId, userId));
+      } catch (e: any) {
+        if (e instanceof z.ZodError) return res.status(400).json({ message: e.errors[0]?.message || "Datos inválidos" });
+        if (e instanceof EventError) return res.status(e.status).json({ message: e.message });
+        res.status(500).json({ message: e.message });
+      }
+    };
+  const eventId = (req: any) => {
+    const id = parseInt(String(req.params.id), 10);
+    if (!Number.isFinite(id)) throw new EventError("ID inválido");
+    return id;
+  };
+
+  app.get(
+    "/api/events/fixed-cost-averages",
+    isAuthenticated,
+    eventHandler((req, clientId) => {
+      const months = parseInt(String(req.query.months ?? "3"), 10);
+      const localRaw = parseInt(String(req.query.localId ?? ""), 10);
+      return getFixedCostAverages(clientId, {
+        months: Number.isFinite(months) ? months : 3,
+        localId: Number.isFinite(localRaw) ? localRaw : undefined,
+      });
+    }),
+  );
+  app.get("/api/events", isAuthenticated, eventHandler((_req, clientId) => listEvents(clientId)));
+  app.post("/api/events", isAuthenticated, eventHandler((req, clientId, userId) => createEvent(clientId, userId, eventPayloadSchema.parse(req.body) as any)));
+  app.get(
+    "/api/events/:id",
+    isAuthenticated,
+    eventHandler(async (req, clientId) => {
+      const ev = await getEvent(clientId, eventId(req));
+      if (!ev) throw new EventError("Evento no encontrado", 404);
+      return ev;
+    }),
+  );
+  app.put(
+    "/api/events/:id",
+    isAuthenticated,
+    eventHandler((req, clientId, userId) => updateEvent(clientId, userId, eventId(req), eventPayloadSchema.parse(req.body) as any)),
+  );
+  app.patch(
+    "/api/events/:id/status",
+    isAuthenticated,
+    eventHandler((req, clientId, userId) => {
+      const { status } = z.object({ status: z.enum(["borrador", "enviada", "aceptada", "rechazada"]) }).parse(req.body);
+      return setEventStatus(clientId, userId, eventId(req), status);
+    }),
+  );
+  app.post("/api/events/:id/version", isAuthenticated, eventHandler((req, clientId, userId) => newEventVersion(clientId, userId, eventId(req))));
+  app.post("/api/events/:id/duplicate", isAuthenticated, eventHandler((req, clientId, userId) => duplicateEvent(clientId, userId, eventId(req))));
+  app.delete(
+    "/api/events/:id",
+    isAuthenticated,
+    eventHandler(async (req, clientId) => {
+      await deleteEvent(clientId, eventId(req));
       return { ok: true };
     }),
   );

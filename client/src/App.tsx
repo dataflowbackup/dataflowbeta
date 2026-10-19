@@ -36,6 +36,8 @@ import SubRecipesPage from "@/pages/sub-recipes";
 import CostEvolutionPage from "@/pages/cost-evolution";
 import RecipeDraftsPage from "@/pages/recipe-drafts";
 import RecipeDraftFormPage from "@/pages/recipe-draft-form";
+import EventsPage from "@/pages/events";
+import EventFormPage from "@/pages/event-form";
 import EstructuraImputacionesPage from "@/pages/estructura-imputaciones";
 import BankStatementsPage from "@/pages/bank-statements";
 import CashPage from "@/pages/cash";
@@ -112,6 +114,8 @@ function AppRouter() {
       <Route path="/historial-costos" component={CostEvolutionPage} />
       <Route path="/pizarron-recetas" component={RecipeDraftsPage} />
       <Route path="/pizarron-recetas/:id" component={RecipeDraftFormPage} />
+      <Route path="/eventos" component={EventsPage} />
+      <Route path="/eventos/:id" component={EventFormPage} />
       <Route path="/estructura-imputaciones" component={EstructuraImputacionesPage} />
       {/* Grupos Financ. y Categorías Mov. se unificaron en Estructura Imputaciones (16-oct-2026). */}
       <Route path="/categorias-movimientos">{() => <Redirect to="/estructura-imputaciones" />}</Route>

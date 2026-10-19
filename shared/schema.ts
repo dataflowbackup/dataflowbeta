@@ -733,6 +733,68 @@ export type InsertRecipeDraftLine = z.infer<typeof insertRecipeDraftLineSchema>;
 export type RecipeDraftLine = typeof recipeDraftLines.$inferSelect;
 
 // ==========================================
+// EVENTOS (oct-2026): propuestas de eventos costeadas.
+//
+// Una propuesta es una FOTO: platos, costos e impuestos viajan en JSON junto con el evento
+// (ver `shared/eventPricing.ts`). Así una propuesta enviada no cambia sola cuando entra una
+// factura nueva, y cada versión queda como estaba. No impacta en ningún informe.
+// ==========================================
+export const events = pgTable(
+  "events",
+  {
+    id: serial("id").primaryKey(),
+    clientId: integer("client_id").notNull().references(() => clients.id, { onDelete: "cascade" }),
+    /** Local desde el que se calculan los costos fijos promedio (opcional: todos). */
+    localId: integer("local_id").references(() => locals.id, { onDelete: "set null" }),
+    name: varchar("name", { length: 255 }).notNull(),
+    /** Para quién es el evento (empresa o persona). */
+    customerName: varchar("customer_name", { length: 255 }),
+    contactName: varchar("contact_name", { length: 255 }),
+    contactPhone: varchar("contact_phone", { length: 80 }),
+    contactEmail: varchar("contact_email", { length: 255 }),
+    eventDate: date("event_date"),
+    eventTime: varchar("event_time", { length: 40 }),
+    location: varchar("location", { length: 255 }),
+    guests: integer("guests"),
+    /** Marca que firma la propuesta: el nombre de la empresa por defecto, editable. */
+    brandName: varchar("brand_name", { length: 255 }),
+    /** "borrador" | "enviada" | "aceptada" | "rechazada". */
+    status: varchar("status", { length: 20 }).notNull().default("borrador"),
+    version: integer("version").notNull().default(1),
+    /** Primera versión de la propuesta (las siguientes la apuntan). */
+    rootEventId: integer("root_event_id"),
+    validUntil: date("valid_until"),
+    paymentTerms: text("payment_terms"),
+    /** Texto para el cliente (sale en el PDF comercial). */
+    clientNotes: text("client_notes"),
+    /** Notas internas (solo en el detalle interno). */
+    internalNotes: text("internal_notes"),
+    /** "incluido" (precios con IVA) | "discriminado" (precios + IVA) | "sin_iva". */
+    ivaMode: varchar("iva_mode", { length: 20 }).notNull().default("incluido"),
+    ivaRate: decimal("iva_rate", { precision: 5, scale: 2 }).default("21"),
+    /** "pct" | "amount". */
+    discountType: varchar("discount_type", { length: 10 }).default("pct"),
+    discountValue: decimal("discount_value", { precision: 14, scale: 2 }).default("0"),
+    items: jsonb("items"),
+    directCosts: jsonb("direct_costs"),
+    fixedCosts: jsonb("fixed_costs"),
+    taxes: jsonb("taxes"),
+    /** Resultado calculado al guardar, para el listado. */
+    totals: jsonb("totals"),
+    sentAt: timestamp("sent_at"),
+    createdBy: varchar("created_by").references(() => users.id),
+    updatedBy: varchar("updated_by").references(() => users.id),
+    createdAt: timestamp("created_at").defaultNow(),
+    updatedAt: timestamp("updated_at").defaultNow(),
+  },
+  (table) => [index("events_client_idx").on(table.clientId)],
+);
+
+export const insertEventSchema = createInsertSchema(events).omit({ id: true, createdAt: true, updatedAt: true });
+export type InsertEvent = z.infer<typeof insertEventSchema>;
+export type EventRow = typeof events.$inferSelect;
+
+// ==========================================
 // FINANCIAL GROUPS (Grupos Financieros)
 // ==========================================
 export const financialGroups = pgTable("financial_groups", {
