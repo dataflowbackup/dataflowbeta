@@ -28,6 +28,23 @@ import {
   saveProductRecipeMappings,
 } from "./supplyMetricsQueries";
 import { getCostEvolution, getCostEvolutionPurchases } from "./costEvolutionQueries";
+import {
+  DraftError,
+  getDraftCostSources,
+  listDrafts,
+  getDraft,
+  createDraft,
+  updateDraft,
+  setDraftStatus,
+  deleteDraft,
+  duplicateDraft,
+  draftFromRecipe,
+  promoteDraft,
+  listTempSupplies,
+  createTempSupply,
+  updateTempSupply,
+  deleteTempSupply,
+} from "./recipeDraftQueries";
 import { listDeviationPeriods, computeDeviation, computeDeviationOverview } from "./deviationQueries";
 import { processFinancialImportJobBody } from "./processFinancialImportJob";
 import type {
@@ -2359,6 +2376,158 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       res.status(500).json({ message: e.message });
     }
   });
+
+  // ==========================================
+  // PIZARRÓN DE RECETAS (oct-2026): recetas de prueba que no impactan en Carta.
+  // ==========================================
+  const draftLineSchema = z.object({
+    lineType: z.enum(["supply", "subrecipe", "draft", "temp"]),
+    supplyId: z.coerce.number().int().nullable().optional(),
+    subRecipeId: z.coerce.number().int().nullable().optional(),
+    draftSubId: z.coerce.number().int().nullable().optional(),
+    tempSupplyId: z.coerce.number().int().nullable().optional(),
+    quantity: z.coerce.number().positive("Todas las líneas necesitan una cantidad mayor a 0"),
+    notes: z.string().nullable().optional(),
+  });
+  const draftPayloadSchema = z.object({
+    name: z.string().trim().min(1, "El nombre es obligatorio").max(255),
+    recipeType: z.enum(["plato", "sub"]),
+    status: z.enum(["borrador", "en_prueba", "aprobada", "descartada"]).optional(),
+    subcategoryId: z.coerce.number().int().nullable().optional(),
+    description: z.string().nullable().optional(),
+    preparationSteps: z.string().nullable().optional(),
+    notes: z.string().nullable().optional(),
+    salePriceWithTax: z.coerce.number().min(0).optional(),
+    removeIvaFromPrice: z.boolean().optional(),
+    cmvIdeal: z.coerce.number().min(0).max(100).nullable().optional(),
+    usefulYield: z.coerce.number().min(0).nullable().optional(),
+    yieldUnit: z.string().nullable().optional(),
+    lines: z.array(draftLineSchema).max(300),
+  });
+  const tempSupplySchema = z.object({
+    name: z.string().trim().min(1, "El nombre es obligatorio").max(255),
+    unitOfMeasureId: z.coerce.number().int().nullable().optional(),
+    unitCost: z.coerce.number().min(0),
+    notes: z.string().nullable().optional(),
+  });
+
+  /** Respuesta común: los errores de negocio del pizarrón llevan su propio status. */
+  const draftHandler =
+    (fn: (req: any, clientId: number, userId: string | null) => Promise<unknown>) => async (req: any, res: any) => {
+      try {
+        const clientId = await getClientId(req);
+        const userId = (await getAuthenticatedUserId(req)) ?? null;
+        res.json(await fn(req, clientId, userId));
+      } catch (e: any) {
+        if (e instanceof z.ZodError) return res.status(400).json({ message: e.errors[0]?.message || "Datos inválidos" });
+        if (e instanceof DraftError) return res.status(e.status).json({ message: e.message });
+        res.status(500).json({ message: e.message });
+      }
+    };
+  const idParam = (req: any) => {
+    const id = parseInt(String(req.params.id), 10);
+    if (!Number.isFinite(id)) throw new DraftError("ID inválido");
+    return id;
+  };
+
+  app.get("/api/recipe-drafts/cost-sources", isAuthenticated, draftHandler((_req, clientId) => getDraftCostSources(clientId)));
+  app.get("/api/recipe-drafts", isAuthenticated, draftHandler((_req, clientId) => listDrafts(clientId)));
+  app.post(
+    "/api/recipe-drafts",
+    isAuthenticated,
+    draftHandler((req, clientId, userId) => createDraft(clientId, userId, draftPayloadSchema.parse(req.body))),
+  );
+  app.post(
+    "/api/recipe-drafts/from-recipe/:id",
+    isAuthenticated,
+    draftHandler((req, clientId, userId) => draftFromRecipe(clientId, userId, idParam(req))),
+  );
+  app.get(
+    "/api/recipe-drafts/:id",
+    isAuthenticated,
+    draftHandler(async (req, clientId) => {
+      const d = await getDraft(clientId, idParam(req));
+      if (!d) throw new DraftError("Receta del pizarrón no encontrada", 404);
+      return d;
+    }),
+  );
+  app.put(
+    "/api/recipe-drafts/:id",
+    isAuthenticated,
+    draftHandler((req, clientId, userId) => updateDraft(clientId, userId, idParam(req), draftPayloadSchema.parse(req.body))),
+  );
+  app.patch(
+    "/api/recipe-drafts/:id/status",
+    isAuthenticated,
+    draftHandler(async (req, clientId, userId) => {
+      const { status } = z.object({ status: z.enum(["borrador", "en_prueba", "aprobada", "descartada"]) }).parse(req.body);
+      await setDraftStatus(clientId, userId, idParam(req), status);
+      return { ok: true };
+    }),
+  );
+  app.post(
+    "/api/recipe-drafts/:id/duplicate",
+    isAuthenticated,
+    draftHandler((req, clientId, userId) => duplicateDraft(clientId, userId, idParam(req))),
+  );
+  app.delete(
+    "/api/recipe-drafts/:id",
+    isAuthenticated,
+    draftHandler(async (req, clientId) => {
+      await deleteDraft(clientId, idParam(req));
+      return { ok: true };
+    }),
+  );
+  app.post(
+    "/api/recipe-drafts/:id/promote",
+    isAuthenticated,
+    draftHandler(async (req, clientId, userId) => {
+      const body = z
+        .object({
+          subcategoryId: z.coerce.number().int().nullable().optional(),
+          mappings: z
+            .record(
+              z.union([
+                z.object({ mode: z.literal("link"), supplyId: z.coerce.number().int() }),
+                z.object({ mode: z.literal("create"), rubroId: z.coerce.number().int().nullable().optional() }),
+              ]),
+            )
+            .default({}),
+        })
+        .parse(req.body ?? {});
+      const id = idParam(req);
+      const result = await promoteDraft(clientId, userId, id, body);
+      await storage.createAuditLog({
+        clientId,
+        userId,
+        action: "promote_recipe_draft",
+        tableName: "recipe_drafts",
+        recordId: id,
+        newData: result,
+      });
+      return result;
+    }),
+  );
+
+  app.get("/api/recipe-draft-supplies", isAuthenticated, draftHandler((_req, clientId) => listTempSupplies(clientId)));
+  app.post(
+    "/api/recipe-draft-supplies",
+    isAuthenticated,
+    draftHandler((req, clientId) => createTempSupply(clientId, tempSupplySchema.parse(req.body))),
+  );
+  app.patch(
+    "/api/recipe-draft-supplies/:id",
+    isAuthenticated,
+    draftHandler((req, clientId) => updateTempSupply(clientId, idParam(req), tempSupplySchema.partial().parse(req.body))),
+  );
+  app.delete(
+    "/api/recipe-draft-supplies/:id",
+    isAuthenticated,
+    draftHandler(async (req, clientId) => {
+      await deleteTempSupply(clientId, idParam(req));
+      return { ok: true };
+    }),
+  );
 
   // Evolución de Costos (oct-2026): tablero de precios de insumos, sub-recetas y platos.
   app.get("/api/cost-evolution", isAuthenticated, async (req, res) => {

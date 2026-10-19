@@ -27,6 +27,7 @@ export const MODULE_ROUTES: Record<string, string[]> = {
     "/recetas",
     "/sub-recetas",
     "/historial-costos",
+    "/pizarron-recetas",
   ],
   Financiero: [
     "/extractos-efectivo",

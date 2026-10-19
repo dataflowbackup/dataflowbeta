@@ -185,7 +185,7 @@ export async function getSupplyPurchases(
 }
 
 /** Costo unitario vigente de cada insumo, con la MISMA prioridad que usa el costeo de recetas. */
-async function getCurrentSupplyUnitCosts(clientId: number): Promise<Map<number, number>> {
+export async function getCurrentSupplyUnitCosts(clientId: number): Promise<Map<number, number>> {
   const supplyRows = await db
     .select({ id: supplies.id, lastCost: supplies.lastCost, unitCost: supplies.unitCost })
     .from(supplies)

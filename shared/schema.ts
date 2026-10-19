@@ -632,6 +632,107 @@ export type InsertCostHistory = z.infer<typeof insertCostHistorySchema>;
 export type CostHistory = typeof costHistory.$inferSelect;
 
 // ==========================================
+// PIZARRÓN DE RECETAS (oct-2026)
+//
+// Recetas de prueba que NO impactan en Carta: no cuentan en CMV, consumo, desvío ni en ningún
+// informe. Viven en tablas propias y solo pasan a `recipes` cuando el usuario las envía. Pueden usar
+// insumos y sub-recetas reales, otras sub-recetas del pizarrón e "insumos de prueba" que no existen
+// en el catálogo de insumos.
+// ==========================================
+
+/** Insumo de prueba: nombre, unidad y costo cargados a mano, sin factura. */
+export const recipeDraftSupplies = pgTable("recipe_draft_supplies", {
+  id: serial("id").primaryKey(),
+  clientId: integer("client_id").notNull().references(() => clients.id, { onDelete: "cascade" }),
+  name: varchar("name", { length: 255 }).notNull(),
+  unitOfMeasureId: integer("unit_of_measure_id").references(() => unitsOfMeasure.id),
+  /** Costo por unidad, SIN IVA (mismo criterio que el costo de los insumos reales). */
+  unitCost: decimal("unit_cost", { precision: 12, scale: 4 }).default("0"),
+  notes: text("notes"),
+  /**
+   * Insumo real al que quedó vinculado al enviar una receta a Carta (elegido o creado). Desde ese
+   * momento las recetas del pizarrón que lo usan toman el costo del insumo real.
+   */
+  linkedSupplyId: integer("linked_supply_id").references(() => supplies.id, { onDelete: "set null" }),
+  active: boolean("active").default(true),
+  createdAt: timestamp("created_at").defaultNow(),
+  updatedAt: timestamp("updated_at").defaultNow(),
+});
+
+export const insertRecipeDraftSupplySchema = createInsertSchema(recipeDraftSupplies).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+export type InsertRecipeDraftSupply = z.infer<typeof insertRecipeDraftSupplySchema>;
+export type RecipeDraftSupply = typeof recipeDraftSupplies.$inferSelect;
+
+export const recipeDrafts = pgTable(
+  "recipe_drafts",
+  {
+    id: serial("id").primaryKey(),
+    clientId: integer("client_id").notNull().references(() => clients.id, { onDelete: "cascade" }),
+    name: varchar("name", { length: 255 }).notNull(),
+    /** "plato" | "sub", igual que recipes.recipe_type. */
+    recipeType: varchar("recipe_type", { length: 20 }).notNull().default("plato"),
+    /** "borrador" | "en_prueba" | "aprobada" | "enviada" | "descartada". */
+    status: varchar("status", { length: 20 }).notNull().default("borrador"),
+    categoryId: integer("category_id").references(() => recipeCategories.id, { onDelete: "set null" }),
+    subcategoryId: integer("subcategory_id").references(() => recipeSubcategories.id, { onDelete: "set null" }),
+    description: text("description"),
+    preparationSteps: text("preparation_steps"),
+    notes: text("notes"),
+    /** Precio cobrado, con IVA (como recipes.sale_price_with_tax). */
+    salePriceWithTax: decimal("sale_price_with_tax", { precision: 12, scale: 2 }).default("0"),
+    removeIvaFromPrice: boolean("remove_iva_from_price").default(true),
+    cmvIdeal: decimal("cmv_ideal", { precision: 5, scale: 2 }),
+    usefulYield: decimal("useful_yield", { precision: 12, scale: 4 }),
+    yieldUnit: varchar("yield_unit", { length: 20 }),
+    /** Receta de Carta de la que se copió (para probar variantes). */
+    sourceRecipeId: integer("source_recipe_id").references(() => recipes.id, { onDelete: "set null" }),
+    /** Receta de Carta que se creó al enviarla. */
+    promotedRecipeId: integer("promoted_recipe_id").references(() => recipes.id, { onDelete: "set null" }),
+    promotedAt: timestamp("promoted_at"),
+    createdBy: varchar("created_by").references(() => users.id),
+    updatedBy: varchar("updated_by").references(() => users.id),
+    createdAt: timestamp("created_at").defaultNow(),
+    updatedAt: timestamp("updated_at").defaultNow(),
+  },
+  (table) => [index("recipe_drafts_client_idx").on(table.clientId)],
+);
+
+export const insertRecipeDraftSchema = createInsertSchema(recipeDrafts).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+export type InsertRecipeDraft = z.infer<typeof insertRecipeDraftSchema>;
+export type RecipeDraft = typeof recipeDrafts.$inferSelect;
+
+export const recipeDraftLines = pgTable(
+  "recipe_draft_lines",
+  {
+    id: serial("id").primaryKey(),
+    draftId: integer("draft_id").notNull().references(() => recipeDrafts.id, { onDelete: "cascade" }),
+    sortOrder: integer("sort_order").default(0),
+    /** "supply" (insumo real) | "subrecipe" (sub-receta de Carta) | "draft" (sub-receta del pizarrón) | "temp" (insumo de prueba). */
+    lineType: varchar("line_type", { length: 20 }).notNull(),
+    supplyId: integer("supply_id").references(() => supplies.id, { onDelete: "set null" }),
+    subRecipeId: integer("sub_recipe_id").references(() => recipes.id, { onDelete: "set null" }),
+    /** Otra receta del pizarrón (tipo sub). Sin FK: autorreferencia a la misma tabla. */
+    draftSubId: integer("draft_sub_id"),
+    tempSupplyId: integer("temp_supply_id").references(() => recipeDraftSupplies.id, { onDelete: "set null" }),
+    quantity: decimal("quantity", { precision: 14, scale: 8 }).notNull(),
+    notes: text("notes"),
+  },
+  (table) => [index("recipe_draft_lines_draft_idx").on(table.draftId)],
+);
+
+export const insertRecipeDraftLineSchema = createInsertSchema(recipeDraftLines).omit({ id: true });
+export type InsertRecipeDraftLine = z.infer<typeof insertRecipeDraftLineSchema>;
+export type RecipeDraftLine = typeof recipeDraftLines.$inferSelect;
+
+// ==========================================
 // FINANCIAL GROUPS (Grupos Financieros)
 // ==========================================
 export const financialGroups = pgTable("financial_groups", {
