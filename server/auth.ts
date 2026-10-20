@@ -7,12 +7,92 @@ import createMemoryStore from "memorystore";
 import { z } from "zod";
 import { db } from "./db";
 import { LibsqlSessionStore } from "./libsqlSessionStore";
-import { users, userCredentials, userClients, clients, clientInvitations } from "@shared/schema";
+import { users, userCredentials, userClients, clients, clientInvitations, loginIpAttempts } from "@shared/schema";
 import { eq, or } from "drizzle-orm";
 
 const SALT_ROUNDS = 12;
 const MAX_FAILED_ATTEMPTS = 5;
 const LOCK_TIME_MINUTES = 15;
+// Tope por IP: frena probar una clave comun contra muchas cuentas (el bloqueo por cuenta no lo ve).
+// Alto a proposito: todo un local puede salir a internet con la misma IP.
+const MAX_FAILED_PER_IP = 20;
+const IP_WINDOW_MINUTES = 15;
+
+function clientIp(req: any): string {
+  const nf = req.headers?.["x-nf-client-connection-ip"];
+  if (typeof nf === "string" && nf) return nf.trim();
+  const fwd = req.headers?.["x-forwarded-for"];
+  if (typeof fwd === "string" && fwd) return fwd.split(",")[0].trim();
+  return String(req.ip || req.socket?.remoteAddress || "desconocida");
+}
+
+async function isIpBlocked(ip: string): Promise<boolean> {
+  const [row] = await db.select().from(loginIpAttempts).where(eq(loginIpAttempts.ip, ip)).limit(1);
+  if (!row) return false;
+  const windowOpen = Date.now() - new Date(row.windowStart).getTime() < IP_WINDOW_MINUTES * 60000;
+  return windowOpen && row.failedCount >= MAX_FAILED_PER_IP;
+}
+
+async function registerIpFailure(ip: string): Promise<void> {
+  const [row] = await db.select().from(loginIpAttempts).where(eq(loginIpAttempts.ip, ip)).limit(1);
+  const now = new Date();
+  if (!row) {
+    await db.insert(loginIpAttempts).values({ ip, failedCount: 1, windowStart: now }).onConflictDoNothing();
+    return;
+  }
+  const windowOpen = now.getTime() - new Date(row.windowStart).getTime() < IP_WINDOW_MINUTES * 60000;
+  await db
+    .update(loginIpAttempts)
+    .set(windowOpen ? { failedCount: row.failedCount + 1 } : { failedCount: 1, windowStart: now })
+    .where(eq(loginIpAttempts.ip, ip));
+}
+
+type SessionUser = {
+  id: string;
+  email: string | null;
+  username: string | null;
+  firstName: string | null;
+  lastName: string | null;
+  role: string | null;
+};
+
+/**
+ * Inicia la sesion del usuario con un id de sesion NUEVO (evita fijacion de sesion:
+ * nadie puede plantar un id antes del login y quedar logueado despues).
+ */
+function startUserSession(req: any, user: SessionUser | any, mustChangePassword = false): Promise<void> {
+  return new Promise((resolve, reject) => {
+    req.session.regenerate((err: unknown) => {
+      if (err) return reject(err);
+      req.session.userId = user.id;
+      req.session.user = {
+        id: user.id,
+        email: user.email,
+        username: user.username,
+        firstName: user.firstName,
+        lastName: user.lastName,
+        role: user.role,
+      };
+      if (mustChangePassword) req.session.mustChangePassword = true;
+      req.session.save((saveErr: unknown) => (saveErr ? reject(saveErr) : resolve()));
+    });
+  });
+}
+
+/**
+ * Con clave provisoria la sesion solo sirve para cambiarla: el resto de la API responde 403.
+ * Devuelve true si corto el request.
+ */
+export function blockIfMustChangePassword(req: any, res: any): boolean {
+  if (req.session?.mustChangePassword) {
+    res.status(403).json({
+      message: "Tenés que cambiar tu contraseña provisoria antes de continuar.",
+      code: "MUST_CHANGE_PASSWORD",
+    });
+    return true;
+  }
+  return false;
+}
 
 const registerSchema = z.object({
   email: z.string().email("Email inválido").optional(),
@@ -197,15 +277,7 @@ export async function setupLocalAuth(app: Express) {
         }
       });
 
-      (req.session as any).userId = newUser.id;
-      (req.session as any).user = {
-        id: newUser.id,
-        email: newUser.email,
-        username: newUser.username,
-        firstName: newUser.firstName,
-        lastName: newUser.lastName,
-        role: newUser.role,
-      };
+      await startUserSession(req, newUser);
 
       res.json({
         success: true,
@@ -322,15 +394,7 @@ export async function setupLocalAuth(app: Express) {
       });
 
       // Iniciar sesión automáticamente
-      (req.session as any).userId = newUser.id;
-      (req.session as any).user = {
-        id: newUser.id,
-        email: newUser.email,
-        username: newUser.username,
-        firstName: newUser.firstName,
-        lastName: newUser.lastName,
-        role: newUser.role,
-      };
+      await startUserSession(req, newUser);
 
       res.json({
         success: true,
@@ -360,6 +424,13 @@ export async function setupLocalAuth(app: Express) {
       const normalizedEmail = email?.toLowerCase().trim();
       const normalizedUsername = username?.toLowerCase().trim();
 
+      const ip = clientIp(req);
+      if (await isIpBlocked(ip)) {
+        return res.status(429).json({
+          message: `Demasiados intentos fallidos desde esta conexión. Intentá nuevamente en ${IP_WINDOW_MINUTES} minutos.`,
+        });
+      }
+
       const [user] = await db.select().from(users).where(
         or(
           normalizedEmail ? eq(users.email, normalizedEmail) : undefined,
@@ -368,6 +439,7 @@ export async function setupLocalAuth(app: Express) {
       ).limit(1);
 
       if (!user) {
+        await registerIpFailure(ip);
         return res.status(401).json({ message: "Credenciales inválidas" });
       }
 
@@ -379,6 +451,7 @@ export async function setupLocalAuth(app: Express) {
         .where(eq(userCredentials.userId, user.id)).limit(1);
 
       if (!credentials) {
+        await registerIpFailure(ip);
         return res.status(401).json({ message: "Credenciales inválidas" });
       }
 
@@ -402,6 +475,7 @@ export async function setupLocalAuth(app: Express) {
       const validPassword = await verifyPassword(password, credentials.passwordHash);
 
       if (!validPassword) {
+        await registerIpFailure(ip);
         const newAttempts = (credentials.failedAttempts || 0) + 1;
         
         if (newAttempts >= MAX_FAILED_ATTEMPTS) {
@@ -432,17 +506,8 @@ export async function setupLocalAuth(app: Express) {
         })
         .where(eq(userCredentials.id, credentials.id));
 
-      (req.session as any).userId = user.id;
-      (req.session as any).user = {
-        id: user.id,
-        email: user.email,
-        username: user.username,
-        firstName: user.firstName,
-        lastName: user.lastName,
-        role: user.role,
-      };
-
       const mustChangePassword = Boolean(credentials.mustChangePassword);
+      await startUserSession(req, user, mustChangePassword);
 
       res.json({
         success: true,
@@ -528,6 +593,7 @@ export async function setupLocalAuth(app: Express) {
         };
       }
 
+      delete (req.session as any).mustChangePassword;
       res.json({ success: true, message: "Contraseña actualizada" });
     } catch (e: any) {
       console.error("First password change error:", e);
@@ -642,6 +708,7 @@ export async function setupLocalAuth(app: Express) {
 export const isAuthenticatedLocal: RequestHandler = (req, res, next) => {
   const session = req.session as any;
   if (session?.userId) {
+    if (blockIfMustChangePassword(req, res)) return;
     return next();
   }
   res.status(401).json({ message: "No autorizado" });

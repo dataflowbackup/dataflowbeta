@@ -20,6 +20,7 @@ import {
   stripDiacriticsLower,
 } from "@shared/bulkInvoiceImportHelpers";
 import { isAuthenticated as isAuthenticatedOIDC } from "./replitAuth";
+import { blockIfMustChangePassword } from "./auth";
 
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -28,7 +29,10 @@ const upload = multer({
 
 function isAuthenticated(req: any, res: any, next: any) {
   const session = req.session as any;
-  if (session?.userId) return next();
+  if (session?.userId) {
+    if (blockIfMustChangePassword(req, res)) return;
+    return next();
+  }
   return isAuthenticatedOIDC(req, res, next);
 }
 

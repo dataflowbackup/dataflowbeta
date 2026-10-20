@@ -33,6 +33,15 @@ let uniqueCounter = 0;
 const unique = () => uniqueIndex(`uq_${++uniqueCounter}`);
 
 // ==========================================
+// LOGIN: intentos fallidos por IP (complementa el bloqueo por cuenta de user_credentials)
+// ==========================================
+export const loginIpAttempts = pgTable("login_ip_attempts", {
+  ip: varchar("ip").primaryKey(),
+  failedCount: integer("failed_count").notNull().default(0),
+  windowStart: timestamp("window_start").notNull(),
+});
+
+// ==========================================
 // SESSION TABLE (Required for Replit Auth)
 // ==========================================
 export const sessions = pgTable(

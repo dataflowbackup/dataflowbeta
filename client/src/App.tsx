@@ -209,12 +209,12 @@ function AppContent() {
     );
   }
 
-  return (
-    <>
-      <AuthenticatedLayout />
-      <ForcePasswordChangeGate open={Boolean(user.mustChangePassword)} />
-    </>
-  );
+  // Con clave provisoria el servidor rechaza el resto de la API: no montar la app detrás del cartel.
+  if (user.mustChangePassword) {
+    return <ForcePasswordChangeGate open />;
+  }
+
+  return <AuthenticatedLayout />;
 }
 
 function App() {

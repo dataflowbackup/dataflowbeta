@@ -3,7 +3,7 @@ import express from "express";
 import { type Server } from "http";
 import { storage } from "./storage";
 import { setupAuth, isAuthenticated as isAuthenticatedOIDC } from "./replitAuth";
-import { setupLocalAuth, isAuthenticatedLocal } from "./auth";
+import { setupLocalAuth, isAuthenticatedLocal, blockIfMustChangePassword } from "./auth";
 import multer from "multer";
 import * as XLSX from "xlsx";
 import { z } from "zod";
@@ -448,6 +448,7 @@ async function sendTeamWelcomeEmail(opts: {
 const isAuthenticated = (req: any, res: any, next: any) => {
   const session = req.session as any;
   if (session?.userId) {
+    if (blockIfMustChangePassword(req, res)) return;
     return next();
   }
   return isAuthenticatedOIDC(req, res, next);
