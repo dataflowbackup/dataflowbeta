@@ -311,6 +311,28 @@ async function assertTeamPrivileged(req: any, res: any): Promise<TeamPrivileged>
   return { ok: true, clientId, actorId };
 }
 
+// Editar la matriz de permisos por rol: solo Socio o Administrador (Gerente no).
+async function assertPermissionsAdmin(req: any, res: any): Promise<TeamPrivileged> {
+  const actorId = await getAuthenticatedUserId(req);
+  if (!actorId) {
+    res.status(401).json({ message: "No autenticado" });
+    return { ok: false };
+  }
+  let clientId: number;
+  try {
+    clientId = await getClientId(req);
+  } catch {
+    res.status(400).json({ message: "No encontramos la empresa asociada a tu usuario." });
+    return { ok: false };
+  }
+  const role = String((await storage.getUserRoleInClient(actorId, clientId)) ?? "").trim().toLowerCase();
+  if (role !== "socio" && role !== "admin") {
+    res.status(403).json({ message: "Solo Socio o Administrador puede modificar permisos." });
+    return { ok: false };
+  }
+  return { ok: true, clientId, actorId };
+}
+
 type PermissionAction = "view" | "create" | "edit" | "delete";
 
 /**
@@ -6564,6 +6586,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
   app.post("/api/permissions/seed", isAuthenticated, async (req, res) => {
     try {
+      const gate = await assertPermissionsAdmin(req, res);
+      if (!gate.ok) return;
       const defaultPermissions = [
         { code: "dashboard.view", name: "Ver Dashboard", module: "dashboard" },
         { code: "suppliers.view", name: "Ver Proveedores", module: "suppliers" },
@@ -6652,7 +6676,13 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
   app.post("/api/role-permissions", isAuthenticated, async (req, res) => {
     try {
-      const clientId = await getClientId(req);
+      const gate = await assertPermissionsAdmin(req, res);
+      if (!gate.ok) return;
+      const clientId = gate.clientId;
+      // El socio tiene acceso total fijo: no se guardan filas para ese rol.
+      if (String(req.body?.role ?? "").trim().toLowerCase() === "socio") {
+        return res.status(400).json({ message: "El rol Socio tiene acceso total y no se configura." });
+      }
       const result = await storage.setRolePermission({ ...req.body, clientId });
       res.json(result);
     } catch (e: any) {
@@ -6662,7 +6692,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
   app.delete("/api/role-permissions/:role/:permissionId", isAuthenticated, async (req, res) => {
     try {
-      const clientId = await getClientId(req);
+      const gate = await assertPermissionsAdmin(req, res);
+      if (!gate.ok) return;
+      const clientId = gate.clientId;
       const deleted = await storage.deleteRolePermission(
         clientId, 
         req.params.role, 

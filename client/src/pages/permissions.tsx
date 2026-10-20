@@ -10,6 +10,7 @@ import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
+import { usePermissions } from "@/hooks/usePermissions";
 import { 
   Shield, 
   Users, 
@@ -18,6 +19,7 @@ import {
   AlertCircle,
   RefreshCw,
   Check,
+  Crown,
 } from "lucide-react";
 import type { Permission, RolePermission } from "@shared/schema";
 
@@ -31,6 +33,12 @@ interface RoleConfig {
 }
 
 const ROLES: Record<string, RoleConfig> = {
+  socio: {
+    name: "Socio",
+    description: "Acceso total, no configurable",
+    icon: Crown,
+    color: "bg-purple-500/10 text-purple-600 dark:text-purple-400",
+  },
   admin: {
     name: "Administrador",
     description: "Acceso completo al sistema",
@@ -98,6 +106,10 @@ export default function PermissionsPage() {
   const [selectedModule, setSelectedModule] = useState<string | null>(null);
   const [localPermissions, setLocalPermissions] = useState<Record<number, PermState>>({});
   const [originalPermissions, setOriginalPermissions] = useState<Record<number, PermState>>({});
+  const { role: myRole } = usePermissions();
+  // Solo Socio o Administrador editan la matriz; el backend valida lo mismo.
+  const canManage = myRole === "socio" || myRole === "admin";
+  const isSocioSelected = selectedRole === "socio";
 
   const { data: permissions = [], isLoading: permissionsLoading, isError: permissionsError } = useQuery<Permission[]>({
     queryKey: ["/api/permissions"],
@@ -105,6 +117,7 @@ export default function PermissionsPage() {
 
   const { data: rolePermissions = [], isLoading: rolePermsLoading, isError: rolePermsError } = useQuery<RolePermission[]>({
     queryKey: ["/api/role-permissions", selectedRole],
+    enabled: !isSocioSelected,
     queryFn: async () => {
       const res = await fetch(`/api/role-permissions?role=${selectedRole}`);
       if (!res.ok) throw new Error("Failed to fetch role permissions");
@@ -265,7 +278,7 @@ export default function PermissionsPage() {
         description="Configure los permisos de acceso para cada rol de usuario"
         actions={
           <div className="flex gap-2">
-            {permissions.length === 0 && (
+            {canManage && permissions.length === 0 && (
               <Button 
                 variant="outline" 
                 onClick={() => seedPermissionsMutation.mutate()}
@@ -276,7 +289,7 @@ export default function PermissionsPage() {
                 Inicializar Permisos
               </Button>
             )}
-            {hasChanges && (
+            {canManage && !isSocioSelected && hasChanges && (
               <Button 
                 onClick={() => savePermissionsMutation.mutate()}
                 disabled={savePermissionsMutation.isPending}
@@ -290,7 +303,16 @@ export default function PermissionsPage() {
         }
       />
 
-      <div className="grid gap-4 md:grid-cols-4">
+      {!canManage && (
+        <Alert>
+          <AlertCircle className="h-4 w-4" />
+          <AlertDescription>
+            Solo un Socio o Administrador puede modificar los permisos. Estás viendo la configuración en modo lectura.
+          </AlertDescription>
+        </Alert>
+      )}
+
+      <div className="grid gap-4 md:grid-cols-3 xl:grid-cols-6">
         {Object.entries(ROLES).map(([roleKey, config]) => {
           const RoleIcon = config.icon;
           return (
@@ -319,7 +341,18 @@ export default function PermissionsPage() {
         })}
       </div>
 
-      {isLoading ? (
+      {isSocioSelected ? (
+        <Card>
+          <CardContent className="py-12 text-center">
+            <Crown className="h-12 w-12 mx-auto text-muted-foreground mb-4" />
+            <h3 className="text-lg font-semibold mb-2">El Socio tiene acceso total</h3>
+            <p className="text-muted-foreground">
+              Puede ver, crear, editar y eliminar en todos los módulos. Este rol no se configura,
+              para que nadie le quite acceso al dueño de la cuenta por error.
+            </p>
+          </CardContent>
+        </Card>
+      ) : isLoading ? (
         <div className="space-y-4">
           {[1, 2, 3].map(i => (
             <Card key={i}>
@@ -346,7 +379,7 @@ export default function PermissionsPage() {
             </p>
             <Button 
               onClick={() => seedPermissionsMutation.mutate()}
-              disabled={seedPermissionsMutation.isPending}
+              disabled={!canManage || seedPermissionsMutation.isPending}
               data-testid="button-seed-permissions-empty"
             >
               <RefreshCw className={`h-4 w-4 mr-2 ${seedPermissionsMutation.isPending ? "animate-spin" : ""}`} />
@@ -386,6 +419,7 @@ export default function PermissionsPage() {
                     <div className="flex items-center gap-4 text-sm text-muted-foreground">
                       <div className="flex items-center gap-2">
                         <Checkbox 
+                          disabled={!canManage}
                           checked={viewState === "some" ? "indeterminate" : viewState === "all"}
                           onCheckedChange={(checked) => handleSelectAll(module, "canView", !!checked)}
                           data-testid={`checkbox-all-view-${module}`}
@@ -394,6 +428,7 @@ export default function PermissionsPage() {
                       </div>
                       <div className="flex items-center gap-2">
                         <Checkbox 
+                          disabled={!canManage}
                           checked={createState === "some" ? "indeterminate" : createState === "all"}
                           onCheckedChange={(checked) => handleSelectAll(module, "canCreate", !!checked)}
                           data-testid={`checkbox-all-create-${module}`}
@@ -402,6 +437,7 @@ export default function PermissionsPage() {
                       </div>
                       <div className="flex items-center gap-2">
                         <Checkbox 
+                          disabled={!canManage}
                           checked={editState === "some" ? "indeterminate" : editState === "all"}
                           onCheckedChange={(checked) => handleSelectAll(module, "canEdit", !!checked)}
                           data-testid={`checkbox-all-edit-${module}`}
@@ -410,6 +446,7 @@ export default function PermissionsPage() {
                       </div>
                       <div className="flex items-center gap-2">
                         <Checkbox 
+                          disabled={!canManage}
                           checked={deleteState === "some" ? "indeterminate" : deleteState === "all"}
                           onCheckedChange={(checked) => handleSelectAll(module, "canDelete", !!checked)}
                           data-testid={`checkbox-all-delete-${module}`}
@@ -438,6 +475,7 @@ export default function PermissionsPage() {
                           <div className="flex items-center gap-6">
                             <div className="flex items-center gap-2">
                               <Checkbox 
+                          disabled={!canManage}
                                 checked={localPermissions[perm.id]?.canView ?? false}
                                 onCheckedChange={(checked) => handlePermissionChange(perm.id, "canView", !!checked)}
                                 data-testid={`checkbox-view-${perm.code}`}
@@ -446,6 +484,7 @@ export default function PermissionsPage() {
                             </div>
                             <div className="flex items-center gap-2">
                               <Checkbox 
+                          disabled={!canManage}
                                 checked={localPermissions[perm.id]?.canCreate ?? false}
                                 onCheckedChange={(checked) => handlePermissionChange(perm.id, "canCreate", !!checked)}
                                 data-testid={`checkbox-create-${perm.code}`}
@@ -454,6 +493,7 @@ export default function PermissionsPage() {
                             </div>
                             <div className="flex items-center gap-2">
                               <Checkbox 
+                          disabled={!canManage}
                                 checked={localPermissions[perm.id]?.canEdit ?? false}
                                 onCheckedChange={(checked) => handlePermissionChange(perm.id, "canEdit", !!checked)}
                                 data-testid={`checkbox-edit-${perm.code}`}
@@ -462,6 +502,7 @@ export default function PermissionsPage() {
                             </div>
                             <div className="flex items-center gap-2">
                               <Checkbox 
+                          disabled={!canManage}
                                 checked={localPermissions[perm.id]?.canDelete ?? false}
                                 onCheckedChange={(checked) => handlePermissionChange(perm.id, "canDelete", !!checked)}
                                 data-testid={`checkbox-delete-${perm.code}`}

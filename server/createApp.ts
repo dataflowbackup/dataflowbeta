@@ -22,6 +22,13 @@ export function log(message: string, source = "express") {
 
 export async function createApp(options?: { serveClient?: boolean }) {
   const app = express();
+  app.disable("x-powered-by");
+  app.use((_req, res, next) => {
+    res.setHeader("X-Frame-Options", "DENY");
+    res.setHeader("X-Content-Type-Options", "nosniff");
+    res.setHeader("Referrer-Policy", "strict-origin-when-cross-origin");
+    next();
+  });
   const httpServer = createServer(app);
   const serveClient = options?.serveClient ?? true;
 
