@@ -285,7 +285,37 @@ async function getAuthenticatedUserId(req: any): Promise<string | undefined> {
   return dbUser?.id;
 }
 
-type TeamPrivileged = { ok: true; clientId: number; actorId: string } | { ok: false };
+type TeamPrivileged = { ok: true; clientId: number; actorId: string; actorRole?: string } | { ok: false };
+
+// Jerarquia de roles (oct-2026). Evita la escalada: un Gerente no puede hacerse Socio ni
+// tocar a quien esta por encima suyo.
+const ROLE_RANK: Record<string, number> = { socio: 5, admin: 4, manager: 3, encargado: 2, employee: 1, viewer: 0 };
+const rankOf = (role: string | null | undefined) => ROLE_RANK[String(role ?? "").trim().toLowerCase()] ?? -1;
+
+/**
+ * Puede `actorRole` gestionar a un usuario con rol `targetRole` (null = usuario nuevo) y,
+ * si se indica, darle `newRole`? Devuelve el motivo del rechazo o null si puede.
+ * - Socio: puede todo (incluido dar o quitar Socio).
+ * - El resto: solo sobre usuarios de rango MENOR al suyo y asignando roles de rango menor.
+ */
+function teamActionDenied(
+  actorRole: string | undefined,
+  targetRole: string | null | undefined,
+  newRole?: string,
+): string | null {
+  const actor = String(actorRole ?? "").toLowerCase();
+  if (actor === "socio") return null;
+  const actorRank = rankOf(actor);
+  if (targetRole != null && rankOf(targetRole) >= actorRank) {
+    return "No podés gestionar a un usuario con un rol igual o superior al tuyo.";
+  }
+  if (newRole !== undefined && rankOf(newRole) >= actorRank) {
+    return newRole === "socio"
+      ? "Solo un Socio puede asignar el rol Socio."
+      : "No podés asignar un rol igual o superior al tuyo.";
+  }
+  return null;
+}
 
 async function assertTeamPrivileged(req: any, res: any): Promise<TeamPrivileged> {
   const actorId = await getAuthenticatedUserId(req);
@@ -309,7 +339,7 @@ async function assertTeamPrivileged(req: any, res: any): Promise<TeamPrivileged>
     });
     return { ok: false };
   }
-  return { ok: true, clientId, actorId };
+  return { ok: true, clientId, actorId, actorRole: role };
 }
 
 /** Registro de cambios con el usuario de la sesion. Nunca lanza (ver changeLog.ts). */
@@ -7483,6 +7513,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         return res.status(400).json({ message: parsed.error.errors[0]?.message || "Datos inválidos" });
       }
       const targetUserId = req.params.targetUserId;
+      const denied = teamActionDenied(gate.actorRole, await storage.getUserRoleInClient(targetUserId, gate.clientId));
+      if (targetUserId !== gate.actorId && denied) return res.status(403).json({ message: denied });
       const body = parsed.data;
       const patch: { firstName?: string | null; lastName?: string | null; email?: string | null } = {};
       if (body.firstName !== undefined) patch.firstName = body.firstName === "" ? null : body.firstName;
@@ -7516,7 +7548,12 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const gate = await assertTeamPrivileged(req, res);
       if (!gate.ok) return;
       const role = normalizeTeamRole(req.body?.role);
+      if (req.params.targetUserId === gate.actorId) {
+        return res.status(403).json({ message: "No podés cambiar tu propio rol." });
+      }
       const prevRole = await storage.getUserRoleInClient(req.params.targetUserId, gate.clientId);
+      const denied = teamActionDenied(gate.actorRole, prevRole, role);
+      if (denied) return res.status(403).json({ message: denied });
       const ok = await storage.setUserRoleInClient(gate.clientId, req.params.targetUserId, role);
       if (!ok) return res.status(404).json({ message: "Usuario no encontrado en esta empresa" });
       const target = await storage.getUser(req.params.targetUserId);
@@ -7547,6 +7584,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       if (inClient === null) {
         return res.status(404).json({ message: "Usuario no encontrado en esta empresa" });
       }
+      const resetDenied = teamActionDenied(gate.actorRole, inClient);
+      if (member.id !== gate.actorId && resetDenied) return res.status(403).json({ message: resetDenied });
 
       const provisionalPassword = generateProvisionalPassword();
       const passwordHash = await hashPassword(provisionalPassword);
@@ -7604,6 +7643,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
       const removedUser = await storage.getUser(targetUserId);
       const removedRole = await storage.getUserRoleInClient(targetUserId, gate.clientId);
+      const removeDenied = teamActionDenied(gate.actorRole, removedRole);
+      if (removeDenied) return res.status(403).json({ message: removeDenied });
       const ok = await storage.removeUserFromClient(gate.clientId, targetUserId);
       if (!ok) return res.status(404).json({ message: "Usuario no encontrado en esta empresa" });
       await logChange(req, gate.clientId, {
@@ -7634,7 +7675,12 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         return res.status(400).json({ message: "userId requerido" });
       }
       const normalizedRole = normalizeTeamRole(role);
+      if (userId === gate.actorId) {
+        return res.status(403).json({ message: "No podés cambiar tu propio rol." });
+      }
       const prevRole = await storage.getUserRoleInClient(userId, clientId);
+      const reassignDenied = teamActionDenied(gate.actorRole, prevRole, normalizedRole);
+      if (reassignDenied) return res.status(403).json({ message: reassignDenied });
       const updated = await storage.setUserRoleInClient(clientId, userId, normalizedRole);
       if (!updated) {
         return res.status(404).json({ message: "Usuario no encontrado en esta empresa" });
@@ -7679,6 +7725,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
       const normalizedEmail = parsed.data.email.toLowerCase().trim();
       const role = normalizeTeamRole(parsed.data.role);
+      const inviteDenied = teamActionDenied(gate.actorRole, null, role);
+      if (inviteDenied) return res.status(403).json({ message: inviteDenied });
       const fn = parsed.data.firstName?.trim() || "";
       const ln = parsed.data.lastName?.trim() || "";
       const provisionalPassword = generateProvisionalPassword();
