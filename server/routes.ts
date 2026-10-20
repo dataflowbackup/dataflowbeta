@@ -333,6 +333,25 @@ async function assertPermissionsAdmin(req: any, res: any): Promise<TeamPrivilege
   return { ok: true, clientId, actorId };
 }
 
+// Pertenencia de referencias que vienen del request: un local o una categoria tienen que ser
+// de la misma empresa que la sesion. Vacio/null = "sin local/categoria" y es valido.
+// Devuelven el mensaje de error o null si esta bien.
+async function checkLocalOwnership(clientId: number, localId: unknown): Promise<string | null> {
+  if (localId === undefined || localId === null || localId === "") return null;
+  const id = Number(localId);
+  if (!Number.isInteger(id) || id <= 0) return "Local inválido.";
+  const locales = await storage.getLocals(clientId);
+  return locales.some((l) => l.id === id) ? null : "El local no pertenece a esta empresa.";
+}
+
+async function checkCategoryOwnership(clientId: number, categoryId: unknown): Promise<string | null> {
+  if (categoryId === undefined || categoryId === null || categoryId === "") return null;
+  const id = Number(categoryId);
+  if (!Number.isInteger(id) || id <= 0) return "Categoría inválida.";
+  const categorias = await storage.getTransactionCategories(clientId);
+  return categorias.some((c) => c.id === id) ? null : "La categoría no pertenece a esta empresa.";
+}
+
 type PermissionAction = "view" | "create" | "edit" | "delete";
 
 /**
@@ -628,6 +647,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       if (!localId || !alias) {
         return res.status(400).json({ message: "Se requiere localId y alias" });
       }
+      const localError = await checkLocalOwnership(clientId, localId);
+      if (localError) return res.status(400).json({ message: localError });
       
       const existing = await storage.getLocalAliasByName(clientId, alias);
       if (existing) {
@@ -1864,6 +1885,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     try {
       const clientId = await getClientId(req);
       const { allocations, supplierId, localId, ...paymentData } = req.body;
+      const localError = await checkLocalOwnership(clientId, localId);
+      if (localError) return res.status(400).json({ message: localError });
 
       const allInvoices = await storage.getInvoices(clientId);
       const pending = allInvoices.filter(i =>
@@ -3695,6 +3718,10 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       if (!existing) return res.status(404).json({ message: "Transaction not found" });
 
       const patch = parseResult.data;
+      const refError =
+        (await checkLocalOwnership(clientId, patch.localId)) ??
+        (await checkCategoryOwnership(clientId, patch.categoryId));
+      if (refError) return res.status(400).json({ message: refError });
       const hasCorePatch =
         patch.transactionDate !== undefined ||
         patch.description !== undefined ||
@@ -3905,6 +3932,13 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
       if (!uncategorize && !assignCaja && !assignLocal && !categoryId && categoryId !== null) {
         return res.status(400).json({ message: "Se requiere categoryId" });
+      }
+      // Categorizar (y su local opcional): ambos tienen que ser de la empresa.
+      if (!uncategorize && !assignCaja && !assignLocal) {
+        const refError =
+          (await checkCategoryOwnership(clientId, categoryId)) ??
+          (await checkLocalOwnership(clientId, localId));
+        if (refError) return res.status(400).json({ message: refError });
       }
 
       // Soporte para array de descripciones (multi-select) o descripción única (legacy)
