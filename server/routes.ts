@@ -4,6 +4,7 @@ import { type Server } from "http";
 import { storage } from "./storage";
 import { setupAuth, isAuthenticated as isAuthenticatedOIDC } from "./replitAuth";
 import { setupLocalAuth, isAuthenticatedLocal, blockIfMustChangePassword } from "./auth";
+import { recordChange, pick, KEY_FIELDS, type ChangeEntry } from "./changeLog";
 import multer from "multer";
 import * as XLSX from "xlsx";
 import { z } from "zod";
@@ -311,8 +312,40 @@ async function assertTeamPrivileged(req: any, res: any): Promise<TeamPrivileged>
   return { ok: true, clientId, actorId };
 }
 
+/** Registro de cambios con el usuario de la sesion. Nunca lanza (ver changeLog.ts). */
+async function logChange(req: any, clientId: number, entry: Omit<ChangeEntry, "clientId" | "userId">) {
+  const userId = await getAuthenticatedUserId(req).catch(() => undefined);
+  await recordChange({ ...entry, clientId, userId });
+}
+
+function invoiceLabel(inv: any): string {
+  const tipo = String(inv?.invoiceType ?? "");
+  const kind = tipo.startsWith("NC-") ? "nota de crédito" : "factura";
+  const num = [inv?.invoiceSalePoint, inv?.invoiceNumber].filter((x) => x != null && x !== "").join("-");
+  return `${kind} ${tipo} ${num}`.replace(/\s+/g, " ").trim();
+}
+
+function money(v: unknown): string {
+  const n = Number(v);
+  return Number.isFinite(n) ? `$${n.toLocaleString("es-AR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : String(v ?? "");
+}
+
+/** Body de una masiva sin los arrays largos de ids (se guarda solo cuantos eran). */
+function batchFilters(body: any): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(body ?? {})) {
+    if (Array.isArray(v) && k.toLowerCase().includes("ids")) out[k] = `${v.length} seleccionados`;
+    else if (v !== undefined && v !== null && v !== "") out[k] = v;
+  }
+  return out;
+}
+
 // Editar la matriz de permisos por rol: solo Socio o Administrador (Gerente no).
-async function assertPermissionsAdmin(req: any, res: any): Promise<TeamPrivileged> {
+async function assertPermissionsAdmin(
+  req: any,
+  res: any,
+  deniedMessage = "Solo Socio o Administrador puede modificar permisos.",
+): Promise<TeamPrivileged> {
   const actorId = await getAuthenticatedUserId(req);
   if (!actorId) {
     res.status(401).json({ message: "No autenticado" });
@@ -327,7 +360,7 @@ async function assertPermissionsAdmin(req: any, res: any): Promise<TeamPrivilege
   }
   const role = String((await storage.getUserRoleInClient(actorId, clientId)) ?? "").trim().toLowerCase();
   if (role !== "socio" && role !== "admin") {
-    res.status(403).json({ message: "Solo Socio o Administrador puede modificar permisos." });
+    res.status(403).json({ message: deniedMessage });
     return { ok: false };
   }
   return { ok: true, clientId, actorId };
@@ -1762,6 +1795,13 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     try {
       const clientId = await getClientId(req);
       const data = await prepareAndCreateInvoice(clientId, req.body);
+      await logChange(req, clientId, {
+        action: "create",
+        table: "invoices",
+        recordId: data?.id,
+        summary: `Alta de ${invoiceLabel(data)} por ${money(data?.total)}`,
+        after: pick(data, KEY_FIELDS.invoice),
+      });
       res.json(data);
     } catch (e: any) {
       res.status(e.statusCode ?? 500).json({ message: e.message });
@@ -1824,6 +1864,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         action: "correct_invoice",
         tableName: "invoices",
         recordId: created.id,
+        summary: `Corrección de ${invoiceLabel(old)} (total ${money(old.total)} → ${money(created.total)})`,
         oldData: { invoice: old, items: snapItems, taxes: snapTaxes },
         newData: created,
       });
@@ -1837,8 +1878,17 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.delete("/api/invoices/:id", isAuthenticated, async (req, res) => {
     try {
       const clientId = await getClientId(req);
-      const deleted = await storage.deleteInvoice(clientId, parseInt(req.params.id));
+      const invoiceId = parseInt(req.params.id);
+      const before = Number.isFinite(invoiceId) ? await storage.getInvoice(clientId, invoiceId) : undefined;
+      const deleted = await storage.deleteInvoice(clientId, invoiceId);
       if (!deleted) return res.status(404).json({ message: "Invoice not found or access denied" });
+      await logChange(req, clientId, {
+        action: "delete",
+        table: "invoices",
+        recordId: invoiceId,
+        summary: `Eliminó ${invoiceLabel(before)} por ${money(before?.total)}`,
+        before: pick(before, KEY_FIELDS.invoice),
+      });
       res.json({ success: true });
     } catch (e: any) {
       res.status(500).json({ message: e.message });
@@ -1865,6 +1915,13 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       if (!reversed) {
         return res.status(400).json({ message: "No se pudo revertir la factura. Puede que ya este revertida o no exista." });
       }
+      await logChange(req, clientId, {
+        action: "reverse",
+        table: "invoices",
+        recordId: reversed.id,
+        summary: `Reversó ${invoiceLabel(reversed)} por ${money(reversed.total)}. Motivo: ${reason}`,
+        before: pick(reversed, KEY_FIELDS.invoice),
+      });
       
       res.json(reversed);
     } catch (e: any) {
@@ -1911,9 +1968,23 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
           { ...paymentData, supplierId, localId, clientId },
           allocations
         );
+        await logChange(req, clientId, {
+          action: "create",
+          table: "payments",
+          recordId: (data as any)?.id ?? (data as any)?.payment?.id,
+          summary: `Alta de pago ${paymentData?.paymentNumber ?? ""} por ${money(paymentData?.amount)} imputado a ${allocations.length} comprobante(s)`.replace(/\s+/g, " "),
+          after: { ...pick({ ...paymentData, supplierId, localId }, KEY_FIELDS.payment), imputaciones: allocations },
+        });
         return res.json(data);
       } else {
         const data = await storage.createPayment({ ...paymentData, supplierId, localId, clientId });
+        await logChange(req, clientId, {
+          action: "create",
+          table: "payments",
+          recordId: (data as any)?.id,
+          summary: `Alta de pago ${paymentData?.paymentNumber ?? ""} por ${money(paymentData?.amount)} (a cuenta)`.replace(/\s+/g, " "),
+          after: pick({ ...paymentData, supplierId, localId }, KEY_FIELDS.payment),
+        });
         return res.json(data);
       }
     } catch (e: any) {
@@ -1946,8 +2017,19 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         }
       }
 
+      const beforePayment = await storage.getPaymentById(clientId, id);
       const updated = await storage.updatePayment(clientId, id, parsed.data);
       if (!updated) return res.status(404).json({ message: "Payment not found or access denied" });
+      if (beforePayment) {
+        await logChange(req, clientId, {
+          action: "update",
+          table: "payments",
+          recordId: id,
+          summary: `Editó el pago ${beforePayment.paymentNumber ?? `#${id}`}`,
+          before: beforePayment,
+          after: parsed.data as Record<string, unknown>,
+        });
+      }
       res.json(updated);
     } catch (e: any) {
       res.status(500).json({ message: e.message });
@@ -1957,8 +2039,17 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.delete("/api/payments/:id", isAuthenticated, async (req, res) => {
     try {
       const clientId = await getClientId(req);
-      const deleted = await storage.deletePayment(clientId, parseInt(req.params.id));
+      const paymentId = parseInt(req.params.id);
+      const beforePayment = Number.isFinite(paymentId) ? await storage.getPaymentById(clientId, paymentId) : undefined;
+      const deleted = await storage.deletePayment(clientId, paymentId);
       if (!deleted) return res.status(404).json({ message: "Payment not found or access denied" });
+      await logChange(req, clientId, {
+        action: "delete",
+        table: "payments",
+        recordId: paymentId,
+        summary: `Eliminó el pago ${beforePayment?.paymentNumber ?? `#${paymentId}`} por ${money(beforePayment?.amount)}`,
+        before: pick(beforePayment, KEY_FIELDS.payment),
+      });
       res.json({ success: true });
     } catch (e: any) {
       res.status(500).json({ message: e.message });
@@ -3111,6 +3202,13 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         return res.status(400).json({ message: "Envie confirm: true para confirmar el borrado" });
       }
       const result = await storage.purgeBankAccountImportedData(clientId, id);
+      await logChange(req, clientId, {
+        action: "purge_imports",
+        table: "bank_accounts",
+        recordId: id,
+        summary: `Borró todos los movimientos importados de la cuenta #${id}`,
+        extra: { resultado: result },
+      });
       res.json({ success: true, ...result });
     } catch (e: any) {
       if (e.message === "Cuenta no encontrada") {
@@ -3636,6 +3734,13 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const session = req.session as any;
       const userId = session?.userId || (req.user as any)?.claims?.sub;
       const created = await storage.insertCashMovementBatch(clientId, userId, cashParse.data.items);
+      await logChange(req, clientId, {
+        action: "create",
+        table: "transactions",
+        summary: `Cargó ${created.length} movimiento(s) de efectivo`,
+        after: { movimientos: created.slice(0, 50).map((t: any) => pick(t, KEY_FIELDS.transaction)) },
+        extra: { cantidad: created.length },
+      });
       res.status(201).json({ inserted: created.length, items: created });
     } catch (e: any) {
       res.status(400).json({ message: e.message || "Error al registrar movimientos" });
@@ -3847,6 +3952,14 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       
       const updated = await storage.updateTransaction(clientId, id, safeUpdate as Partial<InsertTransaction>);
       if (!updated) return res.status(404).json({ message: "Transaction not found" });
+      await logChange(req, clientId, {
+        action: "update",
+        table: "transactions",
+        recordId: id,
+        summary: `Editó el movimiento del ${existing.transactionDate} "${existing.description ?? ""}" (${money(existing.amount)})`,
+        before: existing as any,
+        after: safeUpdate as Record<string, unknown>,
+      });
       res.json(updated);
     } catch (e: any) {
       res.status(500).json({ message: e.message });
@@ -3873,6 +3986,12 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const batchId = decodeURIComponent(String(req.params.batchId ?? "").trim());
       const deleted = await storage.deleteTransactionBatch(clientId, batchId);
       if (deleted === 0) return res.status(404).json({ message: "Extracto no encontrado" });
+      await logChange(req, clientId, {
+        action: "delete_batch",
+        table: "transactions",
+        summary: `Eliminó el extracto importado ${batchId} (${deleted} movimientos)`,
+        extra: { importBatchId: batchId, cantidad: deleted },
+      });
       res.json({ success: true, deleted });
     } catch (e: any) {
       res.status(500).json({ message: e.message });
@@ -3882,8 +4001,17 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.delete("/api/transactions/:id", isAuthenticated, async (req, res) => {
     try {
       const clientId = await getClientId(req);
-      const deleted = await storage.deleteTransaction(clientId, parseInt(req.params.id));
+      const txId = parseInt(req.params.id);
+      const beforeTx = Number.isFinite(txId) ? await storage.getTransactionById(clientId, txId) : undefined;
+      const deleted = await storage.deleteTransaction(clientId, txId);
       if (!deleted) return res.status(404).json({ message: "Transaction not found" });
+      await logChange(req, clientId, {
+        action: "delete",
+        table: "transactions",
+        recordId: txId,
+        summary: `Eliminó el movimiento del ${beforeTx?.transactionDate ?? "?"} "${beforeTx?.description ?? ""}" (${money(beforeTx?.amount)})`,
+        before: pick(beforeTx as any, KEY_FIELDS.transaction),
+      });
       res.json({ success: true });
     } catch (e: any) {
       res.status(500).json({ message: e.message });
@@ -4054,6 +4182,19 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
       const updated = updatedIds.length;
 
+      await logChange(req, clientId, {
+        action: "batch_update",
+        table: "transactions",
+        summary: assignCaja
+          ? `Asignó la caja #${cajaIdToAssign} a ${updated} movimiento(s)`
+          : assignLocal
+          ? `Asignó el local #${localIdToAssign} a ${updated} movimiento(s)`
+          : uncategorize
+          ? `Descategorizó ${updated} movimiento(s)`
+          : `Categorizó ${updated} movimiento(s) con la categoría #${categoryId}`,
+        extra: { cantidad: updated, filtros: batchFilters(req.body) },
+      });
+
       res.json({
         success: true,
         updated,
@@ -4111,6 +4252,15 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         economicMonth: raw,
       } as any);
       const updated = updatedIds.length;
+      await logChange(req, clientId, {
+        action: "batch_update",
+        table: "transactions",
+        summary:
+          raw === null
+            ? `Devolvió ${updated} movimiento(s) al mes de acreditación`
+            : `Asignó el mes económico ${raw} a ${updated} movimiento(s)`,
+        extra: { cantidad: updated, economicMonth: raw },
+      });
 
       res.json({
         success: true,
@@ -4191,6 +4341,13 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
       const deleted = deletedIds.length;
 
+      await logChange(req, clientId, {
+        action: "batch_delete",
+        table: "transactions",
+        summary: `Borró ${deleted} movimiento(s) en forma masiva`,
+        extra: { cantidad: deleted, filtros: batchFilters(req.body) },
+      });
+
       res.json({
         success: true,
         deleted,
@@ -4257,6 +4414,13 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
           originCategoryIdRaw == null || originCategoryIdRaw === "" ? null : parseInt(String(originCategoryIdRaw), 10),
         parts,
       });
+      await logChange(req, clientId, {
+        action: "split",
+        table: "transactions",
+        recordId: originTransactionId,
+        summary: `Dividió el movimiento #${originTransactionId} entre ${parts.length + 1} locales`,
+        after: { partes: parts, originShareAmount: Number(req.body?.originShareAmount ?? 0) },
+      });
       res.status(201).json({ success: true, ...result });
     } catch (e: any) {
       res.status(400).json({ message: e.message || "No se pudo dividir el movimiento." });
@@ -4271,6 +4435,12 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         return res.status(400).json({ message: "ID de movimiento inválido" });
       }
       const result = await storage.reverseLocalSplit(clientId, originTransactionId);
+      await logChange(req, clientId, {
+        action: "reverse_split",
+        table: "transactions",
+        recordId: originTransactionId,
+        summary: `Deshizo la división entre locales del movimiento #${originTransactionId}`,
+      });
       res.json({ success: true, ...result });
     } catch (e: any) {
       res.status(400).json({ message: e.message || "No se pudo deshacer la división." });
@@ -4309,6 +4479,13 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         bankAccountId,
         expenseCategoryId,
       });
+      await logChange(req, clientId, {
+        action: "create",
+        table: "internal_loans",
+        recordId: (loan as any)?.id,
+        summary: `Creó un préstamo interno desde el movimiento #${originTransactionId} al local #${toLocalId}`,
+        after: { originTransactionId, toLocalId, bankAccountId, expenseCategoryId },
+      });
       res.status(201).json(loan);
     } catch (e: any) {
       res.status(400).json({ message: e.message || "No se pudo crear el préstamo interno." });
@@ -4321,6 +4498,12 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const id = parseInt(req.params.id, 10);
       if (!Number.isFinite(id)) return res.status(400).json({ message: "ID inválido" });
       await storage.reverseInternalLoan(clientId, id);
+      await logChange(req, clientId, {
+        action: "reverse",
+        table: "internal_loans",
+        recordId: id,
+        summary: `Deshizo el préstamo interno #${id}`,
+      });
       res.json({ success: true });
     } catch (e: any) {
       res.status(400).json({ message: e.message || "No se pudo deshacer el préstamo interno." });
@@ -6619,6 +6802,31 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
   });
 
+  // Registro de cambios (oct-2026): solo Socio o Administrador. Paginado, mas nuevo primero.
+  app.get("/api/change-log", isAuthenticated, async (req, res) => {
+    try {
+      const gate = await assertPermissionsAdmin(req, res, "Solo Socio o Administrador puede ver el registro de cambios.");
+      if (!gate.ok) return;
+      const q = req.query as Record<string, string | undefined>;
+      const day = /^\d{4}-\d{2}-\d{2}$/;
+      const from = q.from && day.test(q.from) ? new Date(`${q.from}T00:00:00-03:00`) : undefined;
+      const to = q.to && day.test(q.to) ? new Date(`${q.to}T23:59:59.999-03:00`) : undefined;
+      const limit = Math.min(Math.max(parseInt(q.limit ?? "100", 10) || 100, 1), 500);
+      const offset = Math.max(parseInt(q.offset ?? "0", 10) || 0, 0);
+      const rows = await storage.listAuditLog(gate.clientId, {
+        from,
+        to,
+        userId: q.userId || undefined,
+        tableName: q.table || undefined,
+        limit,
+        offset,
+      });
+      res.json(rows);
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
   app.post("/api/permissions/seed", isAuthenticated, async (req, res) => {
     try {
       const gate = await assertPermissionsAdmin(req, res);
@@ -6718,7 +6926,18 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       if (String(req.body?.role ?? "").trim().toLowerCase() === "socio") {
         return res.status(400).json({ message: "El rol Socio tiene acceso total y no se configura." });
       }
+      const prevRolePerms = await storage.getRolePermissions(clientId, String(req.body?.role ?? ""));
+      const prev = prevRolePerms.find((rp: any) => rp.permissionId === Number(req.body?.permissionId));
       const result = await storage.setRolePermission({ ...req.body, clientId });
+      const flags = ["canView", "canCreate", "canEdit", "canDelete"];
+      await logChange(req, clientId, {
+        action: "update",
+        table: "role_permissions",
+        recordId: Number(req.body?.permissionId) || null,
+        summary: `Cambió permisos del rol ${req.body?.role} (permiso #${req.body?.permissionId})`,
+        before: pick(prev ?? { canView: false, canCreate: false, canEdit: false, canDelete: false }, flags),
+        after: pick(req.body, flags),
+      });
       res.json(result);
     } catch (e: any) {
       res.status(500).json({ message: e.message });
@@ -6735,6 +6954,14 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         req.params.role, 
         parseInt(req.params.permissionId)
       );
+      if (deleted) {
+        await logChange(req, clientId, {
+          action: "delete",
+          table: "role_permissions",
+          recordId: parseInt(req.params.permissionId) || null,
+          summary: `Quitó el permiso #${req.params.permissionId} al rol ${req.params.role}`,
+        });
+      }
       res.json({ success: deleted });
     } catch (e: any) {
       res.status(500).json({ message: e.message });
@@ -7262,8 +7489,16 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       if (body.lastName !== undefined) patch.lastName = body.lastName === "" ? null : body.lastName;
       if (body.email !== undefined) patch.email = body.email.trim();
       try {
+        const beforeUser = await storage.getUser(targetUserId);
         const updated = await storage.updateClientUserProfile(gate.clientId, targetUserId, patch);
         if (!updated) return res.status(404).json({ message: "Usuario no encontrado en esta empresa" });
+        await logChange(req, gate.clientId, {
+          action: "update",
+          table: "users",
+          summary: `Editó los datos del usuario ${beforeUser?.email ?? targetUserId}`,
+          before: (beforeUser ?? {}) as any,
+          after: patch,
+        });
         res.json(updated);
       } catch (inner: any) {
         if (String(inner?.message) === "EMAIL_CONFLICT") {
@@ -7281,8 +7516,17 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const gate = await assertTeamPrivileged(req, res);
       if (!gate.ok) return;
       const role = normalizeTeamRole(req.body?.role);
+      const prevRole = await storage.getUserRoleInClient(req.params.targetUserId, gate.clientId);
       const ok = await storage.setUserRoleInClient(gate.clientId, req.params.targetUserId, role);
       if (!ok) return res.status(404).json({ message: "Usuario no encontrado en esta empresa" });
+      const target = await storage.getUser(req.params.targetUserId);
+      await logChange(req, gate.clientId, {
+        action: "role_change",
+        table: "users",
+        summary: `Cambió el rol de ${target?.email ?? req.params.targetUserId}: ${prevRole ?? "-"} → ${role}`,
+        before: { role: prevRole },
+        after: { role },
+      });
       res.json({ success: true, role });
     } catch (e: any) {
       res.status(500).json({ message: e.message });
@@ -7307,6 +7551,11 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const provisionalPassword = generateProvisionalPassword();
       const passwordHash = await hashPassword(provisionalPassword);
       await storage.setUserPasswordHash(member.id, passwordHash, true);
+      await logChange(req, gate.clientId, {
+        action: "reset_password",
+        table: "users",
+        summary: `Generó una contraseña provisoria para ${member.email}`,
+      });
 
       const loginEmail = member.email.trim().toLowerCase();
       let mailSent = false;
@@ -7353,8 +7602,16 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         return res.status(400).json({ message: "No podés quitarte del equipo vos mismo desde acá." });
       }
 
+      const removedUser = await storage.getUser(targetUserId);
+      const removedRole = await storage.getUserRoleInClient(targetUserId, gate.clientId);
       const ok = await storage.removeUserFromClient(gate.clientId, targetUserId);
       if (!ok) return res.status(404).json({ message: "Usuario no encontrado en esta empresa" });
+      await logChange(req, gate.clientId, {
+        action: "delete",
+        table: "users",
+        summary: `Quitó del equipo a ${removedUser?.email ?? targetUserId} (rol ${removedRole ?? "-"})`,
+        before: { email: removedUser?.email ?? null, role: removedRole },
+      });
 
       const remaining = await storage.countClientsForUser(targetUserId);
       if (remaining === 0) {
@@ -7377,10 +7634,19 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         return res.status(400).json({ message: "userId requerido" });
       }
       const normalizedRole = normalizeTeamRole(role);
+      const prevRole = await storage.getUserRoleInClient(userId, clientId);
       const updated = await storage.setUserRoleInClient(clientId, userId, normalizedRole);
       if (!updated) {
         return res.status(404).json({ message: "Usuario no encontrado en esta empresa" });
       }
+      const target = await storage.getUser(userId);
+      await logChange(req, clientId, {
+        action: "role_change",
+        table: "users",
+        summary: `Cambió el rol de ${target?.email ?? userId}: ${prevRole ?? "-"} → ${normalizedRole}`,
+        before: { role: prevRole },
+        after: { role: normalizedRole },
+      });
       res.json({ success: true, message: "Rol actualizado" });
     } catch (e: any) {
       res.status(500).json({ message: e.message });
@@ -7490,6 +7756,13 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
           console.error("SMTP invitation:", mailErr);
         }
       }
+
+      await logChange(req, gate.clientId, {
+        action: "invite",
+        table: "users",
+        summary: `Invitó a ${normalizedEmail} con rol ${role}`,
+        after: { email: normalizedEmail, role },
+      });
 
       res.json({
         success: true,

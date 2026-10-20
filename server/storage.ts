@@ -1803,6 +1803,7 @@ export class DatabaseStorage implements IStorage {
     action: string;
     tableName: string;
     recordId?: number | null;
+    summary?: string | null;
     oldData?: unknown;
     newData?: unknown;
   }): Promise<void> {
@@ -1812,9 +1813,48 @@ export class DatabaseStorage implements IStorage {
       action: entry.action,
       tableName: entry.tableName,
       recordId: entry.recordId ?? null,
+      summary: entry.summary ?? null,
       oldData: entry.oldData ?? null,
       newData: entry.newData ?? null,
     } as any);
+  }
+
+  /** Registro de cambios de la empresa, mas nuevo primero, con el nombre de quien lo hizo. */
+  async listAuditLog(
+    clientId: number,
+    f: { from?: Date; to?: Date; userId?: string; tableName?: string; limit: number; offset: number },
+  ) {
+    const conds = [eq(auditLog.clientId, clientId)];
+    if (f.from) conds.push(gte(auditLog.createdAt, f.from));
+    if (f.to) conds.push(lte(auditLog.createdAt, f.to));
+    if (f.userId) conds.push(eq(auditLog.userId, f.userId));
+    if (f.tableName) conds.push(eq(auditLog.tableName, f.tableName));
+    return db
+      .select({
+        id: auditLog.id,
+        createdAt: auditLog.createdAt,
+        userId: auditLog.userId,
+        firstName: users.firstName,
+        lastName: users.lastName,
+        email: users.email,
+        action: auditLog.action,
+        tableName: auditLog.tableName,
+        recordId: auditLog.recordId,
+        summary: auditLog.summary,
+        oldData: auditLog.oldData,
+        newData: auditLog.newData,
+      })
+      .from(auditLog)
+      .leftJoin(users, eq(users.id, auditLog.userId))
+      .where(and(...conds))
+      .orderBy(desc(auditLog.createdAt), desc(auditLog.id))
+      .limit(f.limit)
+      .offset(f.offset);
+  }
+
+  async getPaymentById(clientId: number, id: number): Promise<any | undefined> {
+    const [row] = await db.select().from(payments).where(and(eq(payments.id, id), eq(payments.clientId, clientId)));
+    return row;
   }
 
   async reverseInvoice(clientId: number, invoiceId: number, userId: string, reason: string): Promise<Invoice | undefined> {

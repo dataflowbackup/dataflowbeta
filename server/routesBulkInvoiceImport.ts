@@ -21,6 +21,7 @@ import {
 } from "@shared/bulkInvoiceImportHelpers";
 import { isAuthenticated as isAuthenticatedOIDC } from "./replitAuth";
 import { blockIfMustChangePassword } from "./auth";
+import { recordChange } from "./changeLog";
 
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -779,6 +780,17 @@ export function registerBulkInvoiceImportRoutes(app: Express) {
           } catch (e: any) {
             errors.push(`${jobKey}: ${e?.message ?? String(e)}`);
           }
+        }
+
+        if (!dryRun && created.length > 0) {
+          await recordChange({
+            clientId,
+            userId: (req.session as any)?.userId ?? (req.user as any)?.claims?.sub,
+            action: "import",
+            table: "invoices",
+            summary: `Carga masiva de facturas: ${created.length} creada(s), ${errors.length} con error`,
+            extra: { cantidad: created.length, errores: errors.length },
+          });
         }
 
         res.json({

@@ -4,6 +4,7 @@
 import * as XLSX from "xlsx";
 import { z } from "zod";
 import { storage } from "./storage";
+import { recordChange } from "./changeLog";
 import {
   getBankParser,
   parseBbvaWorkbook,
@@ -386,6 +387,15 @@ export async function runBankStatementImport(input: BankStatementImportInput): P
       chainOverrideDiff: chainOverrideDiff != null ? String(chainOverrideDiff) : undefined,
     } as unknown as InsertFinancialImportBatch);
   }
+
+  await recordChange({
+    clientId: input.clientId,
+    userId: input.userId,
+    action: "import",
+    table: "transactions",
+    summary: `Importó un extracto de ${parser.bankName}: ${imported} movimiento(s) (${periodStartDetected ?? "?"} a ${periodEndDetected ?? "?"})`,
+    extra: { importBatchId, cantidad: imported, bankAccountId: input.bankAccountId, banco: bankId },
+  });
 
   return {
     kind: "success",

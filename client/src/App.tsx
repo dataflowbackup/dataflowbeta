@@ -62,6 +62,7 @@ import StockPage from "@/pages/stock";
 import EmployeesPage from "@/pages/employees";
 import AuditsPage from "@/pages/audits";
 import PermissionsPage from "@/pages/permissions";
+import ChangeLogPage from "@/pages/change-log";
 import NotificationsPage from "@/pages/notifications";
 import PreferencesPage from "@/pages/preferences";
 import MisComprobantesPage from "@/pages/mis-comprobantes";
@@ -143,6 +144,7 @@ function AppRouter() {
       <Route path="/empleados" component={EmployeesPage} />
       <Route path="/auditorias" component={AuditsPage} />
       <Route path="/permisos" component={PermissionsPage} />
+      <Route path="/registro-cambios" component={ChangeLogPage} />
       <Route path="/notificaciones" component={NotificationsPage} />
       <Route path="/preferencias" component={PreferencesPage} />
       <Route path="/mis-comprobantes" component={MisComprobantesPage} />

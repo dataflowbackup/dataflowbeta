@@ -2561,10 +2561,12 @@ export const auditLog = pgTable("audit_log", {
   action: varchar("action", { length: 50 }).notNull(),
   tableName: varchar("table_name", { length: 100 }).notNull(),
   recordId: integer("record_id"),
+  /** Texto legible para la pantalla "Registro de cambios" (oct-2026). */
+  summary: text("summary"),
   oldData: jsonb("old_data"),
   newData: jsonb("new_data"),
   createdAt: timestamp("created_at").defaultNow(),
-});
+}, (table) => [index("IDX_audit_log_client_created").on(table.clientId, table.createdAt)]);
 
 export type AuditLog = typeof auditLog.$inferSelect;
 

@@ -56,7 +56,7 @@ export const MODULE_ROUTES: Record<string, string[]> = {
     "/dashboard",
   ],
   Operaciones: ["/stock", "/auditorias", "/empleados", "/asistencia", "/liquidaciones"],
-  Configuracion: ["/sociedades", "/equipo", "/permisos", "/notificaciones", "/preferencias"],
+  Configuracion: ["/sociedades", "/equipo", "/permisos", "/registro-cambios", "/notificaciones", "/preferencias"],
 };
 
 /** Modulo de una ruta suelta (Inicio, login, etc.): cambia de scope y limpia filtros. */

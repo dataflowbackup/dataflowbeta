@@ -43,6 +43,7 @@ import {
   SlidersHorizontal,
   FileCheck2,
   Trophy,
+  History,
 } from "lucide-react";
 import { useAuth } from "@/hooks/useAuth";
 import { usePermissions } from "@/hooks/usePermissions";
@@ -92,6 +93,8 @@ interface MenuItem {
    * apagado en Preferencias, el item no se muestra.
    */
   salesSource?: SalesSourceKey;
+  /** Solo Socio o Administrador (p. ej. Registro de cambios). */
+  adminOnly?: boolean;
 }
 
 interface MenuSection {
@@ -174,6 +177,7 @@ const menuSections: MenuSection[] = [
       { title: "Sociedades", url: "/sociedades", icon: Building2 },
       { title: "Equipo", url: "/equipo", icon: UsersRound },
       { title: "Permisos", url: "/permisos", icon: Shield },
+      { title: "Registro de cambios", url: "/registro-cambios", icon: History, adminOnly: true },
       { title: "Notificaciones", url: "/notificaciones", icon: Bell },
       { title: "Preferencias", url: "/preferencias", icon: SlidersHorizontal },
     ],
@@ -240,7 +244,8 @@ type AuthOrganization = { id: number; name: string };
 export function AppSidebar() {
   const [location] = useLocation();
   const { user } = useAuth();
-  const { can, isLoading: permsLoading } = usePermissions();
+  const { can, role, isLoading: permsLoading } = usePermissions();
+  const isAdminRole = role === "socio" || role === "admin";
   const { isEnabled: isSalesSourceEnabled } = useSalesSources();
 
   const { data: organization, isLoading: isOrgLoading } = useQuery<AuthOrganization | null>({
@@ -360,7 +365,9 @@ export function AppSidebar() {
           .map((section) => ({
             ...section,
             items: section.items.filter(
-              (item) => !item.permission || permsLoading || can(item.permission, "view"),
+              (item) =>
+                (!item.permission || permsLoading || can(item.permission, "view")) &&
+                (!item.adminOnly || isAdminRole),
             ),
           }))
           // Punto 6: los items de un sistema de ventas apagado en Preferencias no se muestran.
